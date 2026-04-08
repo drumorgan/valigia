@@ -1,0 +1,74 @@
+:root {
+  --bg:       #0d0f14;
+  --surface:  #161a22;
+  --border:   #252a35;
+  --accent:   #e8c84a;
+  --text:     #c8cdd8;
+  --muted:    #5a6070;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Syne', sans-serif;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+#app {
+  width: 100%;
+  max-width: 960px;
+  padding: 1.5rem 1rem;
+}
+
+#app-header {
+  text-align: center;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2rem;
+}
+
+.logo {
+  font-family: 'Syne Mono', monospace;
+  font-size: 2.4rem;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.logo-subtitle {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 0.15rem;
+}
+
+.logo-credit {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
+}
+
+.giro-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.giro-link:hover {
+  text-decoration: underline;
+}
+
+.hello {
+  text-align: center;
+  font-family: 'Syne Mono', monospace;
+  font-size: 1.2rem;
+  color: var(--accent);
+  padding-top: 3rem;
+}

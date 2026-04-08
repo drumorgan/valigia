@@ -1,0 +1,18 @@
+{
+  "name": "valigia",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Valigia — Torn City travel arbitrage calculator",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}
