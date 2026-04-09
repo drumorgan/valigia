@@ -28,3 +28,15 @@ jobs:
           password: ${{ secrets.FTP_PASSWORD }}
           local-dir: ./dist/
           server-dir: /
+
+      # Belt-and-suspenders: SamKirkland/FTP-Deploy-Action has historically
+      # skipped dotfiles from local-dir (its internal glob doesn't set dot:true),
+      # so .htaccess can silently never leave the runner. Upload it explicitly
+      # here. Idempotent — if the action already shipped it, we just overwrite
+      # with identical bytes.
+      - name: Ensure .htaccess is uploaded (dotfile workaround)
+        run: |
+          curl --silent --show-error --fail --ssl-reqd \
+            --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" \
+            --upload-file dist/.htaccess \
+            "ftp://${{ secrets.FTP_SERVER }}/.htaccess"
