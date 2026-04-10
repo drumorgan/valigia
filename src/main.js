@@ -2,9 +2,12 @@
 
 import { callTornApi } from './torn-api.js';
 import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
+import { fetchAbroadPrices } from './log-sync.js';
+import { fetchAllSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import {
-  showToast, renderControls, setPlayerTravel
+  showToast, renderControls, renderShimmerTable, renderTable,
+  setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel
 } from './ui.js';
 
 const screenContainer = document.getElementById('screen-container');
@@ -81,25 +84,43 @@ async function startDashboard(playerId) {
 
   // Render controls + shimmer table
   renderControls(controlsBar, () => renderTable());
-
-  // Show under construction message
-  tableContainer.innerHTML = `
-    <div style="text-align:center;padding:3rem 1rem;font-family:'Syne Mono',monospace;">
-      <p style="font-size:1.5rem;color:var(--accent);margin-bottom:0.5rem;">Under Construction</p>
-      <p style="color:var(--muted);font-size:0.9rem;max-width:28rem;margin:0 auto;">
-        We're wiring up the abroad price feed. Check back soon —
-        the travel leaderboard is on the way.
-      </p>
-    </div>
-  `;
+  renderShimmerTable(tableContainer);
 
   // Resolve item IDs (one-time Torn API call, cached in localStorage)
   await resolveItemIds(playerId);
 
-  // Detect travel perks
-  detectPlayerTravel(playerId).catch((err) =>
-    console.warn('perks detection error:', err.message)
-  );
+  // Fetch abroad prices from YATA and detect travel perks in parallel
+  const [items] = await Promise.all([
+    fetchAbroadPrices().catch(() => null),
+    detectPlayerTravel(playerId).catch((err) =>
+      console.warn('perks detection error:', err.message)
+    ),
+  ]);
+
+  if (!items || items.length === 0) {
+    tableContainer.innerHTML = `
+      <div style="text-align:center;padding:3rem 1rem;font-family:'Syne Mono',monospace;">
+        <p style="font-size:1.2rem;color:var(--warning);margin-bottom:0.5rem;">
+          Could not load abroad prices
+        </p>
+        <p style="color:var(--muted);font-size:0.85rem;max-width:28rem;margin:0 auto;">
+          The YATA price feed may be down, or your browser blocked the request.
+          Try refreshing in a minute.
+        </p>
+      </div>
+    `;
+    return;
+  }
+
+  // Set items and render table with buy prices
+  setKnownItems(items);
+  renderTable();
+
+  // Fetch live sell prices for all known items
+  const itemIds = getItemIdsForPriceFetch();
+  if (itemIds.length > 0) {
+    await fetchAllSellPrices(playerId, itemIds, onSellPrice);
+  }
 }
 
 // ── Header ─────────────────────────────────────────────────────

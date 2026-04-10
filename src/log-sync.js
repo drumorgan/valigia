@@ -1,59 +1,67 @@
-// Abroad price sync — fetches foreign stock prices and upserts to Supabase.
-// Tries multiple Torn API endpoints to find abroad item data.
+// Abroad price sync — fetches crowd-sourced buy prices from the YATA API.
+// The Torn API doesn't expose abroad purchase data, so we use YATA's
+// community database at https://yata.yt/api/v1/travel/export/
 
-import { callTornApi } from './torn-api.js';
-import { supabase } from './supabase.js';
+const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
+
+// YATA uses 3-letter country codes → map to our destination names
+const COUNTRY_MAP = {
+  mex: 'Mexico',
+  cay: 'Caymans',
+  can: 'Canada',
+  haw: 'Hawaii',
+  uni: 'UK',
+  arg: 'Argentina',
+  swi: 'Switzerland',
+  jap: 'Japan',
+  chi: 'China',
+  uae: 'UAE',
+  sou: 'South Africa',
+};
 
 /**
- * Fetch abroad prices and upsert to Supabase.
- * Tries V2 foreignstock endpoint first, then V1 torn/shoplifting.
- * @param {number} playerId - Torn player ID (for server-side key decrypt)
+ * Fetch abroad prices from the YATA community API.
+ * Returns an array of items in the same shape as the abroad_prices table:
+ *   { item_id, item_name, destination, buy_price, reported_at }
+ * Returns null on failure.
  */
-export async function syncAbroadPrices(playerId) {
-  const diag = []; // diagnostic breadcrumbs
+export async function fetchAbroadPrices() {
+  try {
+    const res = await fetch(YATA_URL);
+    if (!res.ok) return null;
 
-  // ── Attempt 1: V2 foreignstock endpoint ──
-  const v2stock = await callTornApi({
-    section: 'travel',
-    selections: 'foreignstock',
-    player_id: playerId,
-    v2: true,
-  });
+    const data = await res.json();
 
-  if (v2stock) {
-    const keys = Object.keys(v2stock);
-    diag.push(`V2 foreignstock keys: [${keys.slice(0, 10).join(',')}]`);
-    const sample = JSON.stringify(v2stock).slice(0, 300);
-    diag.push(`V2 foreignstock sample: ${sample}`);
+    // YATA response: { "countryCode": { "update": timestamp, "stocks": [...] }, ... }
+    // or possibly wrapped in a "stocks" key
+    const countries = data.stocks || data;
 
-    // If it has country/item data, report it
-    if (v2stock.foreignstock || v2stock.stocks || v2stock.items) {
-      const data = v2stock.foreignstock || v2stock.stocks || v2stock.items;
-      const entries = Array.isArray(data) ? data : Object.values(data);
-      diag.push(`V2 foreignstock: ${entries.length} entries`);
-      if (entries.length > 0) {
-        diag.push(`entry sample: ${JSON.stringify(entries[0]).slice(0, 200)}`);
+    const items = [];
+    for (const [code, country] of Object.entries(countries)) {
+      const destination = COUNTRY_MAP[code];
+      if (!destination) continue;
+
+      const stocks = country.stocks || [];
+      const updateTime = country.update
+        ? new Date(country.update * 1000).toISOString()
+        : new Date().toISOString();
+
+      for (const stock of stocks) {
+        if (!stock.id || !stock.cost) continue;
+        items.push({
+          item_id: stock.id,
+          item_name: stock.name || `Item ${stock.id}`,
+          destination,
+          buy_price: stock.cost,
+          reported_at: updateTime,
+          quantity: stock.quantity ?? null,
+        });
       }
     }
-  } else {
-    diag.push('V2 foreignstock: API error');
+
+    return items;
+  } catch (err) {
+    // CORS or network error
+    return null;
   }
-
-  // ── Attempt 2: V1 torn/shoplifting ──
-  const v1shop = await callTornApi({
-    section: 'torn',
-    selections: 'shoplifting',
-    player_id: playerId,
-  });
-
-  if (v1shop) {
-    const keys = Object.keys(v1shop);
-    diag.push(`V1 shoplifting keys: [${keys.slice(0, 10).join(',')}]`);
-    const sample = JSON.stringify(v1shop).slice(0, 300);
-    diag.push(`V1 shoplifting sample: ${sample}`);
-  } else {
-    diag.push('V1 shoplifting: API error');
-  }
-
-  return diag;
 }
