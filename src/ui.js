@@ -7,15 +7,31 @@ import { calculateMargins, formatFlightTime, formatMoney, formatPct } from './ca
 // ── State ──────────────────────────────────────────────────────
 const STORAGE_SLOTS = 'valigia_slots';
 const STORAGE_AIRSTRIP = 'valigia_airstrip';
-const STORAGE_SORT = 'valigia_sort';
+const STORAGE_SORT_COL = 'valigia_sort_col';
+const STORAGE_SORT_DIR = 'valigia_sort_dir';
 
 let slotCount = parseInt(localStorage.getItem(STORAGE_SLOTS)) || 29;
 let hasAirstrip = localStorage.getItem(STORAGE_AIRSTRIP) === 'true';
-let sortBy = localStorage.getItem(STORAGE_SORT) || 'profitPerHour';
+let sortCol = localStorage.getItem(STORAGE_SORT_COL) || 'profitPerHour';
+let sortDir = localStorage.getItem(STORAGE_SORT_DIR) || 'desc';
 
 // Live data — populated as prices arrive
 const sellPrices = new Map();   // itemId → sell price
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at }
+
+// ── Column definitions for sortable headers ───────────────────
+const COLUMNS = [
+  { key: null,            label: '#',           css: 'col-rank' },
+  { key: 'name',          label: 'Item',        css: 'col-item' },
+  { key: 'destination',   label: 'Destination', css: 'col-dest' },
+  { key: 'buyPrice',      label: 'Buy Price',   css: 'col-buy' },
+  { key: 'sellPrice',     label: 'Sell Price',  css: 'col-sell' },
+  { key: 'marginPerItem', label: 'Margin $',    css: 'col-margin' },
+  { key: 'marginPct',     label: 'Margin %',    css: 'col-pct' },
+  { key: 'profitPerRun',  label: 'Profit/Run',  css: 'col-run' },
+  { key: 'profitPerHour', label: 'Profit/hr',   css: 'col-hr' },
+  { key: 'flightMins',    label: 'Flight',      css: 'col-flight' },
+];
 
 // ── Toast ──────────────────────────────────────────────────────
 let toastTimeout;
@@ -38,7 +54,11 @@ export function showToast(message, type = 'error') {
 function persistControls() {
   localStorage.setItem(STORAGE_SLOTS, String(slotCount));
   localStorage.setItem(STORAGE_AIRSTRIP, String(hasAirstrip));
-  localStorage.setItem(STORAGE_SORT, sortBy);
+}
+
+function persistSort() {
+  localStorage.setItem(STORAGE_SORT_COL, sortCol);
+  localStorage.setItem(STORAGE_SORT_DIR, sortDir);
 }
 
 export function renderControls(container, onChange) {
@@ -53,14 +73,6 @@ export function renderControls(container, onChange) {
         <input type="checkbox" id="ctl-airstrip" ${hasAirstrip ? 'checked' : ''} />
         <span class="control-label">Airstrip</span>
       </label>
-      <label class="control-group">
-        <span class="control-label">Sort</span>
-        <select id="ctl-sort" class="control-select">
-          <option value="profitPerHour" ${sortBy === 'profitPerHour' ? 'selected' : ''}>Profit/Hour</option>
-          <option value="profitPerRun" ${sortBy === 'profitPerRun' ? 'selected' : ''}>Profit/Run</option>
-          <option value="marginPct" ${sortBy === 'marginPct' ? 'selected' : ''}>Margin %</option>
-        </select>
-      </label>
     </div>
   `;
 
@@ -74,11 +86,25 @@ export function renderControls(container, onChange) {
     persistControls();
     onChange();
   });
-  container.querySelector('#ctl-sort').addEventListener('change', (e) => {
-    sortBy = e.target.value;
-    persistControls();
-    onChange();
-  });
+}
+
+/**
+ * Update slots and airstrip from auto-detected values.
+ * Also updates the DOM controls if they exist.
+ */
+export function setPlayerTravel(slots, airstrip) {
+  if (slots != null) {
+    slotCount = slots;
+    const el = document.getElementById('ctl-slots');
+    if (el) el.value = slotCount;
+  }
+  if (airstrip != null) {
+    hasAirstrip = airstrip;
+    const el = document.getElementById('ctl-airstrip');
+    if (el) el.checked = hasAirstrip;
+  }
+  persistControls();
+  renderTable();
 }
 
 // ── Data ───────────────────────────────────────────────────────
@@ -148,6 +174,57 @@ function getBuyPriceInfo(row) {
   return { price: row.buy_price, freshness: 'stale', reportedAgo: formatDaysAgo(ageMs) };
 }
 
+// ── Sorting ───────────────────────────────────────────────────
+
+function getSortValue(row, col) {
+  switch (col) {
+    case 'name':          return row.name || '';
+    case 'destination':   return row.destination || '';
+    case 'buyPrice':      return row.buyPrice || 0;
+    case 'sellPrice':     return row.sellPrice || 0;
+    case 'marginPerItem': return row.metrics?.marginPerItem || 0;
+    case 'marginPct':     return row.metrics?.marginPct || 0;
+    case 'profitPerRun':  return row.metrics?.profitPerRun || 0;
+    case 'profitPerHour': return row.metrics?.profitPerHour || 0;
+    case 'flightMins':    return row.flightMins || 0;
+    default:              return 0;
+  }
+}
+
+function updateHeaderSort() {
+  const thead = document.querySelector('.arb-table thead');
+  if (!thead) return;
+
+  thead.querySelectorAll('[data-sort]').forEach(th => {
+    const key = th.dataset.sort;
+    const col = COLUMNS.find(c => c.key === key);
+    const isActive = sortCol === key;
+    const arrow = isActive ? (sortDir === 'desc' ? ' \u25BE' : ' \u25B4') : '';
+    th.textContent = col.label + arrow;
+    th.classList.toggle('th--sorted', isActive);
+  });
+}
+
+function attachSortHandlers() {
+  const thead = document.querySelector('.arb-table thead');
+  if (!thead) return;
+
+  thead.querySelectorAll('[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      if (sortCol === key) {
+        sortDir = sortDir === 'desc' ? 'asc' : 'desc';
+      } else {
+        sortCol = key;
+        sortDir = 'desc';
+      }
+      persistSort();
+      updateHeaderSort();
+      renderTable();
+    });
+  });
+}
+
 /**
  * Build sorted row data from Supabase items + live sell prices.
  */
@@ -187,7 +264,7 @@ function buildRows() {
     });
   }
 
-  // Sort: negative margins to bottom, then by selected column descending
+  // Sort: negative margins to bottom, then by selected column
   rows.sort((a, b) => {
     const aNeg = a.metrics && a.metrics.marginPerItem <= 0;
     const bNeg = b.metrics && b.metrics.marginPerItem <= 0;
@@ -197,9 +274,15 @@ function buildRows() {
     if (!a.hasSellPrice && b.hasSellPrice) return 1;
     if (a.hasSellPrice && !b.hasSellPrice) return -1;
 
-    if (!a.metrics || !b.metrics) return 0;
+    const aVal = getSortValue(a, sortCol);
+    const bVal = getSortValue(b, sortCol);
 
-    return (b.metrics[sortBy] || 0) - (a.metrics[sortBy] || 0);
+    if (typeof aVal === 'string') {
+      const cmp = aVal.localeCompare(bVal);
+      return sortDir === 'asc' ? cmp : -cmp;
+    }
+
+    return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
   });
 
   return rows;
@@ -211,6 +294,8 @@ function buildRows() {
 export function renderTable() {
   const tbody = document.getElementById('arb-tbody');
   if (!tbody) return;
+
+  updateHeaderSort();
 
   const rows = buildRows();
 
@@ -272,23 +357,24 @@ export function renderTable() {
 }
 
 /**
- * Render the table shell with shimmer rows.
+ * Render the table shell with sortable headers and shimmer rows.
  */
 export function renderShimmerTable(container) {
+  const headerCells = COLUMNS.map(col => {
+    if (!col.key) {
+      return `<th class="${col.css}">${col.label}</th>`;
+    }
+    const isActive = sortCol === col.key;
+    const arrow = isActive ? (sortDir === 'desc' ? ' \u25BE' : ' \u25B4') : '';
+    const activeClass = isActive ? ' th--sorted' : '';
+    return `<th class="${col.css} th--sortable${activeClass}" data-sort="${col.key}">${col.label}${arrow}</th>`;
+  }).join('\n          ');
+
   container.innerHTML = `
     <table class="arb-table">
       <thead>
         <tr>
-          <th class="col-rank">#</th>
-          <th class="col-item">Item</th>
-          <th class="col-dest">Destination</th>
-          <th class="col-buy">Buy Price</th>
-          <th class="col-sell">Sell Price</th>
-          <th class="col-margin">Margin $</th>
-          <th class="col-pct">Margin %</th>
-          <th class="col-run">Profit/Run</th>
-          <th class="col-hr">Profit/hr</th>
-          <th class="col-flight">Flight</th>
+          ${headerCells}
         </tr>
       </thead>
       <tbody id="arb-tbody">
@@ -301,4 +387,6 @@ export function renderShimmerTable(container) {
       </tbody>
     </table>
   `;
+
+  attachSortHandlers();
 }

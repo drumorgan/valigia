@@ -1,13 +1,14 @@
 // Valigia — entry point & orchestrator
 
 import { supabase } from './supabase.js';
+import { callTornApi } from './torn-api.js';
 import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
 import { syncAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
-  setKnownItems, getItemIdsForPriceFetch, onSellPrice
+  setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel
 } from './ui.js';
 
 const screenContainer = document.getElementById('screen-container');
@@ -36,6 +37,42 @@ function showLoginScreen() {
   });
 }
 
+// ── Perks Detection ───────────────────────────────────────────
+/**
+ * Fetch user perks and auto-detect travel slots and airstrip.
+ * Gracefully no-ops if the key lacks perks permission.
+ */
+async function detectPlayerTravel(playerId) {
+  const data = await callTornApi({
+    section: 'user',
+    selections: 'perks',
+    player_id: playerId,
+  });
+
+  if (!data) return; // key may lack perks permission — silent fallback
+
+  // Flatten all perk arrays into one list of strings
+  const allPerks = [];
+  for (const key of Object.keys(data)) {
+    if (Array.isArray(data[key])) {
+      allPerks.push(...data[key]);
+    }
+  }
+
+  // Detect airstrip: look for "Airstrip" in any perk string
+  const airstrip = allPerks.some(p => /airstrip/i.test(p));
+
+  // Detect travel capacity: base 5, plus any "traveling capacity" bonuses
+  let slots = 5;
+  const capacityRegex = /(?:increases?\s+)?(?:maximum\s+)?travel(?:ing|l)?\s+(?:item\s+)?capacity\s+by\s+(\d+)/i;
+  for (const p of allPerks) {
+    const match = p.match(capacityRegex);
+    if (match) slots += parseInt(match[1], 10);
+  }
+
+  setPlayerTravel(slots, airstrip);
+}
+
 // ── Dashboard ──────────────────────────────────────────────────
 async function startDashboard(playerId) {
   screenContainer.innerHTML = `
@@ -53,12 +90,14 @@ async function startDashboard(playerId) {
   // Resolve item IDs (one-time Torn API call, cached in localStorage)
   await resolveItemIds(playerId);
 
-  // Sync this player's purchase logs (silent, auto-discovers items)
-  // and load existing prices from Supabase — in parallel
+  // Sync logs, load prices, and detect travel perks — all in parallel
   const [buyResult] = await Promise.all([
     supabase.from('abroad_prices').select('*'),
     syncAbroadPrices(playerId).catch((err) =>
       console.warn('log-sync error:', err.message)
+    ),
+    detectPlayerTravel(playerId).catch((err) =>
+      console.warn('perks detection error:', err.message)
     ),
   ]);
 

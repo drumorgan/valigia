@@ -353,6 +353,20 @@ body {
   border-bottom: 1px solid var(--border);
   text-align: right;
   white-space: nowrap;
+  user-select: none;
+}
+
+.th--sortable {
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.th--sortable:hover {
+  color: var(--text);
+}
+
+.th--sorted {
+  color: var(--accent);
 }
 
 .arb-table th.col-rank,
