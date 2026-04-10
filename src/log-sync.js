@@ -52,27 +52,30 @@ async function fetchAllLogs(playerId, diag) {
     from,
   });
 
-  if (v2data) {
-    diag.push(`v2 top keys: ${Object.keys(v2data).join(',')}`);
-  }
   if (v2data && v2data.log) {
     const v2entries = Array.isArray(v2data.log) ? v2data.log : Object.values(v2data.log);
+    // V2 fields: details.id (type), details.title, details.category, data.*
     const v2purchases = v2entries.filter(e =>
-      /bought/i.test(e.title) || e.log === 6501
+      /bought/i.test(e.details?.title) || e.details?.id === 6501
     );
-    diag.push(`V2 travel: ${v2entries.length} entries, ${v2purchases.length} purchases`);
-    if (v2entries.length > 0) {
-      const sample = v2entries[0];
-      diag.push(`v2 keys: ${Object.keys(sample).join(',')}`);
-      diag.push(`v2 raw: ${JSON.stringify(sample).slice(0, 200)}`);
-    }
+    // Show unique categories found
+    const cats = [...new Set(v2entries.map(e => e.details?.category))];
+    diag.push(`V2: ${v2entries.length} entries, cats=[${cats.join(',')}], ${v2purchases.length} purchases`);
     if (v2purchases.length > 0) {
+      const sample = v2purchases[0];
+      diag.push(`purchase sample: type=${sample.details?.id} "${sample.details?.title?.slice(0, 60)}"`);
       allEntries.push(...v2purchases);
       diag.push(`total: ${allEntries.length} log entries (from V2)`);
       return allEntries;
     }
+    // Show a travel-category entry if any
+    const travelEntries = v2entries.filter(e => /travel/i.test(e.details?.category));
+    if (travelEntries.length > 0) {
+      const ts = travelEntries[0];
+      diag.push(`travel sample: type=${ts.details?.id} "${ts.details?.title?.slice(0, 60)}" data=${JSON.stringify(ts.data).slice(0, 100)}`);
+    }
   } else {
-    diag.push(`V2 travel: ${v2data === null ? 'API error' : JSON.stringify(v2data).slice(0, 100)}`);
+    diag.push(`V2: ${v2data === null ? 'API error' : JSON.stringify(v2data).slice(0, 100)}`);
   }
 
   // Fallback: V1 paginated fetch
