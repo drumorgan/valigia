@@ -72,3 +72,46 @@ body {
   color: var(--accent);
   padding-top: 3rem;
 }
+
+/* === Cross-link box — shared pattern across Giro's Torn tools === */
+.crosslink-box {
+  margin-top: 3rem;
+  padding: 1.5rem 1.5rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.crosslink-label {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+  margin-bottom: 0.85rem;
+}
+
+.crosslink-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.crosslink-link {
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.crosslink-link:hover {
+  text-decoration: underline;
+}
+
+/* Target-app colors — each Giro tool has its own distinct accent */
+.crosslink-valigia   { color: #e8c84a; }  /* Valigia gold */
+.crosslink-happyjump { color: #e94560; }  /* HappyJump coral */
+.crosslink-tornder   { color: #3de8c8; }  /* Tornder teal */
+.crosslink-yoink     { color: #c0c4cc; }  /* Yoink neutral */
