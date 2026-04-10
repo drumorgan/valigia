@@ -153,7 +153,7 @@ export function renderLoginScreen(container, onSuccess) {
         <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener" class="giro-link">
           Torn &rarr; Settings &rarr; API Keys
         </a>
-        with <strong>Public Only</strong> access.
+        with <strong>User: basic, log</strong> enabled (or use a Limited key).
       </p>
       <details class="login-tos">
         <summary>How your key is handled</summary>
