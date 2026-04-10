@@ -91,11 +91,12 @@ async function startDashboard(playerId) {
   await resolveItemIds(playerId);
 
   // Sync logs, load prices, and detect travel perks — all in parallel
+  let syncDiag = null;
   const [buyResult] = await Promise.all([
     supabase.from('abroad_prices').select('*'),
-    syncAbroadPrices(playerId).catch((err) =>
-      showToast(`Log sync: ${err.message}`)
-    ),
+    syncAbroadPrices(playerId)
+      .then(d => { syncDiag = d; })
+      .catch((err) => { syncDiag = [`error: ${err.message}`]; }),
     detectPlayerTravel(playerId).catch((err) =>
       console.warn('perks detection error:', err.message)
     ),
@@ -106,7 +107,15 @@ async function startDashboard(playerId) {
   const items = freshResult.data || buyResult.data || [];
 
   if (items.length === 0) {
-    showToast('No price data yet. Buy items abroad and check back!', 'success');
+    // Show diagnostic info persistently in the table area
+    const diagText = syncDiag ? syncDiag.join(' → ') : 'sync returned nothing';
+    tableContainer.innerHTML = `
+      <p class="empty-msg">No abroad price data yet.</p>
+      <details open style="margin:1rem;font-family:'Syne Mono',monospace;font-size:0.75rem;color:var(--muted);">
+        <summary style="color:var(--accent);cursor:pointer;">Log sync diagnostic</summary>
+        <pre style="margin-top:0.5rem;white-space:pre-wrap;">${diagText}</pre>
+      </details>
+    `;
   }
 
   // Set items and render table with buy prices

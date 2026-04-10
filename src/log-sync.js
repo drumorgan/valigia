@@ -77,27 +77,32 @@ async function fetchAllLogs(playerId) {
  * @param {number} playerId - Torn player ID (for server-side key decrypt)
  */
 export async function syncAbroadPrices(playerId) {
+  const diag = []; // diagnostic breadcrumbs
+
   const entries = await fetchAllLogs(playerId);
-  showToast(`Log sync: ${entries.length} log entries found`, 'success');
-  if (entries.length === 0) return;
+  diag.push(`${entries.length} log entries from API`);
+  if (entries.length === 0) return diag;
 
   // Parse log entries into upsert candidates
   const candidates = [];
+  let skippedNoData = 0;
+  let skippedNoCountry = 0;
+  let skippedNoItemId = 0;
 
   for (const entry of entries) {
     if (entry.log !== 6501) continue;
 
     const { item: itemName, cost: unitPrice } = entry.data || {};
-    if (!itemName || !unitPrice) continue;
+    if (!itemName || !unitPrice) { skippedNoData++; continue; }
 
     // Extract country from title
     const countryMatch = entry.title?.match(COUNTRY_REGEX);
-    if (!countryMatch) continue;
+    if (!countryMatch) { skippedNoCountry++; continue; }
     const destination = countryMatch[1];
 
     // Look up item ID from cached Torn catalog
     const itemId = lookupItemId(itemName);
-    if (!itemId) continue;
+    if (!itemId) { skippedNoItemId++; continue; }
 
     candidates.push({
       item_name: itemName,
@@ -109,11 +114,9 @@ export async function syncAbroadPrices(playerId) {
     });
   }
 
-  if (candidates.length === 0) {
-    showToast(`Log sync: 0 candidates (entries found but no item IDs matched)`);
-    return;
-  }
-  showToast(`Log sync: ${candidates.length} candidates, upserting…`, 'success');
+  diag.push(`${candidates.length} candidates (skip: ${skippedNoData} no-data, ${skippedNoCountry} no-country, ${skippedNoItemId} no-item-id)`);
+
+  if (candidates.length === 0) return diag;
 
   // Deduplicate within this batch: keep only the most recent entry
   // per (item_id, destination) so we send the freshest data we have.
@@ -159,8 +162,10 @@ export async function syncAbroadPrices(playerId) {
     .upsert(filtered, { onConflict: 'item_id,destination' });
 
   if (error) {
-    showToast(`Log sync upsert error: ${error.message}`);
+    diag.push(`upsert error: ${error.message}`);
   } else {
-    showToast(`Log sync: ${filtered.length} prices upserted!`, 'success');
+    diag.push(`${filtered.length} prices upserted`);
   }
+
+  return diag;
 }
