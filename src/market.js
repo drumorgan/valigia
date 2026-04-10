@@ -28,10 +28,12 @@ export async function fetchAllSellPrices(playerId, onPrice) {
       id: itemId,
       selections: 'itemmarket',
       player_id: playerId,
+      v2: true,
     });
 
     let lowestPrice = null;
 
+    // V2 response: { itemmarket: [ { cost, quantity, ... }, ... ] }
     if (data?.itemmarket && data.itemmarket.length > 0) {
       lowestPrice = data.itemmarket[0].cost;
     }

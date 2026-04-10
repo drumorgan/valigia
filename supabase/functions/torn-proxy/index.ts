@@ -33,7 +33,7 @@ serve(async (req) => {
   }
 
   try {
-    const { section, id, selections, key, player_id, log, from } =
+    const { section, id, selections, key, player_id, log, from, v2 } =
       await req.json();
 
     if (!section || !selections) {
@@ -92,10 +92,18 @@ serve(async (req) => {
     }
 
     // Build Torn API URL
-    const idSegment = id ? `/${id}` : '';
-    let url = `https://api.torn.com/${section}${idSegment}?selections=${selections}&key=${apiKey}`;
-    if (log) url += `&log=${log}`;
-    if (from) url += `&from=${from}`;
+    let url;
+    if (v2) {
+      // V2: https://api.torn.com/v2/{section}/{id}/{selections}?key=
+      const idSegment = id ? `/${id}` : '';
+      url = `https://api.torn.com/v2/${section}${idSegment}/${selections}?key=${apiKey}`;
+    } else {
+      // V1: https://api.torn.com/{section}/{id}?selections={selections}&key=
+      const idSegment = id ? `/${id}` : '';
+      url = `https://api.torn.com/${section}${idSegment}?selections=${selections}&key=${apiKey}`;
+      if (log) url += `&log=${log}`;
+      if (from) url += `&from=${from}`;
+    }
 
     const tornRes = await fetch(url);
     const data = await tornRes.json();
