@@ -137,6 +137,11 @@ export function renderLoginScreen(container, onSuccess) {
         Your key is validated, then <strong>encrypted with AES-256</strong> and
         stored server-side. It is never saved in your browser.
       </p>
+      <a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&user=basic,log&torn=items&title=Valigia"
+         target="_blank" rel="noopener" class="create-key-btn">Create a Custom Key on Torn</a>
+      <p class="login-hint login-hint--sub">
+        Only shares your name, level, and travel purchase log. Nothing else.
+      </p>
       <div class="login-input-row">
         <input
           type="password"
@@ -148,13 +153,6 @@ export function renderLoginScreen(container, onSuccess) {
         />
         <button id="login-btn" class="login-btn">Connect</button>
       </div>
-      <p class="login-hint">
-        Create a <strong>Custom</strong> key at
-        <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener" class="giro-link">
-          Torn &rarr; Settings &rarr; API Keys
-        </a>
-        with <strong>User: basic, log</strong> enabled (or use a Limited key).
-      </p>
       <details class="login-tos">
         <summary>How your key is handled</summary>
         <ul>
