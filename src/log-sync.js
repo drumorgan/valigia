@@ -40,6 +40,29 @@ async function fetchAllLogs(playerId, diag) {
   const allEntries = [];
   let from = Math.floor((Date.now() - SEVEN_DAYS_MS) / 1000);
 
+  // DIAGNOSTIC: first fetch ALL logs (no type filter) to see what exists
+  const allLogsData = await callTornApi({
+    section: 'user',
+    selections: 'log',
+    player_id: playerId,
+    from,
+  });
+  if (allLogsData?.log) {
+    const allLogs = Object.values(allLogsData.log);
+    const typeCounts = {};
+    for (const e of allLogs) {
+      typeCounts[e.log] = (typeCounts[e.log] || 0) + 1;
+    }
+    diag.push(`ALL logs (no filter): ${allLogs.length} entries`);
+    diag.push(`types: ${JSON.stringify(typeCounts)}`);
+    if (allLogs.length > 0) {
+      const sample = allLogs[0];
+      diag.push(`sample: log=${sample.log} title="${sample.title?.slice(0, 60)}"`);
+    }
+  } else {
+    diag.push(`ALL logs: ${allLogsData === null ? 'API error' : 'no log key'}`);
+  }
+
   for (let page = 0; page < MAX_PAGES; page++) {
     const data = await callTornApi({
       section: 'user',
@@ -49,21 +72,18 @@ async function fetchAllLogs(playerId, diag) {
       from,
     });
 
-    // Diagnostic: show what the API actually returned
     if (data === null) {
-      diag.push(`page ${page}: callTornApi returned null (API error)`);
+      diag.push(`6501 page ${page}: API error`);
       break;
     }
-    const topKeys = Object.keys(data).join(', ');
-    diag.push(`page ${page}: keys=[${topKeys}]`);
 
     if (!data.log) {
-      diag.push(`page ${page}: no "log" key in response`);
+      diag.push(`6501 page ${page}: no "log" key`);
       break;
     }
 
     const entries = Object.values(data.log);
-    diag.push(`page ${page}: ${entries.length} entries (from=${from})`);
+    diag.push(`6501 page ${page}: ${entries.length} entries`);
     if (entries.length === 0) break;
 
     allEntries.push(...entries);
