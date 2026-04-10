@@ -39,7 +39,7 @@ jobs:
       # with identical bytes.
       - name: Ensure .htaccess is uploaded (dotfile workaround)
         run: |
-          curl --silent --show-error --fail --ssl-reqd \
+          curl --silent --show-error --fail --ssl --insecure \
             --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" \
             --upload-file dist/.htaccess \
             "ftp://${{ secrets.FTP_SERVER }}/.htaccess"
