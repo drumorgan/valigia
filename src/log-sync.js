@@ -36,7 +36,7 @@ function lookupItemId(itemName) {
  * Fetch all abroad purchase logs from the last 7 days, paginating
  * forward through results if the API returns a full page.
  */
-async function fetchAllLogs(playerId) {
+async function fetchAllLogs(playerId, diag) {
   const allEntries = [];
   let from = Math.floor((Date.now() - SEVEN_DAYS_MS) / 1000);
 
@@ -49,20 +49,29 @@ async function fetchAllLogs(playerId) {
       from,
     });
 
-    if (!data?.log) break;
+    // Diagnostic: show what the API actually returned
+    if (data === null) {
+      diag.push(`page ${page}: callTornApi returned null (API error)`);
+      break;
+    }
+    const topKeys = Object.keys(data).join(', ');
+    diag.push(`page ${page}: keys=[${topKeys}]`);
+
+    if (!data.log) {
+      diag.push(`page ${page}: no "log" key in response`);
+      break;
+    }
 
     const entries = Object.values(data.log);
+    diag.push(`page ${page}: ${entries.length} entries (from=${from})`);
     if (entries.length === 0) break;
 
     allEntries.push(...entries);
 
-    // Torn API returns up to 100 entries per call.
-    // If we got fewer, we've reached the end of the range.
     if (entries.length < 100) break;
 
-    // Paginate forward: move past the newest entry in this batch
     const newestTs = Math.max(...entries.map(e => e.timestamp || 0));
-    if (newestTs <= from) break; // no progress — stop
+    if (newestTs <= from) break;
     from = newestTs + 1;
   }
 
@@ -79,8 +88,8 @@ async function fetchAllLogs(playerId) {
 export async function syncAbroadPrices(playerId) {
   const diag = []; // diagnostic breadcrumbs
 
-  const entries = await fetchAllLogs(playerId);
-  diag.push(`${entries.length} log entries from API`);
+  const entries = await fetchAllLogs(playerId, diag);
+  diag.push(`total: ${entries.length} log entries`);
   if (entries.length === 0) return diag;
 
   // Parse log entries into upsert candidates
