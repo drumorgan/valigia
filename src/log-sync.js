@@ -36,18 +36,23 @@ function lookupItemId(itemName) {
  * Fetch all abroad purchase logs from the last 7 days.
  * The Torn API's server-side log=6501 filter is unreliable,
  * so we fetch ALL logs with pagination and filter client-side.
+ * Paginates backwards (newest → oldest) using `to` parameter.
  */
 async function fetchAllLogs(playerId, diag) {
   const allEntries = [];
-  let from = Math.floor((Date.now() - SEVEN_DAYS_MS) / 1000);
+  const from = Math.floor((Date.now() - SEVEN_DAYS_MS) / 1000);
+  let to = undefined; // first page: no upper bound (gets most recent)
 
   for (let page = 0; page < MAX_PAGES; page++) {
-    const data = await callTornApi({
+    const params = {
       section: 'user',
       selections: 'log',
       player_id: playerId,
       from,
-    });
+    };
+    if (to !== undefined) params.to = to;
+
+    const data = await callTornApi(params);
 
     if (data === null) {
       diag.push(`page ${page}: API error`);
@@ -64,13 +69,13 @@ async function fetchAllLogs(playerId, diag) {
     allEntries.push(...matched);
     diag.push(`page ${page}: ${entries.length} logs, ${matched.length} purchases`);
 
-    // Less than 100 means we've reached the end
+    // Less than 100 means we've fetched everything
     if (entries.length < 100) break;
 
-    // Advance past the newest timestamp in this page
-    const newestTs = Math.max(...entries.map(e => e.timestamp || 0));
-    if (newestTs <= from) break;
-    from = newestTs + 1;
+    // Move backwards: set `to` just before the oldest entry in this page
+    const oldestTs = Math.min(...entries.map(e => e.timestamp || Infinity));
+    if (oldestTs <= from) break; // reached the 7-day boundary
+    to = oldestTs - 1;
   }
 
   return allEntries;

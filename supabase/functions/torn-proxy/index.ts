@@ -33,7 +33,7 @@ serve(async (req) => {
   }
 
   try {
-    const { section, id, selections, key, player_id, log, from, v2 } =
+    const { section, id, selections, key, player_id, log, from, to, v2 } =
       await req.json();
 
     if (!section || !selections) {
@@ -103,6 +103,7 @@ serve(async (req) => {
       url = `https://api.torn.com/${section}${idSegment}?selections=${selections}&key=${apiKey}`;
       if (log) url += `&log=${log}`;
       if (from) url += `&from=${from}`;
+      if (to) url += `&to=${to}`;
     }
 
     const tornRes = await fetch(url);
