@@ -12,33 +12,40 @@ import { callTornApi } from './torn-api.js';
  * @param {function} onPrice - Called as each price resolves: (itemId, sellPrice|null)
  * @returns {Map} itemId → lowestPrice (or null if no listings)
  */
+const BATCH_SIZE = 8;
+const BATCH_DELAY_MS = 1500;
+
 export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   const priceMap = new Map();
 
-  const promises = itemIds.map(async (itemId) => {
-    const data = await callTornApi({
-      section: 'market',
-      id: itemId,
-      selections: 'itemmarket',
-      player_id: playerId,
-      v2: true,
+  for (let i = 0; i < itemIds.length; i += BATCH_SIZE) {
+    const batch = itemIds.slice(i, i + BATCH_SIZE);
+
+    const promises = batch.map(async (itemId) => {
+      const data = await callTornApi({
+        section: 'market',
+        id: itemId,
+        selections: 'itemmarket',
+        player_id: playerId,
+        v2: true,
+      });
+
+      let lowestPrice = null;
+      if (data?.itemmarket?.listings && data.itemmarket.listings.length > 0) {
+        lowestPrice = data.itemmarket.listings[0].price;
+      }
+
+      priceMap.set(itemId, lowestPrice);
+      if (onPrice) onPrice(itemId, lowestPrice);
     });
 
-    let lowestPrice = null;
+    await Promise.allSettled(promises);
 
-    // V2 response: { itemmarket: { item: {...}, listings: [{ price, amount }, ...] } }
-    if (data?.itemmarket?.listings && data.itemmarket.listings.length > 0) {
-      lowestPrice = data.itemmarket.listings[0].price;
+    // Pause between batches to stay under 100 req/min rate limit
+    if (i + BATCH_SIZE < itemIds.length) {
+      await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
     }
-
-    priceMap.set(itemId, lowestPrice);
-
-    if (onPrice) onPrice(itemId, lowestPrice);
-
-    return { itemId, lowestPrice };
-  });
-
-  await Promise.allSettled(promises);
+  }
 
   return priceMap;
 }
