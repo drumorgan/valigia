@@ -6,6 +6,7 @@
 
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
+import { showToast } from './ui.js';
 
 // Regex to extract country from log title: "Bought a Xanax from South Africa"
 const COUNTRY_REGEX = /from (.+)$/i;
@@ -77,6 +78,7 @@ async function fetchAllLogs(playerId) {
  */
 export async function syncAbroadPrices(playerId) {
   const entries = await fetchAllLogs(playerId);
+  showToast(`Log sync: ${entries.length} log entries found`, 'success');
   if (entries.length === 0) return;
 
   // Parse log entries into upsert candidates
@@ -107,7 +109,11 @@ export async function syncAbroadPrices(playerId) {
     });
   }
 
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) {
+    showToast(`Log sync: 0 candidates (entries found but no item IDs matched)`);
+    return;
+  }
+  showToast(`Log sync: ${candidates.length} candidates, upserting…`, 'success');
 
   // Deduplicate within this batch: keep only the most recent entry
   // per (item_id, destination) so we send the freshest data we have.
@@ -153,6 +159,8 @@ export async function syncAbroadPrices(playerId) {
     .upsert(filtered, { onConflict: 'item_id,destination' });
 
   if (error) {
-    console.warn('abroad_prices upsert error:', error.message);
+    showToast(`Log sync upsert error: ${error.message}`);
+  } else {
+    showToast(`Log sync: ${filtered.length} prices upserted!`, 'success');
   }
 }

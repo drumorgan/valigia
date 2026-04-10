@@ -94,7 +94,7 @@ async function startDashboard(playerId) {
   const [buyResult] = await Promise.all([
     supabase.from('abroad_prices').select('*'),
     syncAbroadPrices(playerId).catch((err) =>
-      console.warn('log-sync error:', err.message)
+      showToast(`Log sync: ${err.message}`)
     ),
     detectPlayerTravel(playerId).catch((err) =>
       console.warn('perks detection error:', err.message)
