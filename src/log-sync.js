@@ -67,7 +67,24 @@ async function fetchAllLogs(playerId, diag) {
     const entries = Object.values(data.log);
     const matched = entries.filter(e => e.log === 6501);
     allEntries.push(...matched);
-    diag.push(`page ${page}: ${entries.length} logs, ${matched.length} purchases`);
+
+    // Diagnostic: time range + type breakdown + any "bought" entries
+    const timestamps = entries.map(e => e.timestamp || 0);
+    const oldest = new Date(Math.min(...timestamps) * 1000).toISOString().slice(5, 16);
+    const newest = new Date(Math.max(...timestamps) * 1000).toISOString().slice(5, 16);
+    const typeCounts = {};
+    const boughtEntries = [];
+    for (const e of entries) {
+      typeCounts[e.log] = (typeCounts[e.log] || 0) + 1;
+      if (/bought/i.test(e.title)) {
+        boughtEntries.push(`type=${e.log} "${e.title?.slice(0, 50)}"`);
+      }
+    }
+    diag.push(`p${page}: ${entries.length} logs [${oldest}→${newest}] ${matched.length} type-6501`);
+    diag.push(`types: ${JSON.stringify(typeCounts)}`);
+    if (boughtEntries.length > 0) {
+      diag.push(`BOUGHT: ${boughtEntries.slice(0, 3).join(' | ')}`);
+    }
 
     // Less than 100 means we've fetched everything
     if (entries.length < 100) break;
