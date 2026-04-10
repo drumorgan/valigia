@@ -411,23 +411,31 @@ tr.row--negative td {
   opacity: 0.5;
 }
 
-/* ── Badges ──────────────────────────────────────────────────── */
+/* ── Freshness Indicators ────────────────────────────────────── */
 
-.badge-stale {
-  display: inline-block;
-  font-size: 0.65rem;
-  color: var(--warning);
-  cursor: help;
-  vertical-align: middle;
-  margin-left: 0.25rem;
-}
-
-.badge-fresh {
+.freshness {
   display: inline-block;
   font-size: 0.6rem;
-  color: var(--muted);
   vertical-align: middle;
   margin-left: 0.25rem;
+  cursor: help;
+}
+
+.freshness--fresh {
+  color: var(--positive);
+}
+
+.freshness--medium {
+  color: var(--accent);
+}
+
+.freshness--stale {
+  color: var(--negative);
+}
+
+.freshness--empty {
+  color: var(--muted);
+  font-style: italic;
 }
 
 /* ── Shimmer ─────────────────────────────────────────────────── */
