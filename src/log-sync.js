@@ -1,16 +1,34 @@
 // Silent background sync — fetches abroad purchase logs (type 6501)
 // and upserts crowd-sourced buy prices into Supabase.
+// Auto-discovers ANY item from purchase logs — not limited to the static list.
 
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
-import { ABROAD_ITEMS, ABROAD_ITEM_BY_NAME } from './data/abroad-items.js';
 
 // Regex to extract country from log title: "Bought a Xanax from South Africa"
 const COUNTRY_REGEX = /from (.+)$/i;
 
+// Item ID cache key (shared with item-resolver.js)
+const CACHE_KEY = 'valigia_item_id_map';
+
+/**
+ * Look up item ID from the cached Torn item catalog.
+ * Returns the numeric ID or null if not found.
+ */
+function lookupItemId(itemName) {
+  const cached = localStorage.getItem(CACHE_KEY);
+  if (!cached) return null;
+  try {
+    const nameToId = JSON.parse(cached);
+    return nameToId[itemName.toLowerCase()] || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fetch recent abroad purchase logs and upsert prices to Supabase.
- * Runs silently — no UI feedback unless there's an error worth surfacing.
+ * Captures ANY abroad purchase — auto-discovers new items and destinations.
  * @param {number} playerId - Torn player ID (for server-side key decrypt)
  */
 export async function syncAbroadPrices(playerId) {
@@ -40,24 +58,16 @@ export async function syncAbroadPrices(playerId) {
     // Extract country from title
     const countryMatch = entry.title?.match(COUNTRY_REGEX);
     if (!countryMatch) continue;
-    const country = countryMatch[1];
+    const destination = countryMatch[1];
 
-    // Look up item in static data by name
-    const itemDef = ABROAD_ITEM_BY_NAME[itemName.toLowerCase()];
-    if (!itemDef || !itemDef.itemId) continue;
-
-    // Find the specific item+destination combo (e.g. Xanax in Japan vs South Africa)
-    const matchedItem = ABROAD_ITEMS.find(
-      (i) =>
-        i.name.toLowerCase() === itemName.toLowerCase() &&
-        i.destination.toLowerCase() === country.toLowerCase()
-    );
-    if (!matchedItem || !matchedItem.itemId) continue;
+    // Look up item ID from cached Torn catalog
+    const itemId = lookupItemId(itemName);
+    if (!itemId) continue; // Can't upsert without an ID
 
     upserts.push({
-      item_name: matchedItem.name,
-      item_id: matchedItem.itemId,
-      destination: matchedItem.destination,
+      item_name: itemName,
+      item_id: itemId,
+      destination,
       buy_price: unitPrice,
       reported_at: new Date(entry.timestamp * 1000).toISOString(),
       torn_id: playerId,

@@ -1,6 +1,7 @@
 // UI module — table rendering, controls, shimmer loading, toast notifications.
+// Data-driven from Supabase abroad_prices — not limited to a static item list.
 
-import { ABROAD_ITEMS } from './data/abroad-items.js';
+import { getFlightMins } from './data/destinations.js';
 import { calculateMargins, formatFlightTime, formatMoney, formatPct } from './calculator.js';
 
 // ── State ──────────────────────────────────────────────────────
@@ -12,9 +13,9 @@ let slotCount = parseInt(localStorage.getItem(STORAGE_SLOTS)) || 29;
 let hasAirstrip = localStorage.getItem(STORAGE_AIRSTRIP) === 'true';
 let sortBy = localStorage.getItem(STORAGE_SORT) || 'profitPerHour';
 
-// Live data maps — populated as prices arrive
+// Live data — populated as prices arrive
 const sellPrices = new Map();   // itemId → sell price
-const buyPrices = new Map();    // "itemId-destination" → { price, reportedAt }
+let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at }
 
 // ── Toast ──────────────────────────────────────────────────────
 let toastTimeout;
@@ -40,9 +41,6 @@ function persistControls() {
   localStorage.setItem(STORAGE_SORT, sortBy);
 }
 
-/**
- * Render controls bar into container. Calls onChange when any value changes.
- */
 export function renderControls(container, onChange) {
   container.innerHTML = `
     <div class="controls">
@@ -83,17 +81,25 @@ export function renderControls(container, onChange) {
   });
 }
 
-// ── Table ──────────────────────────────────────────────────────
+// ── Data ───────────────────────────────────────────────────────
 
 /**
- * Set crowd-sourced buy prices from Supabase data.
- * @param {Array} rows - rows from abroad_prices table
+ * Set the known items from Supabase abroad_prices rows.
+ * This is the primary data source — every item any player ever bought abroad.
  */
-export function setBuyPrices(rows) {
-  for (const row of rows) {
-    const key = `${row.item_id}-${row.destination}`;
-    buyPrices.set(key, { price: row.buy_price, reportedAt: new Date(row.reported_at) });
+export function setKnownItems(rows) {
+  knownItems = rows;
+}
+
+/**
+ * Get all unique item IDs that need sell price lookups.
+ */
+export function getItemIdsForPriceFetch() {
+  const ids = new Set();
+  for (const row of knownItems) {
+    if (row.item_id) ids.add(row.item_id);
   }
+  return [...ids];
 }
 
 /**
@@ -104,32 +110,7 @@ export function onSellPrice(itemId, price) {
   renderTable();
 }
 
-/**
- * Get the effective buy price for an item, respecting staleness windows.
- * Returns { price, isStale, reportedAgo }
- */
-function getEffectiveBuyPrice(item) {
-  const key = `${item.itemId}-${item.destination}`;
-  const stored = buyPrices.get(key);
-
-  if (!stored) {
-    return { price: item.buyPriceFallback, isStale: true, reportedAgo: null };
-  }
-
-  const ageMs = Date.now() - stored.reportedAt.getTime();
-  const ageHours = ageMs / (1000 * 60 * 60);
-
-  // Drugs/contraband: 2h window; plushies/flowers: 4h window
-  const isDrugOrTemp = item.type === 'drug' || item.type === 'temp';
-  const maxAge = isDrugOrTemp ? 2 : 4;
-
-  if (ageHours > maxAge) {
-    return { price: item.buyPriceFallback, isStale: true, reportedAgo: null };
-  }
-
-  const reportedAgo = formatTimeAgo(ageMs);
-  return { price: stored.price, isStale: false, reportedAgo };
-}
+// ── Table helpers ──────────────────────────────────────────────
 
 function formatTimeAgo(ms) {
   const mins = Math.floor(ms / 60000);
@@ -139,38 +120,54 @@ function formatTimeAgo(ms) {
   return `${hrs}h ${rem}m ago`;
 }
 
+function getBuyPriceInfo(row) {
+  const ageMs = Date.now() - new Date(row.reported_at).getTime();
+  const ageHours = ageMs / (1000 * 60 * 60);
+
+  // All crowd-sourced prices use a 4h staleness window
+  if (ageHours > 4) {
+    return { price: row.buy_price, isStale: true, reportedAgo: null };
+  }
+
+  return { price: row.buy_price, isStale: false, reportedAgo: formatTimeAgo(ageMs) };
+}
+
 /**
- * Build sorted row data for all renderable items.
+ * Build sorted row data from Supabase items + live sell prices.
  */
 function buildRows() {
   const rows = [];
 
-  for (const item of ABROAD_ITEMS) {
-    if (item.itemId == null) continue;
+  for (const item of knownItems) {
+    if (!item.item_id) continue;
 
-    const { price: buyPrice, isStale, reportedAgo } = getEffectiveBuyPrice(item);
-    const sellPrice = sellPrices.get(item.itemId);
+    const flightMins = getFlightMins(item.destination);
+    const { price: buyPrice, isStale, reportedAgo } = getBuyPriceInfo(item);
+    const sellPrice = sellPrices.get(item.item_id);
     const hasSellPrice = sellPrice != null;
 
     let metrics = null;
-    if (hasSellPrice) {
+    if (hasSellPrice && flightMins > 0) {
       metrics = calculateMargins({
         buyPrice,
         sellPrice,
         slotCount,
-        flightMins: item.flightMins,
+        flightMins,
         hasAirstrip,
       });
     }
 
     rows.push({
-      item,
+      name: item.item_name,
+      destination: item.destination,
+      itemId: item.item_id,
       buyPrice,
       isStale,
       reportedAgo,
       sellPrice,
       hasSellPrice,
       metrics,
+      flightMins,
     });
   }
 
@@ -181,7 +178,6 @@ function buildRows() {
     if (aNeg && !bNeg) return 1;
     if (!aNeg && bNeg) return -1;
 
-    // Items still loading go between positive and negative
     if (!a.hasSellPrice && b.hasSellPrice) return 1;
     if (a.hasSellPrice && !b.hasSellPrice) return -1;
 
@@ -202,34 +198,44 @@ export function renderTable() {
 
   const rows = buildRows();
 
+  if (rows.length === 0) {
+    tbody.innerHTML = `
+      <tr><td colspan="10" class="empty-msg">
+        No abroad price data yet. Log in after your next trip to populate prices automatically.
+      </td></tr>
+    `;
+    return;
+  }
+
   tbody.innerHTML = rows.map((r, i) => {
-    const { item, buyPrice, isStale, reportedAgo, sellPrice, hasSellPrice, metrics } = r;
-    const isNeg = metrics && metrics.marginPerItem <= 0;
+    const isNeg = r.metrics && r.metrics.marginPerItem <= 0;
     const rowClass = isNeg ? 'row--negative' : '';
 
     // Buy price cell
-    const staleBadge = isStale
-      ? `<span class="badge-stale" title="No recent report — using community average. Open the app after your next trip to update.">&#9888; est.</span>`
-      : `<span class="badge-fresh">${reportedAgo}</span>`;
-    const buyCell = `${formatMoney(buyPrice)} ${staleBadge}`;
+    const staleBadge = r.isStale
+      ? `<span class="badge-stale" title="Price may be outdated. Open the app after your next trip to update.">&#9888; old</span>`
+      : `<span class="badge-fresh">${r.reportedAgo}</span>`;
+    const buyCell = `${formatMoney(r.buyPrice)} ${staleBadge}`;
 
-    // Sell price cell — shimmer if not loaded
-    const sellCell = hasSellPrice
-      ? formatMoney(sellPrice)
+    // Sell price cell
+    const sellCell = r.hasSellPrice
+      ? formatMoney(r.sellPrice)
       : '<span class="shimmer-cell"></span>';
 
     // Metric cells
-    const marginCell = metrics ? formatMoney(metrics.marginPerItem) : '<span class="shimmer-cell"></span>';
-    const pctCell = metrics ? formatPct(metrics.marginPct) : '<span class="shimmer-cell"></span>';
-    const runCell = metrics ? formatMoney(metrics.profitPerRun) : '<span class="shimmer-cell"></span>';
-    const hrCell = metrics ? formatMoney(metrics.profitPerHour) : '<span class="shimmer-cell"></span>';
-    const flightCell = metrics ? formatFlightTime(metrics.roundTripMins) : '<span class="shimmer-cell"></span>';
+    const marginCell = r.metrics ? formatMoney(r.metrics.marginPerItem) : '<span class="shimmer-cell"></span>';
+    const pctCell = r.metrics ? formatPct(r.metrics.marginPct) : '<span class="shimmer-cell"></span>';
+    const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : '<span class="shimmer-cell"></span>';
+    const hrCell = r.metrics ? formatMoney(r.metrics.profitPerHour) : '<span class="shimmer-cell"></span>';
+    const flightCell = r.metrics
+      ? formatFlightTime(r.metrics.roundTripMins)
+      : (r.flightMins > 0 ? formatFlightTime(r.flightMins * 2) : '—');
 
     return `
       <tr class="${rowClass}">
         <td class="col-rank">${i + 1}</td>
-        <td class="col-item">${item.name}</td>
-        <td class="col-dest">${item.destination}</td>
+        <td class="col-item">${r.name}</td>
+        <td class="col-dest">${r.destination}</td>
         <td class="col-buy">${buyCell}</td>
         <td class="col-sell">${sellCell}</td>
         <td class="col-margin">${marginCell}</td>
@@ -243,11 +249,9 @@ export function renderTable() {
 }
 
 /**
- * Render the initial shimmer-only table (before any data loads).
+ * Render the table shell with shimmer rows.
  */
 export function renderShimmerTable(container) {
-  const renderableCount = ABROAD_ITEMS.filter((i) => i.itemId != null).length;
-
   container.innerHTML = `
     <table class="arb-table">
       <thead>
@@ -265,7 +269,7 @@ export function renderShimmerTable(container) {
         </tr>
       </thead>
       <tbody id="arb-tbody">
-        ${Array.from({ length: renderableCount }, (_, i) => `
+        ${Array.from({ length: 10 }, (_, i) => `
           <tr>
             <td class="col-rank">${i + 1}</td>
             ${Array.from({ length: 9 }, () => '<td><span class="shimmer-cell"></span></td>').join('')}

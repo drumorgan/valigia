@@ -262,6 +262,13 @@ body {
   margin-bottom: 1rem;
 }
 
+.empty-msg {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 2rem 1rem;
+}
+
 .control-group {
   display: flex;
   align-items: center;

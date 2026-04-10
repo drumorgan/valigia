@@ -4,8 +4,11 @@ import { supabase } from './supabase.js';
 import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
 import { syncAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices } from './market.js';
-import { showToast, renderControls, renderShimmerTable, renderTable, setBuyPrices, onSellPrice } from './ui.js';
 import { resolveItemIds } from './item-resolver.js';
+import {
+  showToast, renderControls, renderShimmerTable, renderTable,
+  setKnownItems, getItemIdsForPriceFetch, onSellPrice
+} from './ui.js';
 
 const screenContainer = document.getElementById('screen-container');
 const headerEl = document.getElementById('app-header');
@@ -47,28 +50,35 @@ async function startDashboard(playerId) {
   renderControls(controlsBar, () => renderTable());
   renderShimmerTable(tableContainer);
 
-  // Resolve any null item IDs (one-time Torn API call, cached in localStorage)
+  // Resolve item IDs (one-time Torn API call, cached in localStorage)
   await resolveItemIds(playerId);
 
-  // Re-render shimmer table now that we know which items have IDs
-  renderShimmerTable(tableContainer);
-
-  // Load buy prices from Supabase + kick off log sync in parallel
+  // Sync this player's purchase logs (silent, auto-discovers items)
+  // and load existing prices from Supabase — in parallel
   const [buyResult] = await Promise.all([
     supabase.from('abroad_prices').select('*'),
-    // Background: sync this player's purchase logs (silent)
     syncAbroadPrices(playerId).catch((err) =>
       console.warn('log-sync error:', err.message)
     ),
   ]);
 
-  if (buyResult.data) {
-    setBuyPrices(buyResult.data);
-    renderTable();
+  // After sync, re-fetch to include any newly upserted items
+  const freshResult = await supabase.from('abroad_prices').select('*');
+  const items = freshResult.data || buyResult.data || [];
+
+  if (items.length === 0) {
+    showToast('No price data yet. Buy items abroad and check back!', 'success');
   }
 
-  // Fetch live sell prices — rows update progressively as each resolves
-  await fetchAllSellPrices(playerId, onSellPrice);
+  // Set items and render table with buy prices
+  setKnownItems(items);
+  renderTable();
+
+  // Fetch live sell prices for all known items
+  const itemIds = getItemIdsForPriceFetch();
+  if (itemIds.length > 0) {
+    await fetchAllSellPrices(playerId, itemIds, onSellPrice);
+  }
 }
 
 // ── Header ─────────────────────────────────────────────────────
