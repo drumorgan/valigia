@@ -52,6 +52,9 @@ async function fetchAllLogs(playerId, diag) {
     from,
   });
 
+  if (v2data) {
+    diag.push(`v2 top keys: ${Object.keys(v2data).join(',')}`);
+  }
   if (v2data && v2data.log) {
     const v2entries = Array.isArray(v2data.log) ? v2data.log : Object.values(v2data.log);
     const v2purchases = v2entries.filter(e =>
@@ -60,7 +63,8 @@ async function fetchAllLogs(playerId, diag) {
     diag.push(`V2 travel: ${v2entries.length} entries, ${v2purchases.length} purchases`);
     if (v2entries.length > 0) {
       const sample = v2entries[0];
-      diag.push(`v2 sample: log=${sample.log} "${sample.title?.slice(0, 60)}"`);
+      diag.push(`v2 keys: ${Object.keys(sample).join(',')}`);
+      diag.push(`v2 raw: ${JSON.stringify(sample).slice(0, 200)}`);
     }
     if (v2purchases.length > 0) {
       allEntries.push(...v2purchases);
