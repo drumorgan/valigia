@@ -1,27 +1,25 @@
 // Valigia — entry point
-// Ping Supabase to verify connection, show result on screen.
-// TEMPORARY: extra diagnostics until connection is confirmed.
+// Ping Supabase via SDK to verify connection.
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+import { supabase } from './supabase.js';
+
 const el = document.querySelector('.hello');
 
-if (!url || !key) {
-  el.innerHTML = `Supabase: env vars missing<br><small>URL: ${url || '(unset)'}<br>KEY: ${key ? key.slice(0, 20) + '…' : '(unset)'}</small>`;
+if (!supabase) {
+  // supabase.js already showed the env-missing message
 } else {
   el.textContent = 'Supabase: checking…';
-  const target = `${url}/rest/v1/`;
-  fetch(target, {
-    headers: { apikey: key, Authorization: `Bearer ${key}` }
-  })
-    .then(r => {
-      if (r.ok) {
-        el.textContent = 'Supabase: connected';
+  supabase
+    .from('abroad_prices')
+    .select('id')
+    .limit(1)
+    .then(({ data, error }) => {
+      if (error) {
+        el.textContent = `Supabase: ${error.message}`;
+      } else if (data && data.length > 0) {
+        el.textContent = 'Supabase: connected (has data)';
       } else {
-        el.innerHTML = `Supabase: HTTP ${r.status}<br><small>URL: ${target}<br>KEY starts: ${key.slice(0, 20)}…<br>KEY length: ${key.length}</small>`;
+        el.textContent = 'Supabase: connected (table empty)';
       }
-    })
-    .catch(err => {
-      el.innerHTML = `Supabase: ${err.message}<br><small>URL: ${target}</small>`;
     });
 }

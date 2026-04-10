@@ -6,19 +6,10 @@
 
 ## Deployment & GitHub Workflow
 
-- **GitHub MCP tools are NEVER available in this project.** Do not attempt
-  to call any `mcp__github__*` tool, do not wait for them to load, do not
-  suggest the user enable them. They are permanently unavailable.
-- **Always use the GitHub REST API via `curl`** for all GitHub operations
-  (creating branches, creating PRs, merging PRs, posting comments, reading
-  PR status). Authenticate with the `GITHUB_TOKEN` environment variable:
-
-  ```bash
-  curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-       -H "Accept: application/vnd.github+json" \
-       https://api.github.com/repos/drumorgan/valigia/...
-  ```
-
+- **Use `mcp__github__*` tools** as the primary method for all GitHub
+  operations (creating branches, creating PRs, merging PRs, posting
+  comments, reading PR status). Fall back to `curl` + `$GITHUB_TOKEN`
+  only if MCP tools aren't loaded.
 - **Never use the `gh` CLI.** It is not installed and will not be installed.
 - **Always push changes all the way through**: After committing and pushing
   to a feature branch, create a pull request and merge it to `main` yourself
