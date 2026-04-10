@@ -3,7 +3,6 @@
 
 import { callTornApi } from './torn-api.js';
 import { ABROAD_ITEMS } from './data/abroad-items.js';
-import { showToast } from './ui.js';
 
 /**
  * Fetch live sell prices for all items with valid IDs.
@@ -34,15 +33,9 @@ export async function fetchAllSellPrices(playerId, onPrice) {
 
     let lowestPrice = null;
 
-    // Debug: show response structure for first item so we can fix parsing
-    if (itemId === uniqueIds[0]) {
-      const keys = data ? Object.keys(data) : ['null'];
-      showToast(`v2 keys: ${keys.join(', ')} | sample: ${JSON.stringify(data).slice(0, 200)}`, 'success');
-    }
-
-    // V2 response: { itemmarket: [ { cost, quantity, ... }, ... ] }
-    if (data?.itemmarket && data.itemmarket.length > 0) {
-      lowestPrice = data.itemmarket[0].cost;
+    // V2 response: { itemmarket: { item: {...}, listings: [{ price, amount }, ...] } }
+    if (data?.itemmarket?.listings && data.itemmarket.listings.length > 0) {
+      lowestPrice = data.itemmarket.listings[0].price;
     }
 
     priceMap.set(itemId, lowestPrice);
