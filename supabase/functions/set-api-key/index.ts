@@ -1,8 +1,32 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0';
-import { corsHeaders } from '../_shared/cors.ts';
-import { encryptApiKey } from '../_shared/crypto.ts';
 
+// ── Inlined shared: CORS ────────────────────────────────────────
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+// ── Inlined shared: AES-256-GCM encrypt ─────────────────────────
+function base64ToBytes(b64: string): Uint8Array {
+  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+}
+function bytesToBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+async function importKey(rawB64: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', base64ToBytes(rawB64), { name: 'AES-GCM' }, false, ['encrypt']);
+}
+async function encryptApiKey(plaintext: string, keyVersion = 1) {
+  const rawKey = Deno.env.get('API_KEY_ENCRYPTION_KEY');
+  if (!rawKey) throw new Error('Missing API_KEY_ENCRYPTION_KEY env var');
+  const key = await importKey(rawKey);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+  return { ciphertext: bytesToBase64(new Uint8Array(encrypted)), iv: bytesToBase64(iv), keyVersion };
+}
+
+// ── Handler ─────────────────────────────────────────────────────
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });

@@ -5,6 +5,7 @@ import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
 import { syncAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices } from './market.js';
 import { showToast, renderControls, renderShimmerTable, renderTable, setBuyPrices, onSellPrice } from './ui.js';
+import { resolveItemIds } from './item-resolver.js';
 
 const screenContainer = document.getElementById('screen-container');
 const headerEl = document.getElementById('app-header');
@@ -46,7 +47,13 @@ async function startDashboard(playerId) {
   renderControls(controlsBar, () => renderTable());
   renderShimmerTable(tableContainer);
 
-  // Load buy prices from Supabase + kick off sell price fetch in parallel
+  // Resolve any null item IDs (one-time Torn API call, cached in localStorage)
+  await resolveItemIds(playerId);
+
+  // Re-render shimmer table now that we know which items have IDs
+  renderShimmerTable(tableContainer);
+
+  // Load buy prices from Supabase + kick off log sync in parallel
   const [buyResult] = await Promise.all([
     supabase.from('abroad_prices').select('*'),
     // Background: sync this player's purchase logs (silent)
