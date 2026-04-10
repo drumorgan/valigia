@@ -4,6 +4,7 @@
 
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
+import { showToast } from './ui.js';
 
 // Regex to extract country from log title: "Bought a Xanax from South Africa"
 const COUNTRY_REGEX = /from (.+)$/i;
@@ -42,10 +43,24 @@ export async function syncAbroadPrices(playerId) {
     from,
   });
 
-  if (!data || !data.log) return;
+  if (!data) {
+    showToast('Log sync: no API response', 'error');
+    return;
+  }
+
+  if (!data.log) {
+    // Debug: show what keys we got back
+    showToast(`Log sync: no "log" key. Keys: ${Object.keys(data).join(', ')}`, 'error');
+    return;
+  }
 
   const entries = Object.values(data.log);
   if (entries.length === 0) return;
+
+  // Debug: show what we found
+  const firstEntry = entries[0];
+  const cacheExists = !!localStorage.getItem(CACHE_KEY);
+  showToast(`Log: ${entries.length} entries, cache: ${cacheExists}, sample: ${firstEntry?.data?.item || 'no item'}`, 'success');
 
   const upserts = [];
 
