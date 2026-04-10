@@ -1,14 +1,10 @@
 // Valigia — entry point & orchestrator
 
-import { supabase } from './supabase.js';
 import { callTornApi } from './torn-api.js';
 import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
-import { syncAbroadPrices } from './log-sync.js';
-import { fetchAllSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import {
-  showToast, renderControls, renderShimmerTable, renderTable,
-  setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel
+  showToast, renderControls, setPlayerTravel
 } from './ui.js';
 
 const screenContainer = document.getElementById('screen-container');
@@ -85,48 +81,25 @@ async function startDashboard(playerId) {
 
   // Render controls + shimmer table
   renderControls(controlsBar, () => renderTable());
-  renderShimmerTable(tableContainer);
+
+  // Show under construction message
+  tableContainer.innerHTML = `
+    <div style="text-align:center;padding:3rem 1rem;font-family:'Syne Mono',monospace;">
+      <p style="font-size:1.5rem;color:var(--accent);margin-bottom:0.5rem;">Under Construction</p>
+      <p style="color:var(--muted);font-size:0.9rem;max-width:28rem;margin:0 auto;">
+        We're wiring up the abroad price feed. Check back soon —
+        the travel leaderboard is on the way.
+      </p>
+    </div>
+  `;
 
   // Resolve item IDs (one-time Torn API call, cached in localStorage)
   await resolveItemIds(playerId);
 
-  // Sync logs, load prices, and detect travel perks — all in parallel
-  let syncDiag = null;
-  const [buyResult] = await Promise.all([
-    supabase.from('abroad_prices').select('*'),
-    syncAbroadPrices(playerId)
-      .then(d => { syncDiag = d; })
-      .catch((err) => { syncDiag = [`error: ${err.message}`]; }),
-    detectPlayerTravel(playerId).catch((err) =>
-      console.warn('perks detection error:', err.message)
-    ),
-  ]);
-
-  // After sync, re-fetch to include any newly upserted items
-  const freshResult = await supabase.from('abroad_prices').select('*');
-  const items = freshResult.data || buyResult.data || [];
-
-  if (items.length === 0) {
-    // Show diagnostic info persistently in the table area
-    const diagText = syncDiag ? syncDiag.join(' → ') : 'sync returned nothing';
-    tableContainer.innerHTML = `
-      <p class="empty-msg">No abroad price data yet.</p>
-      <details open style="margin:1rem;font-family:'Syne Mono',monospace;font-size:0.75rem;color:var(--muted);">
-        <summary style="color:var(--accent);cursor:pointer;">Log sync diagnostic</summary>
-        <pre style="margin-top:0.5rem;white-space:pre-wrap;">${diagText}</pre>
-      </details>
-    `;
-  }
-
-  // Set items and render table with buy prices
-  setKnownItems(items);
-  renderTable();
-
-  // Fetch live sell prices for all known items
-  const itemIds = getItemIdsForPriceFetch();
-  if (itemIds.length > 0) {
-    await fetchAllSellPrices(playerId, itemIds, onSellPrice);
-  }
+  // Detect travel perks
+  detectPlayerTravel(playerId).catch((err) =>
+    console.warn('perks detection error:', err.message)
+  );
 }
 
 // ── Header ─────────────────────────────────────────────────────
