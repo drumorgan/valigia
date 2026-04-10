@@ -1,27 +1,26 @@
 // Valigia — entry point
-// Ping Supabase to verify connection, show result on screen.
-// TEMPORARY: extra diagnostics until connection is confirmed.
+// Uses the Supabase JS SDK to verify connection, then will orchestrate
+// the full app flow once remaining modules are built.
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const el = document.querySelector('.hello');
+import { supabase, supabaseUrl } from './supabase.js';
 
-if (!url || !key) {
-  el.innerHTML = `Supabase: env vars missing<br><small>URL: ${url || '(unset)'}<br>KEY: ${key ? key.slice(0, 20) + '…' : '(unset)'}</small>`;
-} else {
-  el.textContent = 'Supabase: checking…';
-  const target = `${url}/rest/v1/`;
-  fetch(target, {
-    headers: { apikey: key, Authorization: `Bearer ${key}` }
+const el = document.querySelector('.status');
+
+el.textContent = 'Supabase: checking…';
+
+// Ping by reading from abroad_prices (the table may be empty — that's fine,
+// a successful empty response still proves the connection + RLS work).
+supabase
+  .from('abroad_prices')
+  .select('id')
+  .limit(1)
+  .then(({ data, error }) => {
+    if (error) {
+      el.innerHTML = `Supabase: ${error.message}<br><small>${supabaseUrl}</small>`;
+    } else {
+      el.textContent = `Supabase: connected (${data.length ? 'has data' : 'table empty'})`;
+    }
   })
-    .then(r => {
-      if (r.ok) {
-        el.textContent = 'Supabase: connected';
-      } else {
-        el.innerHTML = `Supabase: HTTP ${r.status}<br><small>URL: ${target}<br>KEY starts: ${key.slice(0, 20)}…<br>KEY length: ${key.length}</small>`;
-      }
-    })
-    .catch(err => {
-      el.innerHTML = `Supabase: ${err.message}<br><small>URL: ${target}</small>`;
-    });
-}
+  .catch(err => {
+    el.innerHTML = `Supabase: ${err.message}<br><small>${supabaseUrl}</small>`;
+  });
