@@ -137,10 +137,10 @@ export function renderLoginScreen(container, onSuccess) {
         Your key is validated, then <strong>encrypted with AES-256</strong> and
         stored server-side. It is never saved in your browser.
       </p>
-      <a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&user=basic,log&torn=items&title=Valigia"
+      <a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&user=basic,log&torn=items&market=itemmarket&title=Valigia"
          target="_blank" rel="noopener" class="create-key-btn">Create a Custom Key on Torn</a>
       <p class="login-hint login-hint--sub">
-        Only shares your name, level, and travel purchase log. Nothing else.
+        Only shares your name, travel log, and item market prices. Nothing else.
       </p>
       <div class="login-input-row">
         <input
