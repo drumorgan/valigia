@@ -33,63 +33,41 @@ function lookupItemId(itemName) {
 }
 
 /**
- * Fetch all abroad purchase logs from the last 7 days, paginating
- * forward through results if the API returns a full page.
+ * Fetch all abroad purchase logs from the last 7 days.
+ * The Torn API's server-side log=6501 filter is unreliable,
+ * so we fetch ALL logs with pagination and filter client-side.
  */
 async function fetchAllLogs(playerId, diag) {
   const allEntries = [];
   let from = Math.floor((Date.now() - SEVEN_DAYS_MS) / 1000);
-
-  // DIAGNOSTIC: first fetch ALL logs (no type filter) to see what exists
-  const allLogsData = await callTornApi({
-    section: 'user',
-    selections: 'log',
-    player_id: playerId,
-    from,
-  });
-  if (allLogsData?.log) {
-    const allLogs = Object.values(allLogsData.log);
-    const typeCounts = {};
-    for (const e of allLogs) {
-      typeCounts[e.log] = (typeCounts[e.log] || 0) + 1;
-    }
-    diag.push(`ALL logs (no filter): ${allLogs.length} entries`);
-    diag.push(`types: ${JSON.stringify(typeCounts)}`);
-    if (allLogs.length > 0) {
-      const sample = allLogs[0];
-      diag.push(`sample: log=${sample.log} title="${sample.title?.slice(0, 60)}"`);
-    }
-  } else {
-    diag.push(`ALL logs: ${allLogsData === null ? 'API error' : 'no log key'}`);
-  }
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const data = await callTornApi({
       section: 'user',
       selections: 'log',
       player_id: playerId,
-      log: 6501,
       from,
     });
 
     if (data === null) {
-      diag.push(`6501 page ${page}: API error`);
+      diag.push(`page ${page}: API error`);
       break;
     }
 
     if (!data.log) {
-      diag.push(`6501 page ${page}: no "log" key`);
+      diag.push(`page ${page}: no "log" key`);
       break;
     }
 
     const entries = Object.values(data.log);
-    diag.push(`6501 page ${page}: ${entries.length} entries`);
-    if (entries.length === 0) break;
+    const matched = entries.filter(e => e.log === 6501);
+    allEntries.push(...matched);
+    diag.push(`page ${page}: ${entries.length} logs, ${matched.length} purchases`);
 
-    allEntries.push(...entries);
-
+    // Less than 100 means we've reached the end
     if (entries.length < 100) break;
 
+    // Advance past the newest timestamp in this page
     const newestTs = Math.max(...entries.map(e => e.timestamp || 0));
     if (newestTs <= from) break;
     from = newestTs + 1;
