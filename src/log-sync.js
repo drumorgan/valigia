@@ -41,7 +41,38 @@ function lookupItemId(itemName) {
 async function fetchAllLogs(playerId, diag) {
   const allEntries = [];
   const from = Math.floor((Date.now() - SEVEN_DAYS_MS) / 1000);
-  let to = undefined; // first page: no upper bound (gets most recent)
+
+  // Try V2 API with cat=travel first — V1 log selection doesn't return purchase entries
+  const v2data = await callTornApi({
+    section: 'user',
+    selections: 'log',
+    player_id: playerId,
+    v2: true,
+    cat: 'travel',
+    from,
+  });
+
+  if (v2data && v2data.log) {
+    const v2entries = Array.isArray(v2data.log) ? v2data.log : Object.values(v2data.log);
+    const v2purchases = v2entries.filter(e =>
+      /bought/i.test(e.title) || e.log === 6501
+    );
+    diag.push(`V2 travel: ${v2entries.length} entries, ${v2purchases.length} purchases`);
+    if (v2entries.length > 0) {
+      const sample = v2entries[0];
+      diag.push(`v2 sample: log=${sample.log} "${sample.title?.slice(0, 60)}"`);
+    }
+    if (v2purchases.length > 0) {
+      allEntries.push(...v2purchases);
+      diag.push(`total: ${allEntries.length} log entries (from V2)`);
+      return allEntries;
+    }
+  } else {
+    diag.push(`V2 travel: ${v2data === null ? 'API error' : JSON.stringify(v2data).slice(0, 100)}`);
+  }
+
+  // Fallback: V1 paginated fetch
+  let to = undefined;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const params = {
