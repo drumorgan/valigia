@@ -3,6 +3,9 @@
   --surface:  #161a22;
   --border:   #252a35;
   --accent:   #e8c84a;
+  --positive: #4ae8a0;
+  --warning:  #e8824a;
+  --negative: #e84a4a;
   --text:     #c8cdd8;
   --muted:    #5a6070;
 }
@@ -28,11 +31,13 @@ body {
   padding: 1.5rem 1rem;
 }
 
+/* ── Header ──────────────────────────────────────────────────── */
+
 #app-header {
   text-align: center;
-  padding-bottom: 2rem;
+  padding-bottom: 1.5rem;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 2rem;
+  margin-bottom: 1.5rem;
 }
 
 .logo {
@@ -65,6 +70,45 @@ body {
   text-decoration: underline;
 }
 
+#player-badge {
+  margin-top: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+}
+
+.player-name {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.player-level {
+  color: var(--muted);
+}
+
+.logout-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.logout-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* ── Status (loading text) ───────────────────────────────────── */
+
 .status {
   text-align: center;
   font-family: 'Syne Mono', monospace;
@@ -73,7 +117,341 @@ body {
   padding-top: 3rem;
 }
 
-/* === Cross-link box — shared pattern across Giro's Torn tools === */
+/* ── Login Card ──────────────────────────────────────────────── */
+
+.login-card {
+  max-width: 480px;
+  margin: 2rem auto;
+  padding: 2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.login-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.3rem;
+  color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+
+.login-desc {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 1.5rem;
+  line-height: 1.5;
+}
+
+.login-input-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.login-input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.9rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  outline: none;
+}
+
+.login-input:focus {
+  border-color: var(--accent);
+}
+
+.login-input::placeholder {
+  color: var(--muted);
+}
+
+.login-btn {
+  background: var(--accent);
+  color: var(--bg);
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 0.6rem 1.2rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.login-btn:hover {
+  filter: brightness(1.1);
+}
+
+.login-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-hint {
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.login-tos {
+  margin-top: 1rem;
+  text-align: left;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.login-tos summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+
+.login-tos ul {
+  padding-left: 1.2rem;
+  line-height: 1.8;
+}
+
+/* ── Controls Bar ────────────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.8rem;
+}
+
+.control-group--check {
+  cursor: pointer;
+}
+
+.control-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+}
+
+.control-input {
+  width: 4rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 4px;
+  text-align: center;
+  outline: none;
+}
+
+.control-input:focus {
+  border-color: var(--accent);
+}
+
+.control-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 4px;
+  outline: none;
+}
+
+.control-select:focus {
+  border-color: var(--accent);
+}
+
+/* Checkbox styling */
+.control-group--check input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 1rem;
+  height: 1rem;
+}
+
+/* ── Arbitrage Table ─────────────────────────────────────────── */
+
+.arb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.78rem;
+}
+
+.arb-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.arb-table th {
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.65rem;
+  padding: 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.arb-table th.col-rank,
+.arb-table th.col-item,
+.arb-table th.col-dest {
+  text-align: left;
+}
+
+.arb-table td {
+  padding: 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.arb-table td.col-rank,
+.arb-table td.col-item,
+.arb-table td.col-dest {
+  text-align: left;
+}
+
+.arb-table td.col-rank {
+  color: var(--muted);
+  width: 2rem;
+}
+
+.arb-table td.col-item {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.arb-table td.col-dest {
+  color: var(--muted);
+}
+
+.arb-table td.col-hr {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.arb-table td.col-flight {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+/* Positive margin rows */
+.arb-table td.col-margin,
+.arb-table td.col-run {
+  color: var(--positive);
+}
+
+/* Negative margin rows — entire row greyed out */
+tr.row--negative td {
+  color: var(--muted) !important;
+  opacity: 0.5;
+}
+
+/* ── Badges ──────────────────────────────────────────────────── */
+
+.badge-stale {
+  display: inline-block;
+  font-size: 0.65rem;
+  color: var(--warning);
+  cursor: help;
+  vertical-align: middle;
+  margin-left: 0.25rem;
+}
+
+.badge-fresh {
+  display: inline-block;
+  font-size: 0.6rem;
+  color: var(--muted);
+  vertical-align: middle;
+  margin-left: 0.25rem;
+}
+
+/* ── Shimmer ─────────────────────────────────────────────────── */
+
+.shimmer-cell {
+  display: inline-block;
+  width: 4rem;
+  height: 0.85rem;
+  background: linear-gradient(
+    90deg,
+    var(--border) 25%,
+    var(--surface) 50%,
+    var(--border) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Toast ────────────────────────────────────────────────────── */
+
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(100%);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  padding: 0.6rem 1.2rem;
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  z-index: 100;
+  max-width: 90vw;
+  text-align: center;
+}
+
+.toast--visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.toast--error {
+  background: var(--negative);
+  color: #fff;
+}
+
+.toast--success {
+  background: var(--positive);
+  color: var(--bg);
+}
+
+/* ── Cross-link box ──────────────────────────────────────────── */
+
 .crosslink-box {
   margin-top: 3rem;
   padding: 1.5rem 1.5rem 1.25rem;
@@ -110,8 +488,41 @@ body {
   text-decoration: underline;
 }
 
-/* Target-app colors — each Giro tool has its own distinct accent */
-.crosslink-valigia   { color: #e8c84a; }  /* Valigia gold */
-.crosslink-happyjump { color: #e94560; }  /* HappyJump coral */
-.crosslink-tornder   { color: #3de8c8; }  /* Tornder teal */
-.crosslink-yoink     { color: #c0c4cc; }  /* Yoink neutral */
+.crosslink-valigia   { color: #e8c84a; }
+.crosslink-happyjump { color: #e94560; }
+.crosslink-tornder   { color: #3de8c8; }
+.crosslink-yoink     { color: #c0c4cc; }
+
+/* ── Responsive ──────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .arb-table {
+    font-size: 0.7rem;
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .arb-table th,
+  .arb-table td {
+    padding: 0.4rem 0.3rem;
+  }
+
+  .controls {
+    gap: 0.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .logo {
+    font-size: 1.8rem;
+  }
+
+  .login-input-row {
+    flex-direction: column;
+  }
+
+  .login-btn {
+    width: 100%;
+  }
+}
