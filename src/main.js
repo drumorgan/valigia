@@ -12,7 +12,7 @@ if (!url || !key) {
   el.textContent = 'Supabase: checking…';
   const target = `${url}/rest/v1/`;
   fetch(target, {
-    headers: { apikey: key }
+    headers: { apikey: key, Authorization: `Bearer ${key}` }
   })
     .then(r => {
       if (r.ok) {
