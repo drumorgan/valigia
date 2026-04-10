@@ -120,16 +120,32 @@ function formatTimeAgo(ms) {
   return `${hrs}h ${rem}m ago`;
 }
 
+function formatDaysAgo(ms) {
+  const days = Math.floor(ms / (1000 * 60 * 60 * 24));
+  if (days === 1) return '1d ago';
+  return `${days}d ago`;
+}
+
 function getBuyPriceInfo(row) {
+  if (!row.reported_at) {
+    return { price: row.buy_price, freshness: 'empty', reportedAgo: null };
+  }
+
   const ageMs = Date.now() - new Date(row.reported_at).getTime();
   const ageHours = ageMs / (1000 * 60 * 60);
 
-  // All crowd-sourced prices use a 4h staleness window
-  if (ageHours > 4) {
-    return { price: row.buy_price, isStale: true, reportedAgo: null };
+  // Fresh: today or yesterday (within 48h)
+  if (ageHours <= 48) {
+    return { price: row.buy_price, freshness: 'fresh', reportedAgo: formatTimeAgo(ageMs) };
   }
 
-  return { price: row.buy_price, isStale: false, reportedAgo: formatTimeAgo(ageMs) };
+  // Medium: 2–7 days old
+  if (ageHours <= 168) {
+    return { price: row.buy_price, freshness: 'medium', reportedAgo: formatDaysAgo(ageMs) };
+  }
+
+  // Stale: older than 7 days
+  return { price: row.buy_price, freshness: 'stale', reportedAgo: formatDaysAgo(ageMs) };
 }
 
 /**
@@ -142,7 +158,7 @@ function buildRows() {
     if (!item.item_id) continue;
 
     const flightMins = getFlightMins(item.destination);
-    const { price: buyPrice, isStale, reportedAgo } = getBuyPriceInfo(item);
+    const { price: buyPrice, freshness, reportedAgo } = getBuyPriceInfo(item);
     const sellPrice = sellPrices.get(item.item_id);
     const hasSellPrice = sellPrice != null;
 
@@ -162,7 +178,7 @@ function buildRows() {
       destination: item.destination,
       itemId: item.item_id,
       buyPrice,
-      isStale,
+      freshness,
       reportedAgo,
       sellPrice,
       hasSellPrice,
@@ -211,11 +227,18 @@ export function renderTable() {
     const isNeg = r.metrics && r.metrics.marginPerItem <= 0;
     const rowClass = isNeg ? 'row--negative' : '';
 
-    // Buy price cell
-    const staleBadge = r.isStale
-      ? `<span class="badge-stale" title="Price may be outdated. Open the app after your next trip to update.">&#9888; old</span>`
-      : `<span class="badge-fresh">${r.reportedAgo}</span>`;
-    const buyCell = `${formatMoney(r.buyPrice)} ${staleBadge}`;
+    // Buy price cell with freshness indicator
+    let freshnessBadge;
+    if (r.freshness === 'fresh') {
+      freshnessBadge = `<span class="freshness freshness--fresh" title="Fresh price — reported ${r.reportedAgo}">&#9679; ${r.reportedAgo}</span>`;
+    } else if (r.freshness === 'medium') {
+      freshnessBadge = `<span class="freshness freshness--medium" title="Price is ${r.reportedAgo} — still usable but may have changed">&#9679; ${r.reportedAgo}</span>`;
+    } else if (r.freshness === 'stale') {
+      freshnessBadge = `<span class="freshness freshness--stale" title="Price is ${r.reportedAgo} — likely outdated. Open the app after your next trip to update.">&#9679; old</span>`;
+    } else {
+      freshnessBadge = `<span class="freshness freshness--empty" title="No price data yet. Buy this item abroad to contribute a price.">&#9675; no data</span>`;
+    }
+    const buyCell = `${formatMoney(r.buyPrice)} ${freshnessBadge}`;
 
     // Sell price cell
     const sellCell = r.hasSellPrice
