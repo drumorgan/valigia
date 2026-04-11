@@ -73,20 +73,25 @@ async function readMarketPrices(itemIds) {
  * Zero API calls — crowd-sourced from all users' previous scans.
  */
 async function readBazaarPool(itemIds) {
-  const { data, error } = await supabase
-    .from('bazaar_prices')
-    .select('item_id, bazaar_owner_id, price, quantity, checked_at')
-    .in('item_id', itemIds);
+  try {
+    const { data, error } = await supabase
+      .from('bazaar_prices')
+      .select('item_id, bazaar_owner_id, price, quantity, checked_at')
+      .in('item_id', itemIds);
 
-  if (error || !data) return new Map();
+    if (error || !data) return new Map();
 
-  // Group by item_id
-  const pool = new Map();
-  for (const row of data) {
-    if (!pool.has(row.item_id)) pool.set(row.item_id, []);
-    pool.get(row.item_id).push(row);
+    // Group by item_id
+    const pool = new Map();
+    for (const row of data) {
+      if (!pool.has(row.item_id)) pool.set(row.item_id, []);
+      pool.get(row.item_id).push(row);
+    }
+    return pool;
+  } catch {
+    // Table may not exist yet — proceed without pool data
+    return new Map();
   }
-  return pool;
 }
 
 /**
@@ -228,17 +233,21 @@ async function checkBazaars(items, pool, discovered, playerId, onProgress) {
 async function writeBazaarPool(results) {
   if (results.length === 0) return;
 
-  const rows = results.map(r => ({
-    item_id: r.item_id,
-    bazaar_owner_id: r.bazaar_owner_id,
-    price: r.price,
-    quantity: r.quantity,
-    checked_at: new Date().toISOString(),
-  }));
+  try {
+    const rows = results.map(r => ({
+      item_id: r.item_id,
+      bazaar_owner_id: r.bazaar_owner_id,
+      price: r.price,
+      quantity: r.quantity,
+      checked_at: new Date().toISOString(),
+    }));
 
-  await supabase
-    .from('bazaar_prices')
-    .upsert(rows, { onConflict: 'item_id,bazaar_owner_id' });
+    await supabase
+      .from('bazaar_prices')
+      .upsert(rows, { onConflict: 'item_id,bazaar_owner_id' });
+  } catch {
+    // Pool write failed — non-fatal, scan results still valid
+  }
 }
 
 /**
