@@ -22,10 +22,10 @@ export const BAZAAR_WATCHLIST = [
   'Flash Grenade',
   'Pepper Spray',
   'Claymore Mine',
-  'Throwing Star',
+  'Ninja Star',
 
   // ── Medical ──
-  'Blood Bag',
+  'Blood Bag : O-',
   'Morphine',
   'First Aid Kit',
   'Small First Aid Kit',
