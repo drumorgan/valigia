@@ -125,10 +125,13 @@ async function runScan(playerId) {
   ];
   if (stats.apiErrors > 0) diagLines.push(`API errors: ${stats.apiErrors}`);
   if (stats.unresolved.length > 0) diagLines.push(`Unresolved: ${stats.unresolved.join(', ')}`);
-  if (stats.firstBazaarKeys) diagLines.push(`Bazaar response keys: ${stats.firstBazaarKeys}`);
-  if (stats.firstMarketKeys) diagLines.push(`Market response keys: ${stats.firstMarketKeys}`);
-  if (stats.firstBazaarSample) diagLines.push(`Bazaar sample: ${stats.firstBazaarSample}`);
-  if (stats.firstMarketSample) diagLines.push(`Market sample: ${stats.firstMarketSample}`);
+  if (stats.sampleResponses && stats.sampleResponses.length > 0) {
+    diagLines.push('--- Item samples ---');
+    for (const s of stats.sampleResponses) {
+      diagLines.push(`${s.name} (${s.id}): baz=${s.bazaarType} mkt=${s.marketType}`);
+      diagLines.push(`  bKeys=[${s.bazaarKeys}] mKeys=[${s.marketKeys}]`);
+    }
+  }
 
   const diagHtml = `<div class="bazaar-diag">${diagLines.join('<br>')}</div>`;
 
