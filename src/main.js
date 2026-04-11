@@ -1,4 +1,5 @@
 // Valigia — entry point & orchestrator
+// PR process test — 2026-04-11
 
 import { callTornApi } from './torn-api.js';
 import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
