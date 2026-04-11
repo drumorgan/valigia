@@ -290,6 +290,10 @@ function findBestDeal(items, marketPrices, pool, freshResults) {
     if (savings <= 0) continue;
 
     const savingsPct = (savings / marketPrice) * 100;
+
+    // Skip "too good to be true" — locked/troll listings (e.g. $1 PCP)
+    if (savingsPct > 90) continue;
+
     const deal = {
       itemId: item.id,
       itemName: item.name,
