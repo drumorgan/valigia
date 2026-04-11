@@ -27,7 +27,7 @@ body {
 
 #app {
   width: 100%;
-  max-width: 960px;
+  max-width: 1100px;
   padding: 1.5rem 1rem;
 }
 
@@ -1216,17 +1216,41 @@ tr.row--negative td {
 
 /* ── Responsive ──────────────────────────────────────────────── */
 
-@media (max-width: 768px) {
+/* iPad landscape / small laptops — tighten spacing so all columns fit */
+@media (max-width: 1100px) {
   .arb-table {
-    font-size: 0.7rem;
-    display: block;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+    font-size: 0.72rem;
   }
 
   .arb-table th,
   .arb-table td {
-    padding: 0.4rem 0.3rem;
+    padding: 0.4rem 0.2rem;
+  }
+
+  .arb-table td.col-hr {
+    font-size: 0.78rem;
+  }
+}
+
+/* iPad portrait — hide lesser columns, keep what matters */
+@media (max-width: 820px) {
+  #app {
+    padding: 1rem 0.5rem;
+  }
+
+  .arb-table {
+    font-size: 0.68rem;
+  }
+
+  .arb-table .col-stock,
+  .arb-table .col-runcost,
+  .arb-table .col-flight {
+    display: none;
+  }
+
+  .arb-table th,
+  .arb-table td {
+    padding: 0.35rem 0.2rem;
   }
 
   .controls {
@@ -1234,16 +1258,166 @@ tr.row--negative td {
   }
 }
 
-@media (max-width: 480px) {
+/* Phone — card layout */
+@media (max-width: 580px) {
+  #app {
+    padding: 0.75rem 0.5rem;
+  }
+
   .logo {
     font-size: 1.8rem;
   }
 
+  .controls {
+    gap: 0.4rem;
+    padding: 0.5rem 0.6rem;
+  }
+
+  .control-group {
+    font-size: 0.7rem;
+  }
+
+  .filter-chip {
+    font-size: 0.58rem;
+    padding: 0.15rem 0.4rem;
+  }
+
+  /* Hide full table, show card layout */
+  .arb-table thead {
+    display: none;
+  }
+
+  .arb-table {
+    display: block;
+    font-size: 0.8rem;
+  }
+
+  .arb-table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .arb-table tr {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      "rank item"
+      "rank dest"
+      "buy  sell"
+      "margin hr";
+    gap: 0.15rem 0.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.75rem;
+  }
+
+  .arb-table tr.row--negative {
+    opacity: 0.5;
+  }
+
+  .arb-table td {
+    border-bottom: none;
+    padding: 0.1rem 0;
+    white-space: normal;
+  }
+
+  .arb-table td.col-rank {
+    grid-area: rank;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    width: auto;
+  }
+
+  .arb-table td.col-item {
+    grid-area: item;
+    font-size: 0.9rem;
+    text-align: left;
+  }
+
+  .arb-table td.col-dest {
+    grid-area: dest;
+    font-size: 0.7rem;
+    text-align: left;
+  }
+
+  .arb-table td.col-buy {
+    grid-area: buy;
+    text-align: left;
+    color: var(--muted);
+    font-size: 0.72rem;
+  }
+
+  .arb-table td.col-buy::before {
+    content: "Buy ";
+    color: var(--muted);
+    opacity: 0.6;
+  }
+
+  .arb-table td.col-sell {
+    grid-area: sell;
+    text-align: left;
+    font-size: 0.72rem;
+  }
+
+  .arb-table td.col-sell::before {
+    content: "Sell ";
+    color: var(--muted);
+    opacity: 0.6;
+  }
+
+  .arb-table td.col-margin {
+    grid-area: margin;
+    text-align: left;
+    font-size: 0.78rem;
+  }
+
+  .arb-table td.col-margin::before {
+    content: "Margin ";
+    color: var(--muted);
+    opacity: 0.6;
+  }
+
+  .arb-table td.col-hr {
+    grid-area: hr;
+    text-align: right;
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+
+  .arb-table td.col-hr::after {
+    content: " /hr";
+    font-size: 0.65rem;
+    font-weight: 400;
+    opacity: 0.7;
+  }
+
+  /* Hide columns that don't fit card layout */
+  .arb-table td.col-stock,
+  .arb-table td.col-runcost,
+  .arb-table td.col-run,
+  .arb-table td.col-flight {
+    display: none;
+  }
+
+  /* Login adjustments */
   .login-input-row {
     flex-direction: column;
   }
 
   .login-btn {
     width: 100%;
+  }
+
+  /* Bazaar modal adjustments */
+  .bazaar-modal {
+    width: 95vw;
+    max-width: none;
+    margin: 1rem;
   }
 }
