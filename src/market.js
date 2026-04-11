@@ -82,6 +82,13 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
       return;
     }
 
+    // Detect the API help page response (returned when key lacks permission)
+    // — don't overwrite good cached prices with null
+    if (data.selections && !data.itemmarket) {
+      apiFailCount++;
+      return;
+    }
+
     apiSuccessCount++;
 
     let lowestPrice = null;
