@@ -6,7 +6,7 @@ import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
-const DEAL_THRESHOLD_PCT = 10;   // minimum % below market to flag as deal
+const DEAL_THRESHOLD_PCT = 2;    // minimum % below market to flag as deal
 const BATCH_SIZE = 10;           // items per batch
 const BATCH_DELAY_MS = 7000;     // delay between batches (respect 100 req/min)
 
