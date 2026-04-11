@@ -83,17 +83,38 @@ async function runScan(playerId) {
   textEl.textContent = 'Scanning bazaars...';
   subtextEl.textContent = 'Reading shared pool';
 
-  const { bestDeal, stats } = await scanBazaarDeals(
-    playerId,
-    (checked, total) => {
-      subtextEl.textContent = `Checking bazaar ${checked}/${total}`;
+  let bestDeal = null;
+  let stats = null;
+
+  try {
+    const result = await scanBazaarDeals(
+      playerId,
+      (checked, total) => {
+        if (subtextEl) subtextEl.textContent = `Checking bazaar ${checked}/${total}`;
+      }
+    );
+    bestDeal = result.bestDeal;
+    stats = result.stats;
+  } catch (err) {
+    // Scan failed — show error state instead of freezing
+    isScanning = false;
+    if (spinnerEl) spinnerEl.style.display = 'none';
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.innerHTML = `
+        <div class="wof-no-deal wof-deal--reveal">
+          <div class="wof-no-deal-text">Scan error</div>
+          <div class="wof-no-deal-sub">${err.message || 'Something went wrong. Try again.'}</div>
+        </div>
+      `;
     }
-  );
+    return;
+  }
 
   isScanning = false;
 
   // Hide spinner, show result
-  spinnerEl.style.display = 'none';
+  if (spinnerEl) spinnerEl.style.display = 'none';
   resultEl.style.display = 'block';
 
   if (bestDeal) {
@@ -267,16 +288,20 @@ export async function renderCommunityStats(container) {
 
   container.appendChild(el);
 
-  // Fetch stats in parallel: spins from table, players from live count
-  const [statsRes, countRes] = await Promise.all([
-    supabase.from('community_stats').select('total_spins').eq('id', 1).single(),
-    supabase.rpc('get_player_count'),
-  ]);
+  // Fetch stats — gracefully handle missing table/function
+  try {
+    const [statsRes, countRes] = await Promise.all([
+      supabase.from('community_stats').select('total_spins').eq('id', 1).single(),
+      supabase.rpc('get_player_count'),
+    ]);
 
-  if (statsRes.data) {
-    el.querySelector('#cs-spins').textContent = statsRes.data.total_spins.toLocaleString();
-  }
-  if (countRes.data != null) {
-    el.querySelector('#cs-users').textContent = countRes.data.toLocaleString();
+    if (statsRes.data) {
+      el.querySelector('#cs-spins').textContent = statsRes.data.total_spins.toLocaleString();
+    }
+    if (countRes.data != null) {
+      el.querySelector('#cs-users').textContent = countRes.data.toLocaleString();
+    }
+  } catch {
+    // Stats table or function not yet created — show dashes
   }
 }
