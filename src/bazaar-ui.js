@@ -1,16 +1,10 @@
-// Bazaar deal scanner UI — countdown button, modal overlay, deal cards.
-// The button shows a 60-second cooldown timer between scans, making
-// deal hunting a fun recurring game loop.
+// Bazaar deal scanner UI — trigger button, modal overlay, deal cards.
 
 import { scanBazaarDeals } from './bazaar-scanner.js';
 import { formatMoney } from './calculator.js';
 
 let isScanning = false;
-let cooldownInterval = null;
-let triggerBtn = null;
 let currentPlayerId = null;
-
-const COOLDOWN_SECS = 60;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -46,38 +40,6 @@ function dealCardHtml(deal) {
          class="deal-link">Find in Bazaar &rarr;</a>
     </div>
   `;
-}
-
-// ── Countdown Button ─────────────────────────────────────────
-
-function startCooldown() {
-  if (!triggerBtn) return;
-
-  let remaining = COOLDOWN_SECS;
-  triggerBtn.disabled = true;
-  triggerBtn.classList.remove('bazaar-trigger-btn--ready');
-  triggerBtn.classList.add('bazaar-trigger-btn--cooldown');
-  updateButtonText(remaining);
-
-  clearInterval(cooldownInterval);
-  cooldownInterval = setInterval(() => {
-    remaining--;
-    if (remaining <= 0) {
-      clearInterval(cooldownInterval);
-      cooldownInterval = null;
-      triggerBtn.disabled = false;
-      triggerBtn.classList.remove('bazaar-trigger-btn--cooldown');
-      triggerBtn.classList.add('bazaar-trigger-btn--ready');
-      triggerBtn.textContent = 'Scan Bazaar Deals';
-    } else {
-      updateButtonText(remaining);
-    }
-  }, 1000);
-}
-
-function updateButtonText(secs) {
-  if (!triggerBtn) return;
-  triggerBtn.textContent = `Next Scan in ${secs}s`;
 }
 
 // ── Modal ────────────────────────────────────────────────────
@@ -166,15 +128,12 @@ async function runScan(playerId) {
   // Done
   isScanning = false;
 
-  // Start cooldown on the trigger button
-  startCooldown();
-
   if (deals.length === 0) {
     progressText.textContent = 'No deals right now — try again soon!';
     dealsEl.innerHTML = `
       <div class="bazaar-empty">
-        No items found 10%+ below market price.<br>
-        Bazaar prices change constantly — check back in 60 seconds.
+        No items found below market price right now.<br>
+        Bazaar prices change constantly — try again soon.
       </div>
     `;
   } else {
@@ -192,7 +151,7 @@ async function runScan(playerId) {
 // ── Public API ───────────────────────────────────────────────
 
 /**
- * Render the bazaar scan button with cooldown timer.
+ * Render the bazaar scan trigger button.
  * Call from main.js after dashboard loads.
  */
 export function renderScanButton(container, playerId) {
@@ -206,6 +165,5 @@ export function renderScanButton(container, playerId) {
     showModal(playerId);
   });
 
-  triggerBtn = btn;
   container.appendChild(btn);
 }
