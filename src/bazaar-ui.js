@@ -5,6 +5,7 @@ import { formatMoney } from './calculator.js';
 
 let isScanning = false;
 let currentPlayerId = null;
+const COOLDOWN_SEC = 5; // seconds between scans (low for testing, raise later)
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -66,9 +67,7 @@ function showModal(playerId) {
         </div>
         <div class="bazaar-deals" id="bazaar-deals"></div>
       </div>
-      <div class="bazaar-modal-footer">
-        <button class="bazaar-scan-btn" id="bazaar-rescan" style="display:none">Scan Again</button>
-      </div>
+      <div class="bazaar-modal-footer"></div>
     </div>
   `;
 
@@ -77,10 +76,6 @@ function showModal(playerId) {
   overlay.querySelector('#bazaar-close').addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
-  });
-
-  overlay.querySelector('#bazaar-rescan').addEventListener('click', () => {
-    runScan(playerId);
   });
 
   runScan(playerId);
@@ -96,8 +91,6 @@ async function runScan(playerId) {
   const progressFill = document.getElementById('bazaar-progress-fill');
   const progressEl = document.getElementById('bazaar-progress');
   const dealsEl = document.getElementById('bazaar-deals');
-  const rescanBtn = document.getElementById('bazaar-rescan');
-
   if (!progressText || !dealsEl) {
     isScanning = false;
     return;
@@ -108,10 +101,6 @@ async function runScan(playerId) {
   progressFill.style.width = '0%';
   progressText.textContent = 'Scanning bazaars...';
   dealsEl.innerHTML = '';
-  if (rescanBtn) {
-    rescanBtn.style.display = 'none';
-    rescanBtn.disabled = true;
-  }
 
   const deals = await scanBazaarDeals(
     playerId,
@@ -132,8 +121,8 @@ async function runScan(playerId) {
     progressText.textContent = 'No deals right now — try again soon!';
     dealsEl.innerHTML = `
       <div class="bazaar-empty">
-        No items found below market price right now.<br>
-        Bazaar prices change constantly — try again soon.
+        No bazaar listings found cheaper than market price right now.<br>
+        Close this and try again in a bit.
       </div>
     `;
   } else {
@@ -141,11 +130,6 @@ async function runScan(playerId) {
     dealsEl.innerHTML = deals.map(dealCardHtml).join('');
   }
 
-  // Show rescan button inside modal
-  if (rescanBtn) {
-    rescanBtn.style.display = 'inline-block';
-    rescanBtn.disabled = false;
-  }
 }
 
 // ── Public API ───────────────────────────────────────────────
@@ -160,9 +144,32 @@ export function renderScanButton(container, playerId) {
   const btn = document.createElement('button');
   btn.className = 'bazaar-trigger-btn bazaar-trigger-btn--ready';
   btn.textContent = 'Scan Bazaar Deals';
-  btn.addEventListener('click', () => {
-    if (isScanning) return;
+
+  function startCooldown() {
+    let remaining = COOLDOWN_SEC;
+    btn.disabled = true;
+    btn.classList.remove('bazaar-trigger-btn--ready');
+    btn.classList.add('bazaar-trigger-btn--cooldown');
+    btn.textContent = `Wait ${remaining}s...`;
+
+    const interval = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(interval);
+        btn.disabled = false;
+        btn.classList.remove('bazaar-trigger-btn--cooldown');
+        btn.classList.add('bazaar-trigger-btn--ready');
+        btn.textContent = 'Scan Bazaar Deals';
+      } else {
+        btn.textContent = `Wait ${remaining}s...`;
+      }
+    }, 1000);
+  }
+
+  btn.addEventListener('click', async () => {
+    if (isScanning || btn.disabled) return;
     showModal(playerId);
+    startCooldown();
   });
 
   container.appendChild(btn);

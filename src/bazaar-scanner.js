@@ -6,7 +6,7 @@ import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
-const DEAL_THRESHOLD_PCT = 2;    // minimum % below market to flag as deal
+const DEAL_THRESHOLD_PCT = 0;    // show ANY deal where bazaar < market (tune up later)
 const BATCH_SIZE = 10;           // items per batch
 const BATCH_DELAY_MS = 7000;     // delay between batches (respect 100 req/min)
 
@@ -100,16 +100,13 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
   // Get market prices from Supabase cache (free, instant)
   const marketPrices = await getMarketPricesFromCache(items.map(i => i.id));
 
-  // Filter to items that have a cached market price
-  const scannable = items.filter(i => marketPrices.has(i.id));
-
   const deals = [];
   let scanned = 0;
-  const total = scannable.length;
+  const total = items.length;
 
   // Process in batches to respect rate limits
-  for (let i = 0; i < scannable.length; i += BATCH_SIZE) {
-    const batch = scannable.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    const batch = items.slice(i, i + BATCH_SIZE);
 
     const promises = batch.map(async (item) => {
       // Only fetch bazaar listings — market price comes from cache
@@ -151,7 +148,7 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
 
     await Promise.allSettled(promises);
 
-    if (i + BATCH_SIZE < scannable.length) {
+    if (i + BATCH_SIZE < items.length) {
       await sleep(BATCH_DELAY_MS);
     }
   }
