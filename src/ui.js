@@ -17,6 +17,7 @@ let sortDir = localStorage.getItem(STORAGE_SORT_DIR) || 'desc';
 
 // Live data — populated as prices arrive
 const sellPrices = new Map();   // itemId → sell price
+const checkedItems = new Set();  // itemIds where sell price has been looked up
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at }
 
 // ── Column definitions for sortable headers ───────────────────
@@ -133,7 +134,8 @@ export function getItemIdsForPriceFetch() {
  * Called as each sell price resolves from the market fetcher.
  */
 export function onSellPrice(itemId, price) {
-  sellPrices.set(itemId, price);
+  if (price != null) sellPrices.set(itemId, price);
+  checkedItems.add(itemId);
   renderTable();
 }
 
@@ -239,6 +241,7 @@ function buildRows() {
     const { price: buyPrice, freshness, reportedAgo } = getBuyPriceInfo(item);
     const sellPrice = sellPrices.get(item.item_id);
     const hasSellPrice = sellPrice != null;
+    const isChecked = checkedItems.has(item.item_id);
 
     let metrics = null;
     if (hasSellPrice && flightMins > 0) {
@@ -260,6 +263,7 @@ function buildRows() {
       reportedAgo,
       sellPrice,
       hasSellPrice,
+      isChecked,
       metrics,
       flightMins,
     });
@@ -327,15 +331,19 @@ export function renderTable() {
     const buyCell = `${formatMoney(r.buyPrice)} ${freshnessBadge}`;
 
     // Sell price cell
+    const noListings = r.isChecked && !r.hasSellPrice;
     const sellCell = r.hasSellPrice
       ? formatMoney(r.sellPrice)
-      : '<span class="shimmer-cell"></span>';
+      : noListings
+        ? '<span class="muted">no listings</span>'
+        : '<span class="shimmer-cell"></span>';
 
     // Metric cells
-    const marginCell = r.metrics ? formatMoney(r.metrics.marginPerItem) : '<span class="shimmer-cell"></span>';
-    const pctCell = r.metrics ? formatPct(r.metrics.marginPct) : '<span class="shimmer-cell"></span>';
-    const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : '<span class="shimmer-cell"></span>';
-    const hrCell = r.metrics ? formatMoney(r.metrics.profitPerHour) : '<span class="shimmer-cell"></span>';
+    const dash = '<span class="muted">—</span>';
+    const marginCell = r.metrics ? formatMoney(r.metrics.marginPerItem) : (noListings ? dash : '<span class="shimmer-cell"></span>');
+    const pctCell = r.metrics ? formatPct(r.metrics.marginPct) : (noListings ? dash : '<span class="shimmer-cell"></span>');
+    const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : (noListings ? dash : '<span class="shimmer-cell"></span>');
+    const hrCell = r.metrics ? formatMoney(r.metrics.profitPerHour) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const flightCell = r.metrics
       ? formatFlightTime(r.metrics.roundTripMins)
       : (r.flightMins > 0 ? formatFlightTime(r.flightMins * 2) : '—');
