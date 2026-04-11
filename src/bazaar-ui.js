@@ -13,9 +13,9 @@ const COOLDOWN_SEC = 60;
 
 function bazaarUrl(bazaarOwnerId) {
   if (bazaarOwnerId) {
-    return `https://www.torn.com/bazaar.php#/p=bazaar&userID=${bazaarOwnerId}`;
+    return `https://www.torn.com/bazaar.php?userId=${bazaarOwnerId}#/`;
   }
-  return `https://www.torn.com/bazaar.php`;
+  return `https://www.torn.com/page.php?sid=bazaar`;
 }
 
 // ── Modal ────────────────────────────────────────────────────
