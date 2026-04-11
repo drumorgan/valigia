@@ -3,6 +3,7 @@
 // 60-second cooldown from initial page load and between scans.
 
 import { scanBazaarDeals } from './bazaar-scanner.js';
+import { supabase } from './supabase.js';
 import { formatMoney } from './calculator.js';
 
 let isScanning = false;
@@ -237,4 +238,50 @@ export function renderScanButton(container, playerId) {
 
   // Start initial cooldown immediately (opening ceremony rate limit)
   startCooldown();
+}
+
+/**
+ * Render live community stats + share CTA below the scan button.
+ * Updates each time it's called (and after each scan).
+ */
+export async function renderCommunityStats(container) {
+  const el = document.createElement('div');
+  el.className = 'community-stats';
+  el.innerHTML = `
+    <div class="cs-title">Community Scanner</div>
+    <div class="cs-counters">
+      <div class="cs-counter">
+        <span class="cs-value" id="cs-spins">--</span>
+        <span class="cs-label">spins</span>
+      </div>
+      <div class="cs-divider"></div>
+      <div class="cs-counter">
+        <span class="cs-value" id="cs-deals">--</span>
+        <span class="cs-label">deals found</span>
+      </div>
+      <div class="cs-divider"></div>
+      <div class="cs-counter">
+        <span class="cs-value" id="cs-users">--</span>
+        <span class="cs-label">players</span>
+      </div>
+    </div>
+    <div class="cs-cta">
+      More players = more bazaars discovered. Tell your faction!
+    </div>
+  `;
+
+  container.appendChild(el);
+
+  // Fetch and display current stats
+  const { data } = await supabase
+    .from('community_stats')
+    .select('total_spins, deals_found, total_users')
+    .eq('id', 1)
+    .single();
+
+  if (data) {
+    el.querySelector('#cs-spins').textContent = data.total_spins.toLocaleString();
+    el.querySelector('#cs-deals').textContent = data.deals_found.toLocaleString();
+    el.querySelector('#cs-users').textContent = data.total_users.toLocaleString();
+  }
 }
