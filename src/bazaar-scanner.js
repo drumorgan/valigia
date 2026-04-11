@@ -1,40 +1,39 @@
-// Bazaar deal scanner — finds items in bazaars below item market price.
-// 1. V2 market/{id}/itemmarket → current market price
-// 2. V2 market/{id}/bazaar → list of bazaars selling the item
-// 3. For each bazaar, fetch user/{bazaarId}/bazaar → actual prices
-// Compares lowest bazaar price to market price.
+// Bazaar deal scanner — crowd-sourced "super database" of bazaar prices.
+//
+// Strategy: every scan contributes to a shared Supabase pool. Over time the
+// system learns which bazaars carry which items and at what prices.
+//
+// Per-scan flow (budget: ~30 API calls):
+//   Phase 1 — FREE (Supabase reads, 0 API calls)
+//     • Read market prices from sell_prices cache
+//     • Read known bazaar sources from bazaar_prices pool
+//   Phase 2 — DISCOVER (~5 API calls)
+//     • Pick random items with few known sources
+//     • V2 market/{id}/bazaar → discover new bazaar IDs
+//   Phase 3 — CHECK (~25 API calls)
+//     • Check bazaars, prioritizing least-recently-checked
+//     • V1 user/{bazaarId}/bazaar → actual prices
+//   Phase 4 — WRITE BACK (Supabase upsert, 0 API calls)
+//     • All discoveries written to bazaar_prices for everyone
 
 import { callTornApi } from './torn-api.js';
+import { supabase } from './supabase.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
-const BATCH_SIZE = 3;            // items per batch (multiple API calls each)
-const BATCH_DELAY_MS = 7000;
-const MAX_BAZAARS_PER_ITEM = 3;  // check top N bazaars per item for prices
+const DISCOVER_BUDGET = 5;    // API calls for discovering new bazaar sources
+const CHECK_BUDGET = 25;      // API calls for checking bazaar prices
+const MIN_SOURCES_FOR_SKIP = 5; // items with >= this many sources skip discovery
+const POOL_STALE_MS = 30 * 60 * 1000; // 30 min — re-check bazaars older than this
 
 /**
- * Resolve watchlist item names to IDs.
+ * Resolve watchlist item names to IDs using cached item catalog.
  */
-async function resolveWatchlistIds(playerId) {
-  let nameToId = null;
+function resolveWatchlistIds() {
   const cached = localStorage.getItem('valigia_item_id_map');
-  if (cached) {
-    try { nameToId = JSON.parse(cached); } catch { /* ignore */ }
-  }
+  if (!cached) return { resolved: [], unresolved: BAZAAR_WATCHLIST.slice() };
 
-  if (!nameToId) {
-    const data = await callTornApi({
-      section: 'torn',
-      selections: 'items',
-      player_id: playerId,
-    });
-    if (!data?.items) return { resolved: [], unresolved: BAZAAR_WATCHLIST.slice() };
-
-    nameToId = {};
-    for (const [idStr, item] of Object.entries(data.items)) {
-      nameToId[item.name.toLowerCase()] = Number(idStr);
-    }
-    localStorage.setItem('valigia_item_id_map', JSON.stringify(nameToId));
-  }
+  let nameToId;
+  try { nameToId = JSON.parse(cached); } catch { return { resolved: [], unresolved: BAZAAR_WATCHLIST.slice() }; }
 
   const resolved = [];
   const unresolved = [];
@@ -49,189 +48,316 @@ async function resolveWatchlistIds(playerId) {
   return { resolved, unresolved };
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 /**
- * Get the lowest item market price from V2 itemmarket response.
+ * Phase 1: Read market prices from Supabase sell_prices cache.
+ * Zero API calls — entirely from the shared cache that main page already populates.
  */
-function extractMarketPrice(data) {
-  if (!data) return null;
+async function readMarketPrices(itemIds) {
+  const { data, error } = await supabase
+    .from('sell_prices')
+    .select('item_id, price')
+    .in('item_id', itemIds)
+    .not('price', 'is', null);
 
-  // V2 itemmarket returns { itemmarket: { listings: [...] } } or { itemmarket: [...] }
-  const listings = data.itemmarket?.listings || data.itemmarket;
-  if (Array.isArray(listings) && listings.length > 0) {
-    // Find the lowest cost
-    let lowest = listings[0].cost || listings[0].price;
-    for (const l of listings) {
-      const p = l.cost || l.price;
-      if (p && p < lowest) lowest = p;
-    }
-    return lowest;
+  if (error || !data) return new Map();
+
+  const map = new Map();
+  for (const row of data) {
+    map.set(row.item_id, row.price);
   }
-
-  return null;
+  return map;
 }
 
 /**
- * Get bazaar IDs that sell a specific item from V2 bazaar response.
+ * Phase 1: Read known bazaar sources from Supabase pool.
+ * Zero API calls — crowd-sourced from all users' previous scans.
  */
-function extractBazaarIds(data) {
-  if (!data?.bazaar) return [];
+async function readBazaarPool(itemIds) {
+  const { data, error } = await supabase
+    .from('bazaar_prices')
+    .select('item_id, bazaar_owner_id, price, quantity, checked_at')
+    .in('item_id', itemIds);
 
-  // V2 returns { bazaar: { specialized: [...], ... } }
-  const ids = [];
-  for (const category of Object.values(data.bazaar)) {
-    if (Array.isArray(category)) {
-      for (const baz of category) {
-        if (baz.id) ids.push(baz.id);
+  if (error || !data) return new Map();
+
+  // Group by item_id
+  const pool = new Map();
+  for (const row of data) {
+    if (!pool.has(row.item_id)) pool.set(row.item_id, []);
+    pool.get(row.item_id).push(row);
+  }
+  return pool;
+}
+
+/**
+ * Phase 2: Discover new bazaar sources for items with few known sources.
+ * Uses V2 market/{id}/bazaar to find bazaars that sell each item.
+ */
+async function discoverBazaars(items, pool, playerId, onProgress) {
+  // Pick items with fewest known sources, randomized
+  const candidates = items
+    .map(item => ({ ...item, sourceCount: (pool.get(item.id) || []).length }))
+    .filter(item => item.sourceCount < MIN_SOURCES_FOR_SKIP)
+    .sort(() => Math.random() - 0.5)
+    .slice(0, DISCOVER_BUDGET);
+
+  const discovered = new Map(); // item_id → [bazaar_owner_ids]
+
+  const promises = candidates.map(async (item) => {
+    const data = await callTornApi({
+      section: 'market',
+      id: item.id,
+      selections: 'bazaar',
+      player_id: playerId,
+      v2: true,
+    });
+
+    if (!data?.bazaar) return;
+
+    // V2 bazaar returns { bazaar: { specialized: [...], ... } }
+    const ids = [];
+    for (const category of Object.values(data.bazaar)) {
+      if (Array.isArray(category)) {
+        for (const baz of category) {
+          if (baz.id) ids.push(baz.id);
+        }
       }
     }
-  }
-  return ids.slice(0, MAX_BAZAARS_PER_ITEM);
-}
 
-/**
- * Fetch a specific bazaar's listing for an item.
- * Uses user/{bazaarOwnerId}/bazaar to get their bazaar inventory.
- */
-async function getBazaarPrice(bazaarOwnerId, itemId, playerId) {
-  const data = await callTornApi({
-    section: 'user',
-    id: bazaarOwnerId,
-    selections: 'bazaar',
-    player_id: playerId,
+    if (ids.length > 0) {
+      discovered.set(item.id, ids);
+    }
   });
 
-  if (!data?.bazaar) return null;
+  await Promise.allSettled(promises);
+  return discovered;
+}
 
-  // bazaar response: { bazaar: { "itemId": { name, price, quantity, ... }, ... } }
-  // or array format
-  if (Array.isArray(data.bazaar)) {
-    for (const item of data.bazaar) {
-      if (item.ID === itemId || item.id === itemId) {
-        return { price: item.cost || item.price || item.market_price, quantity: item.quantity || 1 };
-      }
+/**
+ * Phase 3: Check bazaar prices. Prioritizes least-recently-checked.
+ * Returns array of { item_id, bazaar_owner_id, price, quantity }.
+ */
+async function checkBazaars(items, pool, discovered, playerId, onProgress) {
+  const now = Date.now();
+  const results = [];
+
+  // Build a unified list of (item_id, bazaar_owner_id, staleness) to check
+  const toCheck = [];
+
+  for (const item of items) {
+    const knownSources = pool.get(item.id) || [];
+    const discoveredIds = discovered.get(item.id) || [];
+
+    // Add known sources, prioritizing stale ones
+    for (const src of knownSources) {
+      const age = now - new Date(src.checked_at).getTime();
+      toCheck.push({
+        itemId: item.id,
+        bazaarOwnerId: src.bazaar_owner_id,
+        staleness: age,
+        isNew: false,
+      });
     }
-  } else if (typeof data.bazaar === 'object') {
-    for (const item of Object.values(data.bazaar)) {
-      if (item.ID === itemId || item.id === itemId) {
-        return { price: item.cost || item.price || item.market_price, quantity: item.quantity || 1 };
+
+    // Add newly discovered sources (highest priority — never checked)
+    for (const bazId of discoveredIds) {
+      // Skip if already in known sources
+      const alreadyKnown = knownSources.some(s => s.bazaar_owner_id === bazId);
+      if (!alreadyKnown) {
+        toCheck.push({
+          itemId: item.id,
+          bazaarOwnerId: bazId,
+          staleness: Infinity, // never checked = max priority
+          isNew: true,
+        });
       }
     }
   }
 
-  return null;
+  // Sort: new discoveries first, then stalest first
+  toCheck.sort((a, b) => b.staleness - a.staleness);
+
+  // Take top N within budget
+  const batch = toCheck.slice(0, CHECK_BUDGET);
+  let checked = 0;
+  const total = batch.length;
+
+  const promises = batch.map(async (entry) => {
+    const data = await callTornApi({
+      section: 'user',
+      id: entry.bazaarOwnerId,
+      selections: 'bazaar',
+      player_id: playerId,
+    });
+
+    checked++;
+    if (onProgress) onProgress(checked, total);
+
+    if (!data?.bazaar) return;
+
+    // Search for our item in this bazaar's inventory
+    const bazaarItems = Array.isArray(data.bazaar)
+      ? data.bazaar
+      : Object.values(data.bazaar || {});
+
+    for (const item of bazaarItems) {
+      const itemId = item.ID || item.id;
+      const price = item.cost || item.price || item.market_price;
+      if (!itemId || !price) continue;
+
+      // Record this item if it's on our watchlist
+      const watchlistIds = new Set(items.map(i => i.id));
+      if (watchlistIds.has(itemId)) {
+        results.push({
+          item_id: itemId,
+          bazaar_owner_id: entry.bazaarOwnerId,
+          price,
+          quantity: item.quantity || 1,
+        });
+      }
+    }
+  });
+
+  await Promise.allSettled(promises);
+  return results;
 }
 
 /**
- * Scan bazaar listings for deals below item market price.
+ * Phase 4: Write discoveries back to the shared pool.
  */
-export async function scanBazaarDeals(playerId, onProgress, onDeal) {
-  const { resolved: items, unresolved } = await resolveWatchlistIds(playerId);
+async function writeBazaarPool(results) {
+  if (results.length === 0) return;
+
+  const rows = results.map(r => ({
+    item_id: r.item_id,
+    bazaar_owner_id: r.bazaar_owner_id,
+    price: r.price,
+    quantity: r.quantity,
+    checked_at: new Date().toISOString(),
+  }));
+
+  await supabase
+    .from('bazaar_prices')
+    .upsert(rows, { onConflict: 'item_id,bazaar_owner_id' });
+}
+
+/**
+ * Find the single best deal across all data.
+ * Compares bazaar prices (from pool + fresh checks) against market prices.
+ */
+function findBestDeal(items, marketPrices, pool, freshResults) {
+  // Merge pool data with fresh results
+  const allBazaarPrices = new Map(); // item_id → lowest price entry
+
+  // From pool (existing data)
+  for (const [itemId, sources] of pool) {
+    for (const src of sources) {
+      if (src.price == null) continue;
+      const current = allBazaarPrices.get(itemId);
+      if (!current || src.price < current.price) {
+        allBazaarPrices.set(itemId, {
+          price: src.price,
+          quantity: src.quantity || 1,
+        });
+      }
+    }
+  }
+
+  // From fresh results (overrides pool if cheaper)
+  for (const r of freshResults) {
+    if (r.price == null) continue;
+    const current = allBazaarPrices.get(r.item_id);
+    if (!current || r.price < current.price) {
+      allBazaarPrices.set(r.item_id, {
+        price: r.price,
+        quantity: r.quantity || 1,
+      });
+    }
+  }
+
+  // Find best deal
+  let bestDeal = null;
+
+  for (const item of items) {
+    const marketPrice = marketPrices.get(item.id);
+    const bazaar = allBazaarPrices.get(item.id);
+
+    if (!marketPrice || !bazaar) continue;
+
+    const savings = marketPrice - bazaar.price;
+    if (savings <= 0) continue;
+
+    const savingsPct = (savings / marketPrice) * 100;
+    const deal = {
+      itemId: item.id,
+      itemName: item.name,
+      bazaarPrice: bazaar.price,
+      bazaarQty: bazaar.quantity,
+      marketPrice,
+      savings,
+      savingsPct,
+    };
+
+    if (!bestDeal || deal.savingsPct > bestDeal.savingsPct) {
+      bestDeal = deal;
+    }
+  }
+
+  return bestDeal;
+}
+
+/**
+ * Main scanner entry point.
+ * Returns { bestDeal, stats } — one deal or null.
+ *
+ * @param {number} playerId
+ * @param {function} onProgress - (checked, total) progress callback
+ */
+export async function scanBazaarDeals(playerId, onProgress) {
+  const { resolved: items, unresolved } = resolveWatchlistIds();
 
   const stats = {
     watchlistSize: BAZAAR_WATCHLIST.length,
     resolved: items.length,
     unresolved,
-    hadBazaar: 0,
-    hadMarket: 0,
-    cheaper: 0,
-    apiErrors: 0,
-    sampleResponses: [],
+    poolHits: 0,
+    marketHits: 0,
+    discovered: 0,
+    checked: 0,
+    freshResults: 0,
+    apiCalls: 0,
   };
 
-  if (items.length === 0) return { deals: [], stats };
+  if (items.length === 0) return { bestDeal: null, stats };
 
-  const deals = [];
-  let scanned = 0;
-  const total = items.length;
+  const itemIds = items.map(i => i.id);
 
-  for (let i = 0; i < items.length; i += BATCH_SIZE) {
-    const batch = items.slice(i, i + BATCH_SIZE);
+  // Phase 1: Read from Supabase (0 API calls)
+  const [marketPrices, pool] = await Promise.all([
+    readMarketPrices(itemIds),
+    readBazaarPool(itemIds),
+  ]);
 
-    const promises = batch.map(async (item) => {
-      // 1. Get market price via V2 itemmarket
-      const marketData = await callTornApi({
-        section: 'market',
-        id: item.id,
-        selections: 'itemmarket',
-        player_id: playerId,
-        v2: true,
-      });
+  stats.marketHits = marketPrices.size;
+  stats.poolHits = pool.size;
 
-      const marketPrice = extractMarketPrice(marketData);
-      if (marketPrice) stats.hadMarket++;
+  // Phase 2: Discover new bazaar sources (~5 API calls)
+  const discovered = await discoverBazaars(items, pool, playerId);
+  let totalDiscovered = 0;
+  for (const ids of discovered.values()) totalDiscovered += ids.length;
+  stats.discovered = totalDiscovered;
+  stats.apiCalls += Math.min(DISCOVER_BUDGET, items.filter(i => (pool.get(i.id) || []).length < MIN_SOURCES_FOR_SKIP).length);
 
-      // 2. Get list of bazaars selling this item via V2
-      const bazaarListData = await callTornApi({
-        section: 'market',
-        id: item.id,
-        selections: 'bazaar',
-        player_id: playerId,
-        v2: true,
-      });
+  // Phase 3: Check bazaars (~25 API calls)
+  const freshResults = await checkBazaars(items, pool, discovered, playerId, onProgress);
+  stats.checked = freshResults.length;
+  stats.freshResults = freshResults.length;
 
-      const bazaarIds = extractBazaarIds(bazaarListData);
+  // Phase 4: Write back to shared pool (0 API calls)
+  await writeBazaarPool(freshResults);
 
-      // Capture samples for first 3 items
-      if (stats.sampleResponses.length < 3) {
-        stats.sampleResponses.push({
-          name: item.name,
-          id: item.id,
-          marketKeys: marketData ? Object.keys(marketData).join(',') : 'null',
-          marketPrice,
-          bazaarCount: bazaarIds.length,
-          mSample: marketData ? JSON.stringify(marketData).substring(0, 120) : 'null',
-        });
-      }
+  // Find the single best deal
+  const bestDeal = findBestDeal(items, marketPrices, pool, freshResults);
 
-      if (!marketData) stats.apiErrors++;
-      if (!bazaarListData) stats.apiErrors++;
-
-      scanned++;
-      if (onProgress) onProgress(scanned, total);
-
-      if (!marketPrice || bazaarIds.length === 0) return;
-
-      // 3. Check actual bazaar prices (top N bazaars)
-      let lowestBazaar = null;
-      for (const bazId of bazaarIds) {
-        const bp = await getBazaarPrice(bazId, item.id, playerId);
-        if (bp && (!lowestBazaar || bp.price < lowestBazaar.price)) {
-          lowestBazaar = bp;
-        }
-      }
-
-      if (lowestBazaar) stats.hadBazaar++;
-      if (!lowestBazaar) return;
-
-      const savings = marketPrice - lowestBazaar.price;
-      const savingsPct = (savings / marketPrice) * 100;
-
-      if (savings > 0) {
-        stats.cheaper++;
-        const deal = {
-          itemId: item.id,
-          itemName: item.name,
-          bazaarPrice: lowestBazaar.price,
-          bazaarQty: lowestBazaar.quantity,
-          marketPrice,
-          savings,
-          savingsPct,
-        };
-        deals.push(deal);
-        if (onDeal) onDeal(deal);
-      }
-    });
-
-    await Promise.allSettled(promises);
-
-    if (i + BATCH_SIZE < items.length) {
-      await sleep(BATCH_DELAY_MS);
-    }
-  }
-
-  return { deals: deals.sort((a, b) => b.savingsPct - a.savingsPct), stats };
+  return { bestDeal, stats };
 }
