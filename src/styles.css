@@ -1300,12 +1300,13 @@ tr.row--negative td {
 
   .arb-table tr {
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto 1fr 1fr;
     grid-template-areas:
-      "rank item"
-      "rank dest"
-      "buy  sell"
-      "margin hr";
+      "rank item    item"
+      "rank dest    stock"
+      "buy  sell    margin"
+      "runcost run  hr"
+      "flight flight flight";
     gap: 0.15rem 0.5rem;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1397,12 +1398,56 @@ tr.row--negative td {
     opacity: 0.7;
   }
 
-  /* Hide columns that don't fit card layout */
-  .arb-table td.col-stock,
-  .arb-table td.col-runcost,
-  .arb-table td.col-run,
+  .arb-table td.col-stock {
+    grid-area: stock;
+    text-align: right;
+    color: var(--muted);
+    font-size: 0.68rem;
+    align-self: end;
+  }
+
+  .arb-table td.col-stock::before {
+    content: "Stock ";
+    opacity: 0.6;
+  }
+
+  .arb-table td.col-runcost {
+    grid-area: runcost;
+    text-align: left;
+    color: var(--muted);
+    font-size: 0.72rem;
+  }
+
+  .arb-table td.col-runcost::before {
+    content: "Cost ";
+    opacity: 0.6;
+  }
+
+  .arb-table td.col-run {
+    grid-area: run;
+    text-align: center;
+    font-size: 0.72rem;
+  }
+
+  .arb-table td.col-run::before {
+    content: "Run ";
+    color: var(--muted);
+    opacity: 0.6;
+  }
+
   .arb-table td.col-flight {
-    display: none;
+    grid-area: flight;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.68rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.3rem;
+    margin-top: 0.15rem;
+  }
+
+  .arb-table td.col-flight::before {
+    content: "Flight ";
+    opacity: 0.6;
   }
 
   /* Login adjustments */
