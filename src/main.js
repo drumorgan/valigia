@@ -100,12 +100,12 @@ async function startDashboard(playerId) {
   if (!items || items.length === 0) {
     tableContainer.innerHTML = `
       <div style="text-align:center;padding:3rem 1rem;font-family:'Syne Mono',monospace;">
-        <p style="font-size:1.2rem;color:var(--warning);margin-bottom:0.5rem;">
-          Could not load abroad prices
+        <p style="font-size:1.2rem;color:var(--accent);margin-bottom:0.5rem;">
+          Loading prices\u2026
         </p>
         <p style="color:var(--muted);font-size:0.85rem;max-width:28rem;margin:0 auto;">
-          The YATA price feed may be down, or your browser blocked the request.
-          Try refreshing in a minute.
+          Fetching abroad prices from the community feed.
+          If this persists, try refreshing.
         </p>
       </div>
     `;
