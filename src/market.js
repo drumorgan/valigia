@@ -38,7 +38,8 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   }
 
   // 2. Serve ALL cached prices immediately (even stale — better than nothing)
-  //    Collect stale/missing IDs for refresh
+  //    Collect missing and stale IDs separately so missing gets priority
+  const missingIds = [];
   const staleIds = [];
   for (const itemId of itemIds) {
     const row = cacheMap.get(itemId);
@@ -51,17 +52,17 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
       }
     } else {
       // Missing entirely — highest priority
-      staleIds.push(itemId);
+      missingIds.push(itemId);
     }
   }
 
-  if (staleIds.length === 0) {
-    showToast(`Sell prices: all ${cacheMap.size} cached, 0 stale`, 'success');
+  if (missingIds.length === 0 && staleIds.length === 0) {
+    showToast(`Sell prices: all ${cacheMap.size} cached and fresh`, 'success');
     return;
   }
 
-  // 3. Only refresh a small number per visit to stay under rate limits
-  const toRefresh = staleIds.slice(0, MAX_REFRESH_PER_VISIT);
+  // 3. Prioritize missing items, then stale. Refresh up to cap per visit.
+  const toRefresh = [...missingIds, ...staleIds].slice(0, MAX_REFRESH_PER_VISIT);
   const freshPrices = [];
   let apiSuccessCount = 0;
   let apiFailCount = 0;
@@ -101,7 +102,7 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     if (writeErr) {
       showToast(`Supabase write error: ${writeErr.message}`, 'warning');
     } else {
-      showToast(`Sell prices: ${cacheMap.size} cached, ${apiSuccessCount} refreshed, ${apiFailCount} failed, ${freshPrices.length} written to Supabase`, 'success');
+      showToast(`Sell prices: ${cacheMap.size} cached, ${missingIds.length} missing, ${staleIds.length} stale → ${apiSuccessCount} refreshed, ${freshPrices.length} written`, 'success');
     }
   } else {
     showToast(`Sell prices: ${cacheMap.size} cached, 0/${toRefresh.length} API calls succeeded`, 'warning');
