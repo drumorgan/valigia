@@ -126,10 +126,13 @@ async function runScan(playerId) {
   if (stats.apiErrors > 0) diagLines.push(`API errors: ${stats.apiErrors}`);
   if (stats.unresolved.length > 0) diagLines.push(`Unresolved: ${stats.unresolved.join(', ')}`);
   if (stats.sampleResponses && stats.sampleResponses.length > 0) {
-    diagLines.push('--- Item samples ---');
+    diagLines.push('--- V2 API samples ---');
     for (const s of stats.sampleResponses) {
-      diagLines.push(`${s.name} (${s.id}): baz=${s.bazaarType} mkt=${s.marketType}`);
-      diagLines.push(`  bKeys=[${s.bazaarKeys}] mKeys=[${s.marketKeys}]`);
+      diagLines.push(`${s.name} (${s.id}):`);
+      diagLines.push(`  mkt keys=[${s.marketKeys}]`);
+      diagLines.push(`  mkt: ${s.mSample}`);
+      diagLines.push(`  baz keys=[${s.bazaarKeys}]`);
+      diagLines.push(`  baz: ${s.bSample}`);
     }
   }
 
