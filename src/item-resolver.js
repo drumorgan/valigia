@@ -20,7 +20,7 @@ export function hasUnresolvedItems() {
 
 /**
  * Get the Torn API item type for an item ID.
- * Returns lowercase category: 'drug', 'plushie', 'flower', or 'other'.
+ * Returns lowercase category: 'drug', 'plushie', 'flower', 'artifact', or 'other'.
  */
 export function getItemTypeById(id) {
   const raw = idToType[id];
@@ -29,6 +29,7 @@ export function getItemTypeById(id) {
   if (lower === 'drug') return 'drug';
   if (lower === 'plushie') return 'plushie';
   if (lower === 'flower') return 'flower';
+  if (lower === 'artifact') return 'artifact';
   return 'other';
 }
 

@@ -135,6 +135,7 @@ export function renderControls(container, onChange) {
         <button class="filter-chip ${filterCategory === 'drug' ? 'filter-chip--active' : ''}" data-cat="drug">Drugs</button>
         <button class="filter-chip ${filterCategory === 'plushie' ? 'filter-chip--active' : ''}" data-cat="plushie">Plushies</button>
         <button class="filter-chip ${filterCategory === 'flower' ? 'filter-chip--active' : ''}" data-cat="flower">Flowers</button>
+        <button class="filter-chip ${filterCategory === 'artifact' ? 'filter-chip--active' : ''}" data-cat="artifact">Artifacts</button>
       </div>
     </div>
   `;
