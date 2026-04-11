@@ -70,13 +70,6 @@ serve(async (req) => {
       );
     }
 
-    // Audit log
-    await supabase.from('secret_audit_log').insert({
-      torn_player_id: player_id,
-      action: 'set',
-      edge_function: 'set-api-key',
-    });
-
     return new Response(
       JSON.stringify({ success: true }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

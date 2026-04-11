@@ -73,13 +73,6 @@ serve(async (req) => {
         secret.api_key_iv,
         secret.key_version
       );
-
-      // Audit
-      await supabase.from('secret_audit_log').insert({
-        torn_player_id: player_id,
-        action: 'decrypt_used',
-        edge_function: 'torn-proxy',
-      });
     }
 
     if (!apiKey) {
