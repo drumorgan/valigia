@@ -166,6 +166,7 @@ async function runScan(playerId) {
     `New bazaars discovered: ${stats.discovered}`,
     `Bazaars checked: ${stats.bazaarsChecked}`,
     `Prices found: ${stats.pricesFound}`,
+    `Deals below market: ${stats.dealsFound || 0}`,
     `~${stats.apiCalls + stats.bazaarsChecked} API calls used`,
   ];
   if (stats.unresolved.length > 0) {
