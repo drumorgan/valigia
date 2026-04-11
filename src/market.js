@@ -56,10 +56,7 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     }
   }
 
-  if (missingIds.length === 0 && staleIds.length === 0) {
-    showToast(`Sell prices: all ${cacheMap.size} cached and fresh`, 'success');
-    return;
-  }
+  if (missingIds.length === 0 && staleIds.length === 0) return;
 
   // 3. Prioritize missing items, then stale. Refresh up to cap per visit.
   const toRefresh = [...missingIds, ...staleIds].slice(0, MAX_REFRESH_PER_VISIT);
@@ -116,10 +113,6 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
 
     if (writeErr) {
       showToast(`Supabase write error: ${writeErr.message}`, 'warning');
-    } else {
-      showToast(`Sell prices: ${cacheMap.size} cached, ${missingIds.length} missing, ${staleIds.length} stale → ${apiSuccessCount} refreshed, ${freshPrices.length} written`, 'success');
     }
-  } else {
-    showToast(`Sell prices: ${cacheMap.size} cached, 0/${toRefresh.length} API calls succeeded`, 'warning');
   }
 }
