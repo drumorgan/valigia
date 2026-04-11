@@ -8,6 +8,10 @@ import { showToast } from './ui.js';
 
 const PROXY_URL = `${supabaseUrl}/functions/v1/torn-proxy`;
 
+// Once a critical error (like code 16) is shown, suppress further toasts
+// so the important message isn't overwritten by subsequent failures.
+let criticalErrorShown = false;
+
 /**
  * Call the Torn API through the Edge Function proxy.
  * @param {object} params
@@ -42,14 +46,23 @@ export async function callTornApi(params) {
 
     if (data.error) {
       const code = data.error.code;
+      const critical = [2, 13, 16];
       const messages = {
-        2: 'Invalid API key',
+        2: 'Invalid API key — please log out and re-enter a valid key',
         5: 'Too many requests — wait a moment',
         10: 'Key owner is in federal jail',
-        13: 'Key disabled (owner inactive >7 days)',
+        13: 'Key disabled (owner inactive >7 days) — please create a new key',
         16: 'Key access too low — delete your current key on Torn and create a new one with the "Create a Custom Key" link on the login screen',
       };
-      showToast(messages[code] || `Torn API error ${code}: ${data.error.error}`);
+      if (critical.includes(code)) {
+        // Show once — don't let subsequent failures overwrite this message
+        if (!criticalErrorShown) {
+          criticalErrorShown = true;
+          showToast(messages[code]);
+        }
+      } else {
+        showToast(messages[code] || `Torn API error ${code}: ${data.error.error}`);
+      }
       return null;
     }
 
