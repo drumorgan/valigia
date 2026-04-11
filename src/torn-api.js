@@ -47,7 +47,7 @@ export async function callTornApi(params) {
         5: 'Too many requests — wait a moment',
         10: 'Key owner is in federal jail',
         13: 'Key disabled (owner inactive >7 days)',
-        16: 'Key access level too low',
+        16: 'Key access too low — delete your current key on Torn and create a new one with the "Create a Custom Key" link on the login screen',
       };
       showToast(messages[code] || `Torn API error ${code}: ${data.error.error}`);
       return null;
