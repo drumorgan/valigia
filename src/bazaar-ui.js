@@ -128,11 +128,9 @@ async function runScan(playerId) {
   if (stats.sampleResponses && stats.sampleResponses.length > 0) {
     diagLines.push('--- V2 API samples ---');
     for (const s of stats.sampleResponses) {
-      diagLines.push(`${s.name} (${s.id}):`);
+      diagLines.push(`${s.name} (${s.id}): mktPrice=${s.marketPrice || 'none'} bazaars=${s.bazaarCount}`);
       diagLines.push(`  mkt keys=[${s.marketKeys}]`);
       diagLines.push(`  mkt: ${s.mSample}`);
-      diagLines.push(`  baz keys=[${s.bazaarKeys}]`);
-      diagLines.push(`  baz: ${s.bSample}`);
     }
   }
 
