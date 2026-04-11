@@ -73,8 +73,9 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     const data = await callTornApi({
       section: 'market',
       id: itemId,
-      selections: 'lookup',
+      selections: 'itemmarket',
       player_id: playerId,
+      v2: true,
     });
 
     if (!data) {
@@ -82,8 +83,7 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
       return;
     }
 
-    // Detect the API help page response (returned when key lacks permission)
-    // — don't overwrite good cached prices with null
+    // Detect the API help page response — don't overwrite good cached prices
     if (data.selections && !data.itemmarket) {
       apiFailCount++;
       return;
@@ -92,9 +92,10 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     apiSuccessCount++;
 
     let lowestPrice = null;
-    // V1 lookup returns { itemmarket: [{ cost, quantity }, ...] } sorted by cost
-    if (Array.isArray(data?.itemmarket) && data.itemmarket.length > 0) {
-      lowestPrice = data.itemmarket[0].cost;
+    // V2 itemmarket returns { itemmarket: [...] } or { itemmarket: { listings: [...] } }
+    const listings = data.itemmarket?.listings || data.itemmarket;
+    if (Array.isArray(listings) && listings.length > 0) {
+      lowestPrice = listings[0].cost || listings[0].price;
     }
 
     freshPrices.push({ item_id: itemId, price: lowestPrice, updated_at: new Date().toISOString() });
