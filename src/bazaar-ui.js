@@ -164,8 +164,9 @@ async function runScan(playerId) {
     `Market prices (from cache): ${stats.marketHits}`,
     `Known bazaar sources (pool): ${stats.poolHits} items`,
     `New bazaars discovered: ${stats.discovered}`,
-    `Bazaars checked: ${stats.checked}`,
-    `~${stats.apiCalls + stats.checked} API calls used`,
+    `Bazaars checked: ${stats.bazaarsChecked}`,
+    `Prices found: ${stats.pricesFound}`,
+    `~${stats.apiCalls + stats.bazaarsChecked} API calls used`,
   ];
   if (stats.unresolved.length > 0) {
     diagLines.push(`Unresolved: ${stats.unresolved.join(', ')}`);
