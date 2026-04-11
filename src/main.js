@@ -71,10 +71,6 @@ async function detectPlayerTravel(playerId) {
     if (match) slots += parseInt(match[1], 10);
   }
 
-  // TEMPORARY DIAGNOSTIC
-  const matched = allPerks.filter(p => capacityRegex.test(p));
-  showToast(`Capacity: ${slots} slots. Matched: ${matched.join(' | ') || 'none'}`, 'success');
-
   setPlayerTravel(slots, airstrip);
 }
 
