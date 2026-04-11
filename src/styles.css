@@ -592,6 +592,280 @@ tr.row--negative td {
 .crosslink-tornder   { color: #3de8c8; }
 .crosslink-yoink     { color: #c0c4cc; }
 
+/* ── Bazaar Scanner Button ──────────────────────────────────── */
+
+.bazaar-trigger-btn {
+  display: block;
+  width: 100%;
+  margin: 1.5rem 0;
+  padding: 0.75rem 1.2rem;
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.bazaar-trigger-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Ready state — glowing pulse to invite clicking */
+.bazaar-trigger-btn--ready {
+  animation: scanPulse 2s ease-in-out infinite;
+}
+
+@keyframes scanPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(232, 200, 74, 0); }
+  50%      { box-shadow: 0 0 12px 2px rgba(232, 200, 74, 0.25); }
+}
+
+/* Cooldown state — muted, counting down */
+.bazaar-trigger-btn--cooldown {
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: default;
+  animation: none;
+}
+
+.bazaar-trigger-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── Bazaar Modal Overlay ──────────────────────────────────── */
+
+.bazaar-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.bazaar-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 520px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.bazaar-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.bazaar-modal-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.1rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.bazaar-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+
+.bazaar-close:hover {
+  color: var(--text);
+}
+
+.bazaar-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+}
+
+.bazaar-modal-footer {
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+/* ── Progress Bar ──────────────────────────────────────────── */
+
+.bazaar-progress {
+  margin-bottom: 1rem;
+}
+
+.bazaar-progress-text {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.bazaar-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.bazaar-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ── Deal Cards ────────────────────────────────────────────── */
+
+.bazaar-deals {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.deal-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+}
+
+.deal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.deal-name {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.deal-pct {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--positive);
+}
+
+.deal-prices {
+  margin-bottom: 0.6rem;
+}
+
+.deal-price-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.78rem;
+  padding: 0.15rem 0;
+}
+
+.deal-label {
+  color: var(--muted);
+  width: 4.5rem;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+}
+
+.deal-value--bazaar {
+  color: var(--positive);
+  font-weight: 700;
+}
+
+.deal-value--market {
+  color: var(--muted);
+}
+
+.deal-value--savings {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.deal-qty {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.deal-savings-row {
+  border-top: 1px solid var(--border);
+  margin-top: 0.25rem;
+  padding-top: 0.35rem;
+}
+
+.deal-link {
+  display: inline-block;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.deal-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Scan Button (in modal footer) ─────────────────────────── */
+
+.bazaar-scan-btn {
+  background: var(--accent);
+  color: var(--bg);
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.5rem 1.5rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.bazaar-scan-btn:hover {
+  filter: brightness(1.1);
+}
+
+.bazaar-scan-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Empty State ───────────────────────────────────────────── */
+
+.bazaar-empty {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: center;
+  padding: 1.5rem 1rem;
+  line-height: 1.6;
+}
+
 /* ── Responsive ──────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
