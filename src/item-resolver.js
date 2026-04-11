@@ -6,6 +6,10 @@ import { callTornApi } from './torn-api.js';
 import { ABROAD_ITEMS } from './data/abroad-items.js';
 
 const CACHE_KEY = 'valigia_item_id_map';
+const TYPE_CACHE_KEY = 'valigia_item_type_map';
+
+// In-memory id→type map, populated from cache or Torn API
+let idToType = {};
 
 /**
  * Check if any items still have null IDs.
@@ -15,12 +19,32 @@ export function hasUnresolvedItems() {
 }
 
 /**
+ * Get the Torn API item type for an item ID.
+ * Returns lowercase category: 'drug', 'plushie', 'flower', or 'other'.
+ */
+export function getItemTypeById(id) {
+  const raw = idToType[id];
+  if (!raw) return 'other';
+  const lower = raw.toLowerCase();
+  if (lower === 'drug') return 'drug';
+  if (lower === 'plushie') return 'plushie';
+  if (lower === 'flower') return 'flower';
+  return 'other';
+}
+
+/**
  * Try to fill null itemIds from localStorage cache.
  * Returns true if all items are now resolved.
  */
 function applyCache() {
   const cached = localStorage.getItem(CACHE_KEY);
   if (!cached) return false;
+
+  // Also load type cache
+  const typeCached = localStorage.getItem(TYPE_CACHE_KEY);
+  if (typeCached) {
+    try { idToType = JSON.parse(typeCached); } catch { /* ignore */ }
+  }
 
   try {
     const nameToId = JSON.parse(cached);
@@ -56,11 +80,13 @@ export async function resolveItemIds(playerId) {
 
   if (!data?.items) return;
 
-  // Build name→id map from Torn's response
-  // Response shape: { items: { "1": { name: "Hammer", ... }, "2": { ... } } }
+  // Build name→id and id→type maps from Torn's response
+  // Response shape: { items: { "1": { name: "Hammer", type: "Melee", ... }, ... } }
   const nameToId = {};
+  const newIdToType = {};
   for (const [idStr, item] of Object.entries(data.items)) {
     nameToId[item.name.toLowerCase()] = Number(idStr);
+    if (item.type) newIdToType[idStr] = item.type;
   }
 
   // Apply to ABROAD_ITEMS
@@ -71,6 +97,8 @@ export async function resolveItemIds(playerId) {
     }
   }
 
-  // Cache for future visits
+  // Update in-memory type map and cache both
+  idToType = newIdToType;
   localStorage.setItem(CACHE_KEY, JSON.stringify(nameToId));
+  localStorage.setItem(TYPE_CACHE_KEY, JSON.stringify(newIdToType));
 }

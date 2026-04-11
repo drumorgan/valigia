@@ -111,8 +111,9 @@ async function startDashboard(playerId) {
     return;
   }
 
-  // Set items and render table with buy prices
+  // Set items, re-render controls (populates destination dropdown), and render table
   setKnownItems(items);
+  renderControls(controlsBar, () => renderTable());
   renderTable();
 
   // Fetch live sell prices for all known items

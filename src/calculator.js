@@ -7,16 +7,16 @@
  * @param {number} params.sellPrice - Item market sell price per unit
  * @param {number} params.slotCount - Number of items per trip
  * @param {number} params.flightMins - One-way flight time in minutes
- * @param {boolean} params.hasAirstrip - Halves flight time if true
+ * @param {number} params.flightMultiplier - Flight time multiplier (1.0 = standard, 0.7 = airstrip/WLT, 0.49 = both)
  * @returns {object} Calculated metrics
  */
-export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, hasAirstrip }) {
+export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, flightMultiplier = 1.0 }) {
   const netSell = sellPrice * 0.95; // 5% item market fee
   const marginPerItem = netSell - buyPrice;
   const marginPct = buyPrice > 0 ? (marginPerItem / buyPrice) * 100 : 0;
   const runCost = buyPrice * slotCount;
   const profitPerRun = marginPerItem * slotCount;
-  const effectiveFlightMins = hasAirstrip ? flightMins / 2 : flightMins;
+  const effectiveFlightMins = flightMins * flightMultiplier;
   const roundTripMins = effectiveFlightMins * 2;
   const profitPerHour = roundTripMins > 0 ? (profitPerRun / roundTripMins) * 60 : 0;
 

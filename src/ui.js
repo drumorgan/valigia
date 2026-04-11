@@ -2,31 +2,32 @@
 
 import { getFlightMins } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
-import { ABROAD_ITEMS } from './data/abroad-items.js';
+import { getItemTypeById } from './item-resolver.js';
 import { calculateMargins, formatFlightTime, formatMoney } from './calculator.js';
 
-// ── Category lookup from static item data ─────────────────────
-const CATEGORY_LOOKUP = new Map();
-for (const item of ABROAD_ITEMS) {
-  if (item.name && item.type) {
-    CATEGORY_LOOKUP.set(item.name.toLowerCase(), item.type);
-  }
-}
+// ── Flight type definitions ───────────────────────────────────
+const FLIGHT_TYPES = [
+  { value: 'standard',     label: 'Standard',       multiplier: 1.0 },
+  { value: 'airstrip',     label: 'Airstrip',        multiplier: 0.7 },
+  { value: 'wlt',          label: 'WLT',             multiplier: 0.7 },
+  { value: 'airstrip_wlt', label: 'Airstrip + WLT',  multiplier: 0.49 },
+];
 
-function getItemCategory(itemName) {
-  return CATEGORY_LOOKUP.get((itemName || '').toLowerCase()) || 'other';
+function getFlightMultiplier() {
+  const ft = FLIGHT_TYPES.find(f => f.value === flightType);
+  return ft ? ft.multiplier : 1.0;
 }
 
 // ── State ──────────────────────────────────────────────────────
 const STORAGE_SLOTS = 'valigia_slots';
-const STORAGE_AIRSTRIP = 'valigia_airstrip';
+const STORAGE_FLIGHT_TYPE = 'valigia_flight_type';
 const STORAGE_SORT_COL = 'valigia_sort_col';
 const STORAGE_SORT_DIR = 'valigia_sort_dir';
 const STORAGE_FILTER_DEST = 'valigia_filter_dest';
 const STORAGE_FILTER_CAT = 'valigia_filter_cat';
 
 let slotCount = parseInt(localStorage.getItem(STORAGE_SLOTS)) || 29;
-let hasAirstrip = localStorage.getItem(STORAGE_AIRSTRIP) === 'true';
+let flightType = localStorage.getItem(STORAGE_FLIGHT_TYPE) || 'standard';
 let sortCol = localStorage.getItem(STORAGE_SORT_COL) || 'profitPerHour';
 let sortDir = localStorage.getItem(STORAGE_SORT_DIR) || 'desc';
 let filterDestination = localStorage.getItem(STORAGE_FILTER_DEST) || 'all';
@@ -74,7 +75,7 @@ export function showToast(message, type = 'error') {
 
 function persistControls() {
   localStorage.setItem(STORAGE_SLOTS, String(slotCount));
-  localStorage.setItem(STORAGE_AIRSTRIP, String(hasAirstrip));
+  localStorage.setItem(STORAGE_FLIGHT_TYPE, flightType);
 }
 
 function persistSort() {
@@ -104,6 +105,10 @@ export function renderControls(container, onChange) {
     `<option value="${d}" ${filterDestination === d ? 'selected' : ''}>${d}</option>`
   ).join('');
 
+  const flightOptions = FLIGHT_TYPES.map(ft =>
+    `<option value="${ft.value}" ${flightType === ft.value ? 'selected' : ''}>${ft.label}</option>`
+  ).join('');
+
   container.innerHTML = `
     <div class="controls">
       <label class="control-group">
@@ -114,8 +119,7 @@ export function renderControls(container, onChange) {
       <label class="control-group">
         <span class="control-label">Flight</span>
         <select id="ctl-flight-type" class="control-select">
-          <option value="standard" ${!hasAirstrip ? 'selected' : ''}>Standard</option>
-          <option value="airstrip" ${hasAirstrip ? 'selected' : ''}>Airstrip</option>
+          ${flightOptions}
         </select>
       </label>
       <label class="control-group">
@@ -141,7 +145,7 @@ export function renderControls(container, onChange) {
     onChange();
   });
   container.querySelector('#ctl-flight-type').addEventListener('change', (e) => {
-    hasAirstrip = e.target.value === 'airstrip';
+    flightType = e.target.value;
     persistControls();
     onChange();
   });
@@ -173,10 +177,11 @@ export function setPlayerTravel(slots, airstrip) {
     const el = document.getElementById('ctl-slots');
     if (el) el.value = slotCount;
   }
-  if (airstrip != null) {
-    hasAirstrip = airstrip;
+  if (airstrip != null && airstrip && flightType === 'standard') {
+    // Auto-upgrade to airstrip only if currently on standard
+    flightType = 'airstrip';
     const el = document.getElementById('ctl-flight-type');
-    if (el) el.value = airstrip ? 'airstrip' : 'standard';
+    if (el) el.value = 'airstrip';
   }
   persistControls();
   renderTable();
@@ -319,8 +324,8 @@ function buildRows() {
     // Apply destination filter
     if (filterDestination !== 'all' && item.destination !== filterDestination) continue;
 
-    // Apply category filter
-    const category = getItemCategory(item.item_name);
+    // Apply category filter using Torn API item types
+    const category = getItemTypeById(item.item_id);
     if (filterCategory !== 'all' && category !== filterCategory) continue;
 
     const flightMins = getFlightMins(item.destination);
@@ -336,7 +341,7 @@ function buildRows() {
         sellPrice,
         slotCount,
         flightMins,
-        hasAirstrip,
+        flightMultiplier: getFlightMultiplier(),
       });
     }
 
