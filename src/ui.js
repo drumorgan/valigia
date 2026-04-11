@@ -93,8 +93,9 @@ export function renderControls(container, onChange) {
  * Also updates the DOM controls if they exist.
  */
 export function setPlayerTravel(slots, airstrip) {
-  if (slots != null) {
+  if (slots != null && slots > slotCount) {
     slotCount = slots;
+    localStorage.setItem(STORAGE_SLOTS, slotCount);
     const el = document.getElementById('ctl-slots');
     if (el) el.value = slotCount;
   }

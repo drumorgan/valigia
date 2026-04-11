@@ -73,10 +73,13 @@ async function detectPlayerTravel(playerId) {
     }
   }
 
-  // TEMPORARY DIAGNOSTIC — shows ALL travel-related perks
+  // TEMPORARY DIAGNOSTIC — show faction perks separately to find missing +10
+  const factionPerks = data.faction_perks || [];
   const allTravelPerks = allPerks.filter(p => /travel/i.test(p));
   showToast(
-    `Categories: ${perkCategories.join(', ')}\nTravel perks (${allTravelPerks.length}): ${allTravelPerks.join(' | ')}\n→ ${slots} slots, airstrip: ${airstrip}`,
+    `Detected ${slots} (saved: max with current).\n` +
+    `Travel perks: ${allTravelPerks.join(' | ') || 'none'}\n` +
+    `Faction perks (${factionPerks.length}): ${factionPerks.join(' | ') || 'none'}`,
     'success'
   );
 
@@ -109,6 +112,7 @@ async function startDashboard(playerId) {
   ]);
 
   if (!items || items.length === 0) {
+    showToast('Could not fetch abroad prices from YATA. Try refreshing.', 'warning');
     tableContainer.innerHTML = `
       <div style="text-align:center;padding:3rem 1rem;font-family:'Syne Mono',monospace;">
         <p style="font-size:1.2rem;color:var(--accent);margin-bottom:0.5rem;">
