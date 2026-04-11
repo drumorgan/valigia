@@ -3,10 +3,8 @@
 // and only fetches bazaar listings from the Torn API (one call per item).
 
 import { callTornApi } from './torn-api.js';
-import { supabase } from './supabase.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
-const DEAL_THRESHOLD_PCT = 0;    // show ANY deal where bazaar < market (tune up later)
 const BATCH_SIZE = 10;           // items per batch
 const BATCH_DELAY_MS = 7000;     // delay between batches (respect 100 req/min)
 
@@ -33,46 +31,27 @@ function resolveWatchlistIds() {
   return resolved;
 }
 
-/**
- * Fetch market prices from Supabase sell_prices cache.
- * Returns Map of itemId → price.
- */
-async function getMarketPricesFromCache(itemIds) {
-  const { data } = await supabase
-    .from('sell_prices')
-    .select('item_id, price')
-    .in('item_id', itemIds);
-
-  const map = new Map();
-  if (data) {
-    for (const row of data) {
-      if (row.price != null) map.set(row.item_id, row.price);
-    }
-  }
-  return map;
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 /**
- * Extract the lowest bazaar price from a Torn API response.
- * Handles both v1 object/array formats.
+ * Extract the lowest price from a listing dataset.
+ * Handles both v1 array and object formats.
  */
-function extractLowestBazaar(bazaarData) {
-  if (!bazaarData) return null;
+function extractLowest(listings) {
+  if (!listings) return null;
 
-  // Array format: [{ cost, quantity }, ...]
-  if (Array.isArray(bazaarData)) {
-    if (bazaarData.length === 0) return null;
-    return { price: bazaarData[0].cost, quantity: bazaarData[0].quantity || 1 };
+  // Array format: [{ cost, quantity }, ...] — already sorted by cost
+  if (Array.isArray(listings)) {
+    if (listings.length === 0) return null;
+    return { price: listings[0].cost, quantity: listings[0].quantity || 1 };
   }
 
   // Object format: { "listingId": { cost, quantity }, ... }
-  if (typeof bazaarData === 'object') {
+  if (typeof listings === 'object') {
     let lowest = null;
-    for (const listing of Object.values(bazaarData)) {
+    for (const listing of Object.values(listings)) {
       if (listing.cost != null && (lowest == null || listing.cost < lowest.price)) {
         lowest = { price: listing.cost, quantity: listing.quantity || 1 };
       }
@@ -85,8 +64,8 @@ function extractLowestBazaar(bazaarData) {
 
 /**
  * Scan bazaar listings for deals below market price.
- * Market prices come from the Supabase sell_prices cache (shared across all users).
- * Only bazaar listings are fetched live from the Torn API.
+ * Fetches BOTH bazaar and market prices in a single API call per item
+ * (selections=bazaar,lookup), so no Supabase dependency.
  *
  * @param {number} playerId - Torn player ID (for proxy auth)
  * @param {function} onProgress - Called with (scanned, total) after each item
@@ -97,9 +76,6 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
   const items = resolveWatchlistIds();
   if (items.length === 0) return [];
 
-  // Get market prices from Supabase cache (free, instant)
-  const marketPrices = await getMarketPricesFromCache(items.map(i => i.id));
-
   const deals = [];
   let scanned = 0;
   const total = items.length;
@@ -109,11 +85,11 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
     const batch = items.slice(i, i + BATCH_SIZE);
 
     const promises = batch.map(async (item) => {
-      // Only fetch bazaar listings — market price comes from cache
+      // Fetch both bazaar and market prices in one call
       const data = await callTornApi({
         section: 'market',
         id: item.id,
-        selections: 'bazaar',
+        selections: 'bazaar,lookup',
         player_id: playerId,
       });
 
@@ -122,16 +98,21 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
 
       if (!data) return;
 
-      const bazaar = extractLowestBazaar(data.bazaar);
+      const bazaar = extractLowest(data.bazaar);
       if (!bazaar) return;
 
-      const marketPrice = marketPrices.get(item.id);
+      // Market price from the lookup data (itemmarket array)
+      let marketPrice = null;
+      if (Array.isArray(data.itemmarket) && data.itemmarket.length > 0) {
+        marketPrice = data.itemmarket[0].cost;
+      }
       if (!marketPrice || marketPrice <= 0) return;
 
       const savings = marketPrice - bazaar.price;
       const savingsPct = (savings / marketPrice) * 100;
 
-      if (savingsPct >= DEAL_THRESHOLD_PCT) {
+      // Show any deal where bazaar is cheaper than market
+      if (savings > 0) {
         const deal = {
           itemId: item.id,
           itemName: item.name,
