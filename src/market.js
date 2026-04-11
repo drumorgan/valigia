@@ -1,54 +1,53 @@
-// Sell price fetcher — fetches live item market prices from Torn API.
-// Caches prices in localStorage so we only re-fetch stale ones.
+// Sell price fetcher — reads from Supabase shared cache first,
+// only hits the Torn API for stale/missing prices.
+// Any fresh prices fetched are written back for all users.
 
 import { callTornApi } from './torn-api.js';
+import { supabase } from './supabase.js';
 
 const BATCH_SIZE = 8;
 const BATCH_DELAY_MS = 1500;
-const CACHE_KEY = 'valigia_sell_prices';
-const CACHE_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4 hours
-
-/** Read the sell price cache from localStorage. */
-function readCache() {
-  try {
-    return JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
-  } catch {
-    return {};
-  }
-}
-
-/** Write the sell price cache to localStorage. */
-function writeCache(cache) {
-  localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
-}
+const STALE_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 /**
- * Fetch live sell prices for a list of item IDs.
- * Serves cached prices immediately, then only fetches stale/missing ones.
+ * Fetch sell prices — Supabase first, Torn API only for stale items.
  *
  * @param {number} playerId - Torn player ID (for server-side key decrypt)
  * @param {number[]} itemIds - unique item IDs to fetch
  * @param {function} onPrice - Called as each price resolves: (itemId, sellPrice|null)
- * @returns {Map} itemId → lowestPrice (or null if no listings)
  */
 export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
-  const priceMap = new Map();
-  const cache = readCache();
   const now = Date.now();
-  const staleIds = [];
 
-  // Serve cached prices immediately, collect stale ones
+  // 1. Read all cached sell prices from Supabase (single query)
+  const { data: cached } = await supabase
+    .from('sell_prices')
+    .select('item_id, price, updated_at')
+    .in('item_id', itemIds);
+
+  const cacheMap = new Map();
+  if (cached) {
+    for (const row of cached) {
+      cacheMap.set(row.item_id, row);
+    }
+  }
+
+  // 2. Serve fresh cached prices immediately, collect stale IDs
+  const staleIds = [];
   for (const itemId of itemIds) {
-    const cached = cache[itemId];
-    if (cached && (now - cached.at) < CACHE_MAX_AGE_MS) {
-      priceMap.set(itemId, cached.price);
-      if (onPrice) onPrice(itemId, cached.price);
+    const row = cacheMap.get(itemId);
+    if (row && (now - new Date(row.updated_at).getTime()) < STALE_MS) {
+      if (onPrice) onPrice(itemId, row.price);
     } else {
       staleIds.push(itemId);
     }
   }
 
-  // Fetch only stale/missing prices in batches
+  if (staleIds.length === 0) return;
+
+  // 3. Fetch only stale/missing prices from Torn API in batches
+  const freshPrices = [];
+
   for (let i = 0; i < staleIds.length; i += BATCH_SIZE) {
     const batch = staleIds.slice(i, i + BATCH_SIZE);
 
@@ -66,23 +65,21 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
         lowestPrice = data.itemmarket.listings[0].price;
       }
 
-      priceMap.set(itemId, lowestPrice);
-      cache[itemId] = { price: lowestPrice, at: now };
+      freshPrices.push({ item_id: itemId, price: lowestPrice, updated_at: new Date().toISOString() });
       if (onPrice) onPrice(itemId, lowestPrice);
     });
 
     await Promise.allSettled(promises);
 
-    // Pause between batches to stay under 100 req/min rate limit
     if (i + BATCH_SIZE < staleIds.length) {
       await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
     }
   }
 
-  // Persist updated cache
-  if (staleIds.length > 0) {
-    writeCache(cache);
+  // 4. Write fresh prices back to Supabase for all users
+  if (freshPrices.length > 0) {
+    await supabase
+      .from('sell_prices')
+      .upsert(freshPrices, { onConflict: 'item_id' });
   }
-
-  return priceMap;
 }
