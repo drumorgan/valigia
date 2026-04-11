@@ -1,11 +1,10 @@
-// Bazaar deal scanner — finds items listed in bazaars significantly below
-// item market price. Uses Supabase sell_prices cache for market reference
-// and only fetches bazaar listings from the Torn API (one call per item).
+// Bazaar deal scanner — finds items listed in bazaars below item market price.
+// Makes two API calls per item: one for bazaar listings, one for market price.
 
 import { callTornApi } from './torn-api.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
-const BATCH_SIZE = 10;           // items per batch
+const BATCH_SIZE = 5;            // items per batch (2 calls each = 10 API calls)
 const BATCH_DELAY_MS = 7000;     // delay between batches (respect 100 req/min)
 
 /**
@@ -64,17 +63,26 @@ function extractLowest(listings) {
 
 /**
  * Scan bazaar listings for deals below market price.
- * Fetches BOTH bazaar and market prices in a single API call per item
- * (selections=bazaar,lookup), so no Supabase dependency.
+ * Makes two separate API calls per item (bazaar + lookup) to guarantee
+ * both datasets are returned correctly.
  *
  * @param {number} playerId - Torn player ID (for proxy auth)
  * @param {function} onProgress - Called with (scanned, total) after each item
  * @param {function} onDeal - Called immediately when a deal is found
- * @returns {Promise<Array>} Sorted deals array (best % off first)
+ * @returns {Promise<object>} { deals, stats }
  */
 export async function scanBazaarDeals(playerId, onProgress, onDeal) {
   const items = resolveWatchlistIds();
-  if (items.length === 0) return [];
+
+  const stats = {
+    watchlistSize: BAZAAR_WATCHLIST.length,
+    resolved: items.length,
+    hadBazaar: 0,
+    hadMarket: 0,
+    cheaper: 0,
+  };
+
+  if (items.length === 0) return { deals: [], stats };
 
   const deals = [];
   let scanned = 0;
@@ -85,34 +93,43 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
     const batch = items.slice(i, i + BATCH_SIZE);
 
     const promises = batch.map(async (item) => {
-      // Fetch both bazaar and market prices in one call
-      const data = await callTornApi({
-        section: 'market',
-        id: item.id,
-        selections: 'bazaar,lookup',
-        player_id: playerId,
-      });
+      // Two separate calls — both proven to work individually
+      const [bazaarData, marketData] = await Promise.all([
+        callTornApi({
+          section: 'market',
+          id: item.id,
+          selections: 'bazaar',
+          player_id: playerId,
+        }),
+        callTornApi({
+          section: 'market',
+          id: item.id,
+          selections: 'lookup',
+          player_id: playerId,
+        }),
+      ]);
 
       scanned++;
       if (onProgress) onProgress(scanned, total);
 
-      if (!data) return;
+      // Extract lowest bazaar listing
+      const bazaar = bazaarData ? extractLowest(bazaarData.bazaar) : null;
+      if (bazaar) stats.hadBazaar++;
 
-      const bazaar = extractLowest(data.bazaar);
-      if (!bazaar) return;
-
-      // Market price from the lookup data (itemmarket array)
+      // Extract lowest market price
       let marketPrice = null;
-      if (Array.isArray(data.itemmarket) && data.itemmarket.length > 0) {
-        marketPrice = data.itemmarket[0].cost;
+      if (marketData && Array.isArray(marketData.itemmarket) && marketData.itemmarket.length > 0) {
+        marketPrice = marketData.itemmarket[0].cost;
+        stats.hadMarket++;
       }
-      if (!marketPrice || marketPrice <= 0) return;
+
+      if (!bazaar || !marketPrice) return;
 
       const savings = marketPrice - bazaar.price;
       const savingsPct = (savings / marketPrice) * 100;
 
-      // Show any deal where bazaar is cheaper than market
       if (savings > 0) {
+        stats.cheaper++;
         const deal = {
           itemId: item.id,
           itemName: item.name,
@@ -134,5 +151,5 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
     }
   }
 
-  return deals.sort((a, b) => b.savingsPct - a.savingsPct);
+  return { deals: deals.sort((a, b) => b.savingsPct - a.savingsPct), stats };
 }
