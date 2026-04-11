@@ -160,28 +160,69 @@ async function runScan(playerId) {
 export function renderScanButton(container, playerId) {
   currentPlayerId = playerId;
 
-  const btn = document.createElement('button');
-  btn.className = 'bazaar-trigger-btn bazaar-trigger-btn--cooldown';
-  btn.disabled = true;
-  btn.textContent = `Wait ${COOLDOWN_SEC}s...`;
+  const wrapper = document.createElement('div');
+  wrapper.className = 'fuse-wrapper';
+  wrapper.innerHTML = `
+    <button class="bazaar-trigger-btn bazaar-trigger-btn--cooldown" disabled>
+      <span class="fuse-label">Spin for a Deal</span>
+    </button>
+    <div class="fuse-track">
+      <div class="fuse-line"></div>
+      <div class="fuse-spark"></div>
+    </div>
+    <div class="fuse-timer"></div>
+  `;
+
+  const btn = wrapper.querySelector('.bazaar-trigger-btn');
+  const fuseTrack = wrapper.querySelector('.fuse-track');
+  const fuseLine = wrapper.querySelector('.fuse-line');
+  const fuseSpark = wrapper.querySelector('.fuse-spark');
+  const fuseTimer = wrapper.querySelector('.fuse-timer');
+  const fuseLabel = wrapper.querySelector('.fuse-label');
+
+  let sparkRaf = null;
+
+  function trackSpark() {
+    // Position spark at the right edge of the shrinking fuse line
+    const lineWidth = fuseLine.getBoundingClientRect().width;
+    fuseSpark.style.left = lineWidth + 'px';
+    sparkRaf = requestAnimationFrame(trackSpark);
+  }
 
   function startCooldown() {
     let remaining = COOLDOWN_SEC;
     btn.disabled = true;
     btn.classList.remove('bazaar-trigger-btn--ready');
     btn.classList.add('bazaar-trigger-btn--cooldown');
-    btn.textContent = `Wait ${remaining}s...`;
+    fuseLabel.textContent = 'Lighting the fuse...';
+    fuseTrack.style.display = 'block';
+    fuseTimer.style.display = 'block';
+    fuseLine.style.transition = 'none';
+    fuseLine.style.width = '100%';
+    fuseSpark.style.display = 'block';
+    fuseTimer.textContent = `${remaining}s`;
+
+    // Start spark tracking + fuse burn
+    requestAnimationFrame(() => {
+      fuseLine.style.transition = `width ${COOLDOWN_SEC}s linear`;
+      fuseLine.style.width = '0%';
+      trackSpark();
+    });
 
     const interval = setInterval(() => {
       remaining--;
       if (remaining <= 0) {
         clearInterval(interval);
+        if (sparkRaf) cancelAnimationFrame(sparkRaf);
         btn.disabled = false;
         btn.classList.remove('bazaar-trigger-btn--cooldown');
         btn.classList.add('bazaar-trigger-btn--ready');
-        btn.textContent = 'Spin for a Deal';
+        fuseLabel.textContent = 'Spin for a Deal';
+        fuseTrack.style.display = 'none';
+        fuseTimer.style.display = 'none';
+        fuseLine.style.transition = 'none';
       } else {
-        btn.textContent = `Wait ${remaining}s...`;
+        fuseTimer.textContent = `${remaining}s`;
       }
     }, 1000);
   }
@@ -192,7 +233,7 @@ export function renderScanButton(container, playerId) {
     startCooldown();
   });
 
-  container.appendChild(btn);
+  container.appendChild(wrapper);
 
   // Start initial cooldown immediately (opening ceremony rate limit)
   startCooldown();
