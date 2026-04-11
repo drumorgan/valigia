@@ -6,9 +6,9 @@ import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { showToast } from './ui.js';
 
-const MAX_REFRESH_PER_VISIT = 15;  // max Torn API calls per page load
+const MAX_REFRESH_PER_VISIT = 30;  // max Torn API calls per page load
 const STALE_MS = 4 * 60 * 60 * 1000; // 4 hours for items with a price
-const NULL_STALE_MS = 60 * 60 * 1000; // 1 hour for items with no listings (re-check more often)
+const NULL_STALE_MS = 5 * 60 * 1000; // 5 minutes for items with no listings (re-check aggressively)
 
 /**
  * Fetch sell prices — Supabase first, Torn API only for a handful of stale items.
