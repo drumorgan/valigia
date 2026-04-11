@@ -256,11 +256,6 @@ export async function renderCommunityStats(container) {
       </div>
       <div class="cs-divider"></div>
       <div class="cs-counter">
-        <span class="cs-value" id="cs-deals">--</span>
-        <span class="cs-label">deals found</span>
-      </div>
-      <div class="cs-divider"></div>
-      <div class="cs-counter">
         <span class="cs-value" id="cs-users">--</span>
         <span class="cs-label">players</span>
       </div>
@@ -272,16 +267,16 @@ export async function renderCommunityStats(container) {
 
   container.appendChild(el);
 
-  // Fetch and display current stats
-  const { data } = await supabase
-    .from('community_stats')
-    .select('total_spins, deals_found, total_users')
-    .eq('id', 1)
-    .single();
+  // Fetch stats in parallel: spins from table, players from live count
+  const [statsRes, countRes] = await Promise.all([
+    supabase.from('community_stats').select('total_spins').eq('id', 1).single(),
+    supabase.rpc('get_player_count'),
+  ]);
 
-  if (data) {
-    el.querySelector('#cs-spins').textContent = data.total_spins.toLocaleString();
-    el.querySelector('#cs-deals').textContent = data.deals_found.toLocaleString();
-    el.querySelector('#cs-users').textContent = data.total_users.toLocaleString();
+  if (statsRes.data) {
+    el.querySelector('#cs-spins').textContent = statsRes.data.total_spins.toLocaleString();
+  }
+  if (countRes.data != null) {
+    el.querySelector('#cs-users').textContent = countRes.data.toLocaleString();
   }
 }
