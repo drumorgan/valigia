@@ -117,7 +117,16 @@ async function runScan(playerId) {
   // Done
   isScanning = false;
 
-  const diagLine = `${stats.resolved}/${stats.watchlistSize} resolved · ${stats.hadBazaar} bazaar · ${stats.hadMarket} market · ${stats.cheaper} cheaper`;
+  const diagLines = [
+    `Resolved: ${stats.resolved}/${stats.watchlistSize}`,
+    `Bazaar listings: ${stats.hadBazaar}`,
+    `Market prices: ${stats.hadMarket}`,
+    `Bazaar < Market: ${stats.cheaper}`,
+  ];
+  if (stats.apiErrors > 0) diagLines.push(`API errors: ${stats.apiErrors}`);
+  if (stats.unresolved.length > 0) diagLines.push(`Unresolved: ${stats.unresolved.slice(0, 5).join(', ')}${stats.unresolved.length > 5 ? '...' : ''}`);
+
+  const diagHtml = `<div class="bazaar-diag">${diagLines.join('<br>')}</div>`;
 
   if (deals.length === 0) {
     progressText.textContent = 'No deals right now';
@@ -126,12 +135,11 @@ async function runScan(playerId) {
         No bazaar listings found cheaper than market price right now.<br>
         Close this and try again in a bit.
       </div>
-      <div class="bazaar-diag">${diagLine}</div>
+      ${diagHtml}
     `;
   } else {
     progressText.textContent = `${deals.length} deal${deals.length > 1 ? 's' : ''} found!`;
-    dealsEl.innerHTML = deals.map(dealCardHtml).join('') +
-      `<div class="bazaar-diag">${diagLine}</div>`;
+    dealsEl.innerHTML = deals.map(dealCardHtml).join('') + diagHtml;
   }
 
 }
