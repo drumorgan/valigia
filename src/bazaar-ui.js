@@ -113,6 +113,9 @@ async function runScan(playerId) {
 
   isScanning = false;
 
+  // Refresh community stats counter live
+  refreshStats();
+
   // Hide spinner, show result
   if (spinnerEl) spinnerEl.style.display = 'none';
   resultEl.style.display = 'block';
@@ -161,8 +164,9 @@ async function runScan(playerId) {
     `Market prices (from cache): ${stats.marketHits}`,
     `Known bazaar sources (pool): ${stats.poolHits} items`,
     `New bazaars discovered: ${stats.discovered}`,
-    `Bazaars checked: ${stats.checked}`,
-    `~${stats.apiCalls + stats.checked} API calls used`,
+    `Bazaars checked: ${stats.bazaarsChecked}`,
+    `Prices found: ${stats.pricesFound}`,
+    `~${stats.apiCalls + stats.bazaarsChecked} API calls used`,
   ];
   if (stats.unresolved.length > 0) {
     diagLines.push(`Unresolved: ${stats.unresolved.join(', ')}`);
@@ -265,8 +269,30 @@ export function renderScanButton(container, playerId) {
 }
 
 /**
+ * Refresh the stats counters in-place (called after each scan).
+ */
+async function refreshStats() {
+  try {
+    const [statsRes, countRes] = await Promise.all([
+      supabase.from('community_stats').select('total_spins').eq('id', 1).single(),
+      supabase.rpc('get_player_count'),
+    ]);
+
+    const spinsEl = document.getElementById('cs-spins');
+    const usersEl = document.getElementById('cs-users');
+    if (statsRes.data && spinsEl) {
+      spinsEl.textContent = statsRes.data.total_spins.toLocaleString();
+    }
+    if (countRes.data != null && usersEl) {
+      usersEl.textContent = countRes.data.toLocaleString();
+    }
+  } catch {
+    // Stats not available — leave as-is
+  }
+}
+
+/**
  * Render live community stats + share CTA below the scan button.
- * Updates each time it's called (and after each scan).
  */
 export async function renderCommunityStats(container) {
   const el = document.createElement('div');
@@ -290,21 +316,5 @@ export async function renderCommunityStats(container) {
   `;
 
   container.appendChild(el);
-
-  // Fetch stats — gracefully handle missing table/function
-  try {
-    const [statsRes, countRes] = await Promise.all([
-      supabase.from('community_stats').select('total_spins').eq('id', 1).single(),
-      supabase.rpc('get_player_count'),
-    ]);
-
-    if (statsRes.data) {
-      el.querySelector('#cs-spins').textContent = statsRes.data.total_spins.toLocaleString();
-    }
-    if (countRes.data != null) {
-      el.querySelector('#cs-users').textContent = countRes.data.toLocaleString();
-    }
-  } catch {
-    // Stats table or function not yet created — show dashes
-  }
+  await refreshStats();
 }

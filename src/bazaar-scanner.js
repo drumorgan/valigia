@@ -224,6 +224,7 @@ async function checkBazaars(items, pool, discovered, playerId, onProgress) {
   });
 
   await Promise.allSettled(promises);
+  results.apiCalls = batch.length;
   return results;
 }
 
@@ -324,8 +325,8 @@ export async function scanBazaarDeals(playerId, onProgress) {
     poolHits: 0,
     marketHits: 0,
     discovered: 0,
-    checked: 0,
-    freshResults: 0,
+    bazaarsChecked: 0,
+    pricesFound: 0,
     apiCalls: 0,
   };
 
@@ -351,8 +352,8 @@ export async function scanBazaarDeals(playerId, onProgress) {
 
   // Phase 3: Check bazaars (~25 API calls)
   const freshResults = await checkBazaars(items, pool, discovered, playerId, onProgress);
-  stats.checked = freshResults.length;
-  stats.freshResults = freshResults.length;
+  stats.bazaarsChecked = freshResults.apiCalls || 0;
+  stats.pricesFound = freshResults.length;
 
   // Phase 4: Write back to shared pool (0 API calls)
   await writeBazaarPool(freshResults);
