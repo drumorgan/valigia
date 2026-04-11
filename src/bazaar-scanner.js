@@ -305,8 +305,16 @@ function findRandomDeal(items, marketPrices, freshResults) {
 
   if (allDeals.length === 0) return null;
 
-  // Pick a random deal — wheel of fortune style
-  return allDeals[Math.floor(Math.random() * allDeals.length)];
+  // Weighted random — better deals are more likely to be picked.
+  // Weight = savingsPct², so a 10% deal is 100× more likely than a 1% deal.
+  const weights = allDeals.map(d => d.savingsPct * d.savingsPct);
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+  let roll = Math.random() * totalWeight;
+  for (let i = 0; i < allDeals.length; i++) {
+    roll -= weights[i];
+    if (roll <= 0) return allDeals[i];
+  }
+  return allDeals[allDeals.length - 1];
 }
 
 /**
