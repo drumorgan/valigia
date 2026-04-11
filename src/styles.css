@@ -868,13 +868,16 @@ tr.row--negative td {
 
 .bazaar-diag {
   font-family: 'Syne Mono', monospace;
-  font-size: 0.8rem;
+  font-size: 0.7rem;
   color: var(--accent);
   text-align: left;
   padding: 1rem;
   margin-top: 0.75rem;
   border-top: 1px solid var(--border);
-  line-height: 1.6;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+  word-break: break-all;
 }
 
 /* ── Responsive ──────────────────────────────────────────────── */

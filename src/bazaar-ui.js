@@ -124,7 +124,11 @@ async function runScan(playerId) {
     `Bazaar < Market: ${stats.cheaper}`,
   ];
   if (stats.apiErrors > 0) diagLines.push(`API errors: ${stats.apiErrors}`);
-  if (stats.unresolved.length > 0) diagLines.push(`Unresolved: ${stats.unresolved.slice(0, 5).join(', ')}${stats.unresolved.length > 5 ? '...' : ''}`);
+  if (stats.unresolved.length > 0) diagLines.push(`Unresolved: ${stats.unresolved.join(', ')}`);
+  if (stats.firstBazaarKeys) diagLines.push(`Bazaar response keys: ${stats.firstBazaarKeys}`);
+  if (stats.firstMarketKeys) diagLines.push(`Market response keys: ${stats.firstMarketKeys}`);
+  if (stats.firstBazaarSample) diagLines.push(`Bazaar sample: ${stats.firstBazaarSample}`);
+  if (stats.firstMarketSample) diagLines.push(`Market sample: ${stats.firstMarketSample}`);
 
   const diagHtml = `<div class="bazaar-diag">${diagLines.join('<br>')}</div>`;
 
