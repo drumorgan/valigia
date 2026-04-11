@@ -1,46 +1,19 @@
-// Bazaar deal scanner UI — trigger button, modal overlay, deal cards.
+// Bazaar deal scanner UI — "Wheel of Fortune" style.
+// One spin → one best deal revealed. You get what you get.
+// 60-second cooldown from initial page load and between scans.
 
 import { scanBazaarDeals } from './bazaar-scanner.js';
 import { formatMoney } from './calculator.js';
 
 let isScanning = false;
 let currentPlayerId = null;
-const COOLDOWN_SEC = 5; // seconds between scans (low for testing, raise later)
+const COOLDOWN_SEC = 60;
 
 // ── Helpers ──────────────────────────────────────────────────
 
 function bazaarSearchUrl(itemName) {
   const encoded = encodeURIComponent(itemName);
   return `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encoded}`;
-}
-
-function dealCardHtml(deal) {
-  const pctOff = deal.savingsPct.toFixed(1);
-  return `
-    <div class="deal-card">
-      <div class="deal-header">
-        <span class="deal-name">${deal.itemName}</span>
-        <span class="deal-pct">${pctOff}% off</span>
-      </div>
-      <div class="deal-prices">
-        <div class="deal-price-row">
-          <span class="deal-label">Bazaar</span>
-          <span class="deal-value deal-value--bazaar">${formatMoney(deal.bazaarPrice)}</span>
-          <span class="deal-qty">${deal.bazaarQty > 1 ? 'x' + deal.bazaarQty : ''}</span>
-        </div>
-        <div class="deal-price-row">
-          <span class="deal-label">Market</span>
-          <span class="deal-value deal-value--market">${formatMoney(deal.marketPrice)}</span>
-        </div>
-        <div class="deal-price-row deal-savings-row">
-          <span class="deal-label">You save</span>
-          <span class="deal-value deal-value--savings">${formatMoney(deal.savings)}</span>
-        </div>
-      </div>
-      <a href="${bazaarSearchUrl(deal.itemName)}" target="_blank" rel="noopener"
-         class="deal-link">Find in Bazaar &rarr;</a>
-    </div>
-  `;
 }
 
 // ── Modal ────────────────────────────────────────────────────
@@ -59,13 +32,18 @@ function showModal(playerId) {
         <button class="bazaar-close" id="bazaar-close">&times;</button>
       </div>
       <div class="bazaar-modal-body" id="bazaar-body">
-        <div class="bazaar-progress" id="bazaar-progress">
-          <div class="bazaar-progress-text" id="bazaar-progress-text">Scanning bazaars...</div>
-          <div class="bazaar-progress-bar">
-            <div class="bazaar-progress-fill" id="bazaar-progress-fill" style="width:0%"></div>
+        <div class="wof-scanner" id="wof-scanner">
+          <div class="wof-spinner" id="wof-spinner">
+            <div class="wof-radar"></div>
+            <div class="wof-text" id="wof-text">Scanning bazaars...</div>
+            <div class="wof-subtext" id="wof-subtext">Checking the shared pool</div>
           </div>
         </div>
-        <div class="bazaar-deals" id="bazaar-deals"></div>
+        <div class="wof-result" id="wof-result" style="display:none"></div>
+        <details class="bazaar-diag-details" id="bazaar-diag-details" style="display:none">
+          <summary>Scan details</summary>
+          <div class="bazaar-diag" id="bazaar-diag"></div>
+        </details>
       </div>
       <div class="bazaar-modal-footer"></div>
     </div>
@@ -87,83 +65,103 @@ async function runScan(playerId) {
   if (isScanning) return;
   isScanning = true;
 
-  const progressText = document.getElementById('bazaar-progress-text');
-  const progressFill = document.getElementById('bazaar-progress-fill');
-  const progressEl = document.getElementById('bazaar-progress');
-  const dealsEl = document.getElementById('bazaar-deals');
-  if (!progressText || !dealsEl) {
+  const spinnerEl = document.getElementById('wof-spinner');
+  const textEl = document.getElementById('wof-text');
+  const subtextEl = document.getElementById('wof-subtext');
+  const resultEl = document.getElementById('wof-result');
+  const diagDetails = document.getElementById('bazaar-diag-details');
+  const diagEl = document.getElementById('bazaar-diag');
+
+  if (!textEl || !resultEl) {
     isScanning = false;
     return;
   }
 
-  // Reset UI
-  progressEl.style.display = 'block';
-  progressFill.style.width = '0%';
-  progressText.textContent = 'Scanning bazaars...';
-  dealsEl.innerHTML = '';
+  textEl.textContent = 'Scanning bazaars...';
+  subtextEl.textContent = 'Reading shared pool';
 
-  const { deals, stats } = await scanBazaarDeals(
+  const { bestDeal, stats } = await scanBazaarDeals(
     playerId,
-    (scanned, total) => {
-      const pct = Math.round((scanned / total) * 100);
-      progressFill.style.width = pct + '%';
-      progressText.textContent = `Scanning... ${scanned}/${total} items`;
-    },
-    (deal) => {
-      dealsEl.insertAdjacentHTML('beforeend', dealCardHtml(deal));
+    (checked, total) => {
+      subtextEl.textContent = `Checking bazaar ${checked}/${total}`;
     }
   );
 
-  // Done
   isScanning = false;
 
-  const diagLines = [
-    `Resolved: ${stats.resolved}/${stats.watchlistSize}`,
-    `Bazaar listings: ${stats.hadBazaar}`,
-    `Market prices: ${stats.hadMarket}`,
-    `Bazaar < Market: ${stats.cheaper}`,
-  ];
-  if (stats.apiErrors > 0) diagLines.push(`API errors: ${stats.apiErrors}`);
-  if (stats.unresolved.length > 0) diagLines.push(`Unresolved: ${stats.unresolved.join(', ')}`);
-  if (stats.sampleResponses && stats.sampleResponses.length > 0) {
-    diagLines.push('--- V2 API samples ---');
-    for (const s of stats.sampleResponses) {
-      diagLines.push(`${s.name} (${s.id}): mktPrice=${s.marketPrice || 'none'} bazaars=${s.bazaarCount}`);
-      diagLines.push(`  mkt keys=[${s.marketKeys}]`);
-      diagLines.push(`  mkt: ${s.mSample}`);
-    }
-  }
+  // Hide spinner, show result
+  spinnerEl.style.display = 'none';
+  resultEl.style.display = 'block';
 
-  const diagHtml = `<div class="bazaar-diag">${diagLines.join('<br>')}</div>`;
-
-  if (deals.length === 0) {
-    progressText.textContent = 'No deals right now';
-    dealsEl.innerHTML = `
-      <div class="bazaar-empty">
-        No bazaar listings found cheaper than market price right now.<br>
-        Close this and try again in a bit.
+  if (bestDeal) {
+    const pctOff = bestDeal.savingsPct.toFixed(1);
+    resultEl.innerHTML = `
+      <div class="wof-deal wof-deal--reveal">
+        <div class="wof-deal-badge">${pctOff}% OFF</div>
+        <div class="wof-deal-name">${bestDeal.itemName}</div>
+        <div class="wof-deal-prices">
+          <div class="wof-price-row">
+            <span class="wof-price-label">Bazaar</span>
+            <span class="wof-price-value wof-price--bazaar">${formatMoney(bestDeal.bazaarPrice)}</span>
+            ${bestDeal.bazaarQty > 1 ? `<span class="wof-price-qty">x${bestDeal.bazaarQty}</span>` : ''}
+          </div>
+          <div class="wof-price-row">
+            <span class="wof-price-label">Market</span>
+            <span class="wof-price-value wof-price--market">${formatMoney(bestDeal.marketPrice)}</span>
+          </div>
+          <div class="wof-price-row wof-savings-row">
+            <span class="wof-price-label">You save</span>
+            <span class="wof-price-value wof-price--savings">${formatMoney(bestDeal.savings)}</span>
+          </div>
+        </div>
+        <a href="${bazaarSearchUrl(bestDeal.itemName)}" target="_blank" rel="noopener"
+           class="wof-deal-link">Find in Bazaar &rarr;</a>
       </div>
-      ${diagHtml}
     `;
   } else {
-    progressText.textContent = `${deals.length} deal${deals.length > 1 ? 's' : ''} found!`;
-    dealsEl.innerHTML = deals.map(dealCardHtml).join('') + diagHtml;
+    resultEl.innerHTML = `
+      <div class="wof-no-deal wof-deal--reveal">
+        <div class="wof-no-deal-icon">&#x1F3B0;</div>
+        <div class="wof-no-deal-text">No deals this spin</div>
+        <div class="wof-no-deal-sub">
+          No bazaar listings found below market price right now.<br>
+          Every scan teaches the system new bazaars — try again later!
+        </div>
+      </div>
+    `;
   }
 
+  // Diagnostics (collapsible)
+  const diagLines = [
+    `Watchlist: ${stats.resolved}/${stats.watchlistSize} resolved`,
+    `Market prices (from cache): ${stats.marketHits}`,
+    `Known bazaar sources (pool): ${stats.poolHits} items`,
+    `New bazaars discovered: ${stats.discovered}`,
+    `Bazaars checked: ${stats.checked}`,
+    `~${stats.apiCalls + stats.checked} API calls used`,
+  ];
+  if (stats.unresolved.length > 0) {
+    diagLines.push(`Unresolved: ${stats.unresolved.join(', ')}`);
+  }
+
+  diagDetails.style.display = 'block';
+  diagEl.innerHTML = diagLines.join('<br>');
 }
 
 // ── Public API ───────────────────────────────────────────────
 
 /**
  * Render the bazaar scan trigger button.
- * Call from main.js after dashboard loads.
+ * Starts with a 60-second cooldown to respect rate limits from
+ * the initial sell-price "opening ceremony" API calls.
  */
 export function renderScanButton(container, playerId) {
   currentPlayerId = playerId;
 
   const btn = document.createElement('button');
-  btn.className = 'bazaar-trigger-btn bazaar-trigger-btn--ready';
-  btn.textContent = 'Scan Bazaar Deals';
+  btn.className = 'bazaar-trigger-btn bazaar-trigger-btn--cooldown';
+  btn.disabled = true;
+  btn.textContent = `Wait ${COOLDOWN_SEC}s...`;
 
   function startCooldown() {
     let remaining = COOLDOWN_SEC;
@@ -179,7 +177,7 @@ export function renderScanButton(container, playerId) {
         btn.disabled = false;
         btn.classList.remove('bazaar-trigger-btn--cooldown');
         btn.classList.add('bazaar-trigger-btn--ready');
-        btn.textContent = 'Scan Bazaar Deals';
+        btn.textContent = 'Spin for a Deal';
       } else {
         btn.textContent = `Wait ${remaining}s...`;
       }
@@ -193,4 +191,7 @@ export function renderScanButton(container, playerId) {
   });
 
   container.appendChild(btn);
+
+  // Start initial cooldown immediately (opening ceremony rate limit)
+  startCooldown();
 }

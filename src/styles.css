@@ -866,17 +866,205 @@ tr.row--negative td {
   line-height: 1.6;
 }
 
+/* ── Wheel of Fortune Scanner ─────────────────────────────── */
+
+.wof-scanner {
+  display: flex;
+  justify-content: center;
+  padding: 2rem 0;
+}
+
+.wof-spinner {
+  text-align: center;
+}
+
+.wof-radar {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 1.25rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: wofSpin 1s linear infinite;
+}
+
+@keyframes wofSpin {
+  to { transform: rotate(360deg); }
+}
+
+.wof-text {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.9rem;
+  color: var(--text);
+  margin-bottom: 0.35rem;
+}
+
+.wof-subtext {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* Deal reveal card */
+.wof-deal {
+  text-align: center;
+  padding: 1.5rem 1rem;
+}
+
+.wof-deal--reveal {
+  animation: wofReveal 0.5s ease-out both;
+}
+
+@keyframes wofReveal {
+  from {
+    opacity: 0;
+    transform: scale(0.85) translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.wof-deal-badge {
+  display: inline-block;
+  font-family: 'Syne Mono', monospace;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--positive);
+  padding: 0.35rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 0.85rem;
+  letter-spacing: 0.04em;
+}
+
+.wof-deal-name {
+  font-family: 'Syne Mono', monospace;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 1rem;
+}
+
+.wof-deal-prices {
+  max-width: 260px;
+  margin: 0 auto 1rem;
+}
+
+.wof-price-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  padding: 0.2rem 0;
+}
+
+.wof-price-label {
+  color: var(--muted);
+  width: 4.5rem;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  text-align: left;
+}
+
+.wof-price-value {
+  flex: 1;
+  text-align: right;
+}
+
+.wof-price--bazaar {
+  color: var(--positive);
+  font-weight: 700;
+}
+
+.wof-price--market {
+  color: var(--muted);
+}
+
+.wof-price--savings {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.wof-price-qty {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.wof-savings-row {
+  border-top: 1px solid var(--border);
+  margin-top: 0.25rem;
+  padding-top: 0.35rem;
+}
+
+.wof-deal-link {
+  display: inline-block;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 700;
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.wof-deal-link:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* No-deal state */
+.wof-no-deal {
+  text-align: center;
+  padding: 1.5rem 1rem;
+}
+
+.wof-no-deal-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.wof-no-deal-text {
+  font-family: 'Syne Mono', monospace;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.wof-no-deal-sub {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* Diagnostic details (collapsible) */
+.bazaar-diag-details {
+  margin-top: 1rem;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.bazaar-diag-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
 .bazaar-diag {
   font-family: 'Syne Mono', monospace;
   font-size: 0.7rem;
   color: var(--accent);
   text-align: left;
-  padding: 1rem;
-  margin-top: 0.75rem;
-  border-top: 1px solid var(--border);
+  padding: 0.75rem 0;
   line-height: 1.5;
-  max-height: 200px;
-  overflow-y: auto;
   word-break: break-all;
 }
 
