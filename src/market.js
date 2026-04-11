@@ -82,9 +82,24 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     }
 
     apiSuccessCount++;
+
+    // DIAGNOSTIC — show raw response structure for first call
+    if (apiSuccessCount === 1) {
+      const keys = Object.keys(data);
+      const imData = data.itemmarket;
+      const imType = Array.isArray(imData) ? `array(${imData.length})` : typeof imData;
+      const sample = Array.isArray(imData) && imData[0] ? JSON.stringify(imData[0]).slice(0, 120) : (imData?.listings ? `listings(${imData.listings.length}): ${JSON.stringify(imData.listings[0]).slice(0, 120)}` : 'no listings key');
+      showToast(`API item ${itemId}: keys=[${keys}], itemmarket=${imType}, ${sample}`, 'success');
+    }
+
     let lowestPrice = null;
+    // V2 format: data.itemmarket.listings[].price
     if (data?.itemmarket?.listings && data.itemmarket.listings.length > 0) {
       lowestPrice = data.itemmarket.listings[0].price;
+    }
+    // V1 fallback: data.itemmarket is array, items have .cost
+    if (lowestPrice == null && Array.isArray(data?.itemmarket) && data.itemmarket.length > 0) {
+      lowestPrice = data.itemmarket[0].cost;
     }
 
     freshPrices.push({ item_id: itemId, price: lowestPrice, updated_at: new Date().toISOString() });
