@@ -498,18 +498,97 @@ valigia.girovagabondo.com/
 
 -----
 
-## First Steps for Claude Code
+## Current State (April 2026)
 
-1. Create new Supabase project, run the `abroad_prices` SQL, copy env vars
-1. Scaffold Vite project
-1. Copy `torn-proxy` Edge Function from Tornder, update to accept `log`
-   and `from` params as shown in this doc
-1. Make a one-off call to `torn/?selections=items` with a real key and
-   fill all null `itemId` values in `abroad-items.js`
-1. Build `log-sync.js` — call log 6501, parse entries, upsert Supabase
-1. Build `market.js` — parallel fetch all sell prices via `Promise.allSettled()`
-1. Build `calculator.js` — margin math
-1. Build `ui.js` — table with shimmer loading, progressive row population
-1. Wire in `main.js`
-1. Test end-to-end with a real API key
-1. Deploy via GitHub Actions FTP pipeline
+### What's Working
+- **Buy prices** — Live from YATA community API, no API key needed
+- **Sell prices** — Supabase-backed cache (~200 items), refreshes 15/visit,
+  shared across all users
+- **Profit calculations** — Margin $, Margin %, Run Cost, Profit/Run,
+  Profit/hr all working
+- **Sorting** — By any column, negative margins dimmed at bottom,
+  "no listings" separated
+- **Filters** — Destination dropdown and category chips
+  (Drugs/Plushies/Flowers)
+- **Stock quantities** — From YATA data, displayed in table
+- **Travel perks** — Auto-detects slots + airstrip (faction perks need
+  manual override)
+- **Secure auth** — API key encrypted server-side (AES-256), only
+  player_id in browser
+- **Auto-login** — Remembers player across sessions
+
+### Known Limitations
+- **Slots** — Auto-detect misses faction perks (user sets manually,
+  persists in localStorage)
+- **"no listings" items** — Genuinely untradeable collector items,
+  re-checked hourly
+- **Category mapping** — Uses static lookup from `abroad-items.js`.
+  Items not in the list show as "other" and are hidden by category filters.
+
+### Supabase Tables
+- `player_secrets` — Encrypted API keys (active, essential)
+- `sell_prices` — Cached sell prices (active, essential)
+- `abroad_prices` — **DROPPED** (replaced by YATA API)
+- `secret_audit_log` — **DROPPED** (was write-only, never read)
+
+-----
+
+## Competitive Research: DroqsDB
+
+DroqsDB (droqsdb.com) is a similar Torn travel arbitrage tool with a
+Tampermonkey userscript that scrapes live shop data from Torn's travel
+pages. Key features worth learning from:
+
+### Features Valigia Has Adopted
+- **Destination filter** — dropdown to focus on one country
+- **Category filter** — Drugs / Plushies / Flowers toggle chips
+- **Stock quantity display** — YATA provides quantities
+- **Run Cost column** — buy price × capacity
+- **Flight type dropdown** — replaces binary airstrip checkbox
+
+### Features to Consider Next (Medium Effort)
+- **"Best Run Right Now" summary card** — single recommended action
+  above the table, showing item + country + profit/hr. High value —
+  instant answer vs scanning a table.
+- **Bazaar/TCS sell options** — DroqsDB supports Item Market, Bazaar,
+  and Torn City Shops as sell venues. Different venues = different
+  profit math.
+- **More flight types** — WLT and Business class. Need confirmed
+  multipliers before implementing.
+
+### Features to Consider Later (High Effort)
+- **Stock-aware recommendations** — Filter out items likely to be out
+  of stock on arrival. Requires restock timing data.
+- **Historical price trends** — Track sell price changes over time.
+  DroqsDB has 30-day charts with Latest/High/Low/Average/Change.
+- **DroqsDB public API as data source** — They expose
+  `/api/public/v1` with stock levels and restock estimates. Could
+  supplement YATA data.
+
+### What NOT to Copy
+- Their userscript architecture (DOM scraping on torn.com) — our
+  standalone app is simpler for users.
+- Restock timing predictions — requires significant data
+  infrastructure.
+- Draggable floating panel UX — overcomplicated for a standalone app.
+
+-----
+
+## User Controls
+
+All persisted in `localStorage`:
+
+- **Slot count** — number input, default 29, min 5, max 44
+- **Flight type** — dropdown: Standard (default) | Airstrip. When
+  Airstrip is selected, halves all `flightMins` values before
+  calculation
+- **Destination filter** — dropdown: All (default) | one specific
+  country. Filters the table to show only items from that destination
+- **Category filter** — chip buttons: All (default) | Drugs | Plushies
+  | Flowers. Filters by item type using the static category lookup
+  from `abroad-items.js`
+- **Sort** — click any column header to sort. Default: Profit/hr desc.
+  Negative margins always sink to bottom regardless of sort.
+
+Controls sit above the table. Any change immediately re-sorts and
+re-renders without re-fetching.
