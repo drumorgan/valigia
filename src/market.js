@@ -55,11 +55,16 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     }
   }
 
-  if (staleIds.length === 0) return;
+  if (staleIds.length === 0) {
+    showToast(`Sell prices: all ${cacheMap.size} cached, 0 stale`, 'success');
+    return;
+  }
 
   // 3. Only refresh a small number per visit to stay under rate limits
   const toRefresh = staleIds.slice(0, MAX_REFRESH_PER_VISIT);
   const freshPrices = [];
+  let apiSuccessCount = 0;
+  let apiFailCount = 0;
 
   const promises = toRefresh.map(async (itemId) => {
     const data = await callTornApi({
@@ -70,6 +75,12 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
       v2: true,
     });
 
+    if (!data) {
+      apiFailCount++;
+      return;
+    }
+
+    apiSuccessCount++;
     let lowestPrice = null;
     if (data?.itemmarket?.listings && data.itemmarket.listings.length > 0) {
       lowestPrice = data.itemmarket.listings[0].price;
@@ -89,6 +100,10 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
 
     if (writeErr) {
       showToast(`Supabase write error: ${writeErr.message}`, 'warning');
+    } else {
+      showToast(`Sell prices: ${cacheMap.size} cached, ${apiSuccessCount} refreshed, ${apiFailCount} failed, ${freshPrices.length} written to Supabase`, 'success');
     }
+  } else {
+    showToast(`Sell prices: ${cacheMap.size} cached, 0/${toRefresh.length} API calls succeeded`, 'warning');
   }
 }
