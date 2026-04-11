@@ -4,6 +4,7 @@
 
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
+import { showToast } from './ui.js';
 
 const MAX_REFRESH_PER_VISIT = 5;  // max Torn API calls per page load
 const STALE_MS = 4 * 60 * 60 * 1000; // 4 hours
@@ -20,10 +21,14 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   const now = Date.now();
 
   // 1. Read all cached sell prices from Supabase (single query)
-  const { data: cached } = await supabase
+  const { data: cached, error: readErr } = await supabase
     .from('sell_prices')
     .select('item_id, price, updated_at')
     .in('item_id', itemIds);
+
+  if (readErr) {
+    showToast(`Supabase read error: ${readErr.message}`, 'warning');
+  }
 
   const cacheMap = new Map();
   if (cached) {
@@ -78,8 +83,12 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
 
   // 4. Write fresh prices back to Supabase for all users
   if (freshPrices.length > 0) {
-    await supabase
+    const { error: writeErr } = await supabase
       .from('sell_prices')
       .upsert(freshPrices, { onConflict: 'item_id' });
+
+    if (writeErr) {
+      showToast(`Supabase write error: ${writeErr.message}`, 'warning');
+    }
   }
 }
