@@ -100,6 +100,10 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
     hadMarket: 0,
     cheaper: 0,
     apiErrors: 0,
+    firstBazaarKeys: null,   // raw response keys for debugging
+    firstMarketKeys: null,
+    firstBazaarSample: null,
+    firstMarketSample: null,
   };
 
   if (items.length === 0) return { deals: [], stats };
@@ -133,6 +137,16 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
 
       if (!bazaarData) { stats.apiErrors++; }
       if (!marketData) { stats.apiErrors++; }
+
+      // Capture first raw response for debugging
+      if (bazaarData && !stats.firstBazaarKeys) {
+        stats.firstBazaarKeys = Object.keys(bazaarData).join(', ');
+        stats.firstBazaarSample = JSON.stringify(bazaarData).substring(0, 200);
+      }
+      if (marketData && !stats.firstMarketKeys) {
+        stats.firstMarketKeys = Object.keys(marketData).join(', ');
+        stats.firstMarketSample = JSON.stringify(marketData).substring(0, 200);
+      }
 
       const bazaar = bazaarData ? extractLowest(bazaarData.bazaar) : null;
       if (bazaar) stats.hadBazaar++;
