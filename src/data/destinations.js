@@ -12,6 +12,7 @@ export const DESTINATIONS = {
   'UK':               { flightMins: 152 },
   'Hawaii':           { flightMins: 121 },
   'Cayman Islands':   { flightMins: 57 },
+  'Caymans':          { flightMins: 57 },
   'Canada':           { flightMins: 37 },
   'Mexico':           { flightMins: 20 },
 };
