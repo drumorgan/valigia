@@ -73,9 +73,8 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     const data = await callTornApi({
       section: 'market',
       id: itemId,
-      selections: 'itemmarket',
+      selections: 'lookup',
       player_id: playerId,
-      v2: true,
     });
 
     if (!data) {
@@ -86,12 +85,8 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     apiSuccessCount++;
 
     let lowestPrice = null;
-    // V2 format: data.itemmarket.listings[].price
-    if (data?.itemmarket?.listings && data.itemmarket.listings.length > 0) {
-      lowestPrice = data.itemmarket.listings[0].price;
-    }
-    // V1 fallback: data.itemmarket is array, items have .cost
-    if (lowestPrice == null && Array.isArray(data?.itemmarket) && data.itemmarket.length > 0) {
+    // V1 lookup returns { itemmarket: [{ cost, quantity }, ...] } sorted by cost
+    if (Array.isArray(data?.itemmarket) && data.itemmarket.length > 0) {
       lowestPrice = data.itemmarket[0].cost;
     }
 
