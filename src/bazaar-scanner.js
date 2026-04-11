@@ -242,34 +242,19 @@ async function writeBazaarPool(results) {
 }
 
 /**
- * Find the single best deal across all data.
- * Compares bazaar prices (from pool + fresh checks) against market prices.
+ * Find the single best deal from LIVE-checked bazaar prices only.
+ * Pool data tells us where to look — only freshResults are real.
+ * A price from a previous scan is almost certainly bought already.
  */
-function findBestDeal(items, marketPrices, pool, freshResults) {
-  // Merge pool data with fresh results, tracking which bazaar owner has lowest
-  const allBazaarPrices = new Map(); // item_id → { price, quantity, bazaarOwnerId }
+function findBestDeal(items, marketPrices, freshResults) {
+  // Build map of lowest live-checked price per item
+  const livePrices = new Map(); // item_id → { price, quantity, bazaarOwnerId }
 
-  // From pool (existing data)
-  for (const [itemId, sources] of pool) {
-    for (const src of sources) {
-      if (src.price == null) continue;
-      const current = allBazaarPrices.get(itemId);
-      if (!current || src.price < current.price) {
-        allBazaarPrices.set(itemId, {
-          price: src.price,
-          quantity: src.quantity || 1,
-          bazaarOwnerId: src.bazaar_owner_id,
-        });
-      }
-    }
-  }
-
-  // From fresh results (overrides pool if cheaper)
   for (const r of freshResults) {
     if (r.price == null) continue;
-    const current = allBazaarPrices.get(r.item_id);
+    const current = livePrices.get(r.item_id);
     if (!current || r.price < current.price) {
-      allBazaarPrices.set(r.item_id, {
+      livePrices.set(r.item_id, {
         price: r.price,
         quantity: r.quantity || 1,
         bazaarOwnerId: r.bazaar_owner_id,
@@ -277,12 +262,12 @@ function findBestDeal(items, marketPrices, pool, freshResults) {
     }
   }
 
-  // Find best deal
+  // Find best deal from live prices only
   let bestDeal = null;
 
   for (const item of items) {
     const marketPrice = marketPrices.get(item.id);
-    const bazaar = allBazaarPrices.get(item.id);
+    const bazaar = livePrices.get(item.id);
 
     if (!marketPrice || !bazaar) continue;
 
@@ -363,8 +348,8 @@ export async function scanBazaarDeals(playerId, onProgress) {
   // Phase 4: Write back to shared pool (0 API calls)
   await writeBazaarPool(freshResults);
 
-  // Find the single best deal
-  const bestDeal = findBestDeal(items, marketPrices, pool, freshResults);
+  // Find the single best deal — only from live-checked prices
+  const bestDeal = findBestDeal(items, marketPrices, freshResults);
 
   return { bestDeal, stats };
 }
