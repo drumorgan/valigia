@@ -377,9 +377,9 @@ body {
   color: var(--muted);
   font-weight: 400;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 0.65rem;
-  padding: 0.5rem 0.4rem;
+  letter-spacing: 0.06em;
+  font-size: 0.62rem;
+  padding: 0.45rem 0.3rem;
   border-bottom: 1px solid var(--border);
   text-align: right;
   white-space: nowrap;
@@ -406,7 +406,7 @@ body {
 }
 
 .arb-table td {
-  padding: 0.5rem 0.4rem;
+  padding: 0.45rem 0.3rem;
   border-bottom: 1px solid var(--border);
   text-align: right;
   white-space: nowrap;
