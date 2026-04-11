@@ -45,7 +45,7 @@ const COLUMNS = [
   { key: 'destination',   label: 'Dest',        css: 'col-dest' },
   { key: 'quantity',      label: 'Stock',       css: 'col-stock' },
   { key: 'buyPrice',      label: 'Buy',         css: 'col-buy' },
-  { key: 'sellPrice',     label: 'Sell',        css: 'col-sell' },
+  { key: 'sellPrice',     label: 'Sell (net)',   css: 'col-sell' },
   { key: 'marginPerItem', label: 'Margin',      css: 'col-margin' },
   { key: 'runCost',       label: 'Run Cost',    css: 'col-runcost' },
   { key: 'profitPerRun',  label: 'Profit/Run',  css: 'col-run' },
@@ -268,7 +268,7 @@ function getSortValue(row, col) {
     case 'destination':   return row.destination || '';
     case 'quantity':      return row.quantity ?? -1;
     case 'buyPrice':      return row.buyPrice || 0;
-    case 'sellPrice':     return row.sellPrice || 0;
+    case 'sellPrice':     return (row.sellPrice || 0) * 0.95;
     case 'marginPerItem': return row.metrics?.marginPerItem || 0;
     case 'runCost':       return row.metrics?.runCost || 0;
     case 'profitPerRun':  return row.metrics?.profitPerRun || 0;
@@ -427,10 +427,11 @@ export function renderTable() {
     // Stock cell
     const stockCell = formatQuantity(r.quantity);
 
-    // Sell price cell
+    // Sell price cell — show net price (after 5% item market fee) so math is visible
     const noListings = r.isChecked && !r.hasSellPrice;
-    const sellCell = r.hasSellPrice
-      ? formatMoney(r.sellPrice)
+    const netSell = r.hasSellPrice ? r.sellPrice * 0.95 : null;
+    const sellCell = netSell != null
+      ? formatMoney(netSell)
       : noListings
         ? '<span class="muted">no listings</span>'
         : '<span class="shimmer-cell"></span>';
