@@ -866,6 +866,15 @@ tr.row--negative td {
   line-height: 1.6;
 }
 
+.bazaar-diag {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.65rem;
+  color: var(--muted);
+  text-align: center;
+  padding: 0.75rem 0 0.25rem;
+  opacity: 0.6;
+}
+
 /* ── Responsive ──────────────────────────────────────────────── */
 
 @media (max-width: 768px) {

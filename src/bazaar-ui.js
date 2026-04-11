@@ -102,7 +102,7 @@ async function runScan(playerId) {
   progressText.textContent = 'Scanning bazaars...';
   dealsEl.innerHTML = '';
 
-  const deals = await scanBazaarDeals(
+  const { deals, stats } = await scanBazaarDeals(
     playerId,
     (scanned, total) => {
       const pct = Math.round((scanned / total) * 100);
@@ -117,17 +117,21 @@ async function runScan(playerId) {
   // Done
   isScanning = false;
 
+  const diagLine = `${stats.resolved}/${stats.watchlistSize} resolved · ${stats.hadBazaar} bazaar · ${stats.hadMarket} market · ${stats.cheaper} cheaper`;
+
   if (deals.length === 0) {
-    progressText.textContent = 'No deals right now — try again soon!';
+    progressText.textContent = 'No deals right now';
     dealsEl.innerHTML = `
       <div class="bazaar-empty">
         No bazaar listings found cheaper than market price right now.<br>
         Close this and try again in a bit.
       </div>
+      <div class="bazaar-diag">${diagLine}</div>
     `;
   } else {
     progressText.textContent = `${deals.length} deal${deals.length > 1 ? 's' : ''} found!`;
-    dealsEl.innerHTML = deals.map(dealCardHtml).join('');
+    dealsEl.innerHTML = deals.map(dealCardHtml).join('') +
+      `<div class="bazaar-diag">${diagLine}</div>`;
   }
 
 }
