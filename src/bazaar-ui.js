@@ -167,6 +167,9 @@ async function runScan(playerId) {
   if (stats.unresolved.length > 0) {
     diagLines.push(`Unresolved: ${stats.unresolved.join(', ')}`);
   }
+  if (stats.rpcError) {
+    diagLines.push(`Stats error: ${stats.rpcError}`);
+  }
 
   diagDetails.style.display = 'block';
   diagEl.innerHTML = diagLines.join('<br>');

@@ -361,7 +361,8 @@ export async function scanBazaarDeals(playerId, onProgress) {
   const bestDeal = findBestDeal(items, marketPrices, freshResults);
 
   // Record this scan in community stats
-  try { await supabase.rpc('record_scan', { found_deal: bestDeal != null }); } catch {}
+  const { error: rpcErr } = await supabase.rpc('record_scan', { found_deal: bestDeal != null });
+  if (rpcErr) stats.rpcError = rpcErr.message;
 
   return { bestDeal, stats };
 }
