@@ -1,5 +1,5 @@
-// Bazaar deal scanner — finds items listed in bazaars below item market price.
-// Self-contained: resolves its own item IDs and fetches prices via the Torn API.
+// Bazaar deal scanner — finds items in bazaars below item market price.
+// Uses the V2 Torn API for both bazaar and market lookups.
 
 import { callTornApi } from './torn-api.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
@@ -9,7 +9,6 @@ const BATCH_DELAY_MS = 7000;
 
 /**
  * Resolve watchlist item names to IDs.
- * Tries localStorage cache first, then fetches the full Torn item catalog.
  */
 async function resolveWatchlistIds(playerId) {
   let nameToId = null;
@@ -75,9 +74,8 @@ function extractLowest(listings) {
 }
 
 /**
- * Scan bazaar listings for deals below market price.
- * Uses SEQUENTIAL calls per item (bazaar then lookup) to avoid proxy
- * concurrency issues with key decryption.
+ * Scan bazaar listings for deals below item market price.
+ * Uses V2 API endpoints for more reliable data retrieval.
  */
 export async function scanBazaarDeals(playerId, onProgress, onDeal) {
   const { resolved: items, unresolved } = await resolveWatchlistIds(playerId);
@@ -103,21 +101,24 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
     const batch = items.slice(i, i + BATCH_SIZE);
 
     const promises = batch.map(async (item) => {
-      // SEQUENTIAL calls per item to avoid proxy concurrency issues
-      // 1. Fetch bazaar listings
-      const bazaarData = await callTornApi({
-        section: 'market',
-        id: item.id,
-        selections: 'bazaar',
-        player_id: playerId,
-      });
-
-      // 2. Then fetch market price (lookup)
+      // Try V2 API first for market lookup, fall back to V1
+      // V2 URL: /v2/market/{id}/lookup
+      // V1 URL: /market/{id}?selections=lookup
       const marketData = await callTornApi({
         section: 'market',
         id: item.id,
         selections: 'lookup',
         player_id: playerId,
+        v2: true,
+      });
+
+      // Bazaar via V2: /v2/market/{id}/bazaar
+      const bazaarData = await callTornApi({
+        section: 'market',
+        id: item.id,
+        selections: 'bazaar',
+        player_id: playerId,
+        v2: true,
       });
 
       scanned++;
@@ -125,25 +126,32 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
 
       // Capture samples for debugging (first 3 items)
       if (stats.sampleResponses.length < 3) {
+        const mSample = marketData ? JSON.stringify(marketData).substring(0, 150) : 'null';
+        const bSample = bazaarData ? JSON.stringify(bazaarData).substring(0, 150) : 'null';
         stats.sampleResponses.push({
           name: item.name,
           id: item.id,
-          bazaarKeys: bazaarData ? Object.keys(bazaarData) : null,
-          marketKeys: marketData ? Object.keys(marketData) : null,
-          bazaarType: bazaarData?.bazaar ? (Array.isArray(bazaarData.bazaar) ? `array[${bazaarData.bazaar.length}]` : typeof bazaarData.bazaar) : 'missing',
-          marketType: marketData?.itemmarket ? (Array.isArray(marketData.itemmarket) ? `array[${marketData.itemmarket.length}]` : typeof marketData.itemmarket) : 'missing',
+          marketKeys: marketData ? Object.keys(marketData).join(',') : 'null',
+          bazaarKeys: bazaarData ? Object.keys(bazaarData).join(',') : 'null',
+          mSample,
+          bSample,
         });
       }
 
       if (!bazaarData) stats.apiErrors++;
       if (!marketData) stats.apiErrors++;
 
-      const bazaar = bazaarData ? extractLowest(bazaarData.bazaar) : null;
+      // V2 may return data under different keys — try multiple
+      const bazaar = extractLowest(bazaarData?.bazaar)
+        || extractLowest(bazaarData?.listings)
+        || extractLowest(bazaarData?.items);
       if (bazaar) stats.hadBazaar++;
 
+      // V2 lookup may return under itemmarket, market, or items
       let marketPrice = null;
-      if (marketData && Array.isArray(marketData.itemmarket) && marketData.itemmarket.length > 0) {
-        marketPrice = marketData.itemmarket[0].cost;
+      const mktList = marketData?.itemmarket || marketData?.market || marketData?.items;
+      if (Array.isArray(mktList) && mktList.length > 0) {
+        marketPrice = mktList[0].cost || mktList[0].price;
         stats.hadMarket++;
       }
 
