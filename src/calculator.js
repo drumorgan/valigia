@@ -14,6 +14,7 @@ export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, h
   const netSell = sellPrice * 0.95; // 5% item market fee
   const marginPerItem = netSell - buyPrice;
   const marginPct = buyPrice > 0 ? (marginPerItem / buyPrice) * 100 : 0;
+  const runCost = buyPrice * slotCount;
   const profitPerRun = marginPerItem * slotCount;
   const effectiveFlightMins = hasAirstrip ? flightMins / 2 : flightMins;
   const roundTripMins = effectiveFlightMins * 2;
@@ -23,6 +24,7 @@ export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, h
     netSell,
     marginPerItem,
     marginPct,
+    runCost,
     profitPerRun,
     roundTripMins,
     profitPerHour,

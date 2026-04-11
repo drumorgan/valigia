@@ -1,38 +1,59 @@
 // UI module — table rendering, controls, shimmer loading, toast notifications.
-// Data-driven from Supabase abroad_prices — not limited to a static item list.
 
 import { getFlightMins } from './data/destinations.js';
+import { DESTINATIONS } from './data/destinations.js';
+import { ABROAD_ITEMS } from './data/abroad-items.js';
 import { calculateMargins, formatFlightTime, formatMoney, formatPct } from './calculator.js';
+
+// ── Category lookup from static item data ─────────────────────
+const CATEGORY_LOOKUP = new Map();
+for (const item of ABROAD_ITEMS) {
+  if (item.name && item.type) {
+    CATEGORY_LOOKUP.set(item.name.toLowerCase(), item.type);
+  }
+}
+
+function getItemCategory(itemName) {
+  return CATEGORY_LOOKUP.get((itemName || '').toLowerCase()) || 'other';
+}
 
 // ── State ──────────────────────────────────────────────────────
 const STORAGE_SLOTS = 'valigia_slots';
 const STORAGE_AIRSTRIP = 'valigia_airstrip';
 const STORAGE_SORT_COL = 'valigia_sort_col';
 const STORAGE_SORT_DIR = 'valigia_sort_dir';
+const STORAGE_FILTER_DEST = 'valigia_filter_dest';
+const STORAGE_FILTER_CAT = 'valigia_filter_cat';
 
 let slotCount = parseInt(localStorage.getItem(STORAGE_SLOTS)) || 29;
 let hasAirstrip = localStorage.getItem(STORAGE_AIRSTRIP) === 'true';
 let sortCol = localStorage.getItem(STORAGE_SORT_COL) || 'profitPerHour';
 let sortDir = localStorage.getItem(STORAGE_SORT_DIR) || 'desc';
+let filterDestination = localStorage.getItem(STORAGE_FILTER_DEST) || 'all';
+let filterCategory = localStorage.getItem(STORAGE_FILTER_CAT) || 'all';
 
 // Live data — populated as prices arrive
 const sellPrices = new Map();   // itemId → sell price
 const checkedItems = new Set();  // itemIds where sell price has been looked up
-let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at }
+let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at, quantity }
 
 // ── Column definitions for sortable headers ───────────────────
 const COLUMNS = [
   { key: null,            label: '#',           css: 'col-rank' },
   { key: 'name',          label: 'Item',        css: 'col-item' },
-  { key: 'destination',   label: 'Destination', css: 'col-dest' },
-  { key: 'buyPrice',      label: 'Buy Price',   css: 'col-buy' },
-  { key: 'sellPrice',     label: 'Sell Price',  css: 'col-sell' },
+  { key: 'destination',   label: 'Dest',        css: 'col-dest' },
+  { key: 'quantity',      label: 'Stock',       css: 'col-stock' },
+  { key: 'buyPrice',      label: 'Buy',         css: 'col-buy' },
+  { key: 'sellPrice',     label: 'Sell',        css: 'col-sell' },
   { key: 'marginPerItem', label: 'Margin $',    css: 'col-margin' },
   { key: 'marginPct',     label: 'Margin %',    css: 'col-pct' },
+  { key: 'runCost',       label: 'Run Cost',    css: 'col-runcost' },
   { key: 'profitPerRun',  label: 'Profit/Run',  css: 'col-run' },
   { key: 'profitPerHour', label: 'Profit/hr',   css: 'col-hr' },
   { key: 'flightMins',    label: 'Flight',      css: 'col-flight' },
 ];
+
+const COL_COUNT = COLUMNS.length;
 
 // ── Toast ──────────────────────────────────────────────────────
 let toastTimeout;
@@ -62,7 +83,28 @@ function persistSort() {
   localStorage.setItem(STORAGE_SORT_DIR, sortDir);
 }
 
+function persistFilters() {
+  localStorage.setItem(STORAGE_FILTER_DEST, filterDestination);
+  localStorage.setItem(STORAGE_FILTER_CAT, filterCategory);
+}
+
+/**
+ * Get sorted list of destinations from known items, ordered by flight time (longest first).
+ */
+function getAvailableDestinations() {
+  const dests = new Set();
+  for (const item of knownItems) {
+    if (item.destination) dests.add(item.destination);
+  }
+  return [...dests].sort((a, b) => (getFlightMins(b) || 0) - (getFlightMins(a) || 0));
+}
+
 export function renderControls(container, onChange) {
+  const destinations = getAvailableDestinations();
+  const destOptions = destinations.map(d =>
+    `<option value="${d}" ${filterDestination === d ? 'selected' : ''}>${d}</option>`
+  ).join('');
+
   container.innerHTML = `
     <div class="controls">
       <label class="control-group">
@@ -70,10 +112,27 @@ export function renderControls(container, onChange) {
         <input type="number" id="ctl-slots" class="control-input"
                value="${slotCount}" min="5" max="44" />
       </label>
-      <label class="control-group control-group--check">
-        <input type="checkbox" id="ctl-airstrip" ${hasAirstrip ? 'checked' : ''} />
-        <span class="control-label">Airstrip</span>
+      <label class="control-group">
+        <span class="control-label">Flight</span>
+        <select id="ctl-flight-type" class="control-select">
+          <option value="standard" ${!hasAirstrip ? 'selected' : ''}>Standard</option>
+          <option value="airstrip" ${hasAirstrip ? 'selected' : ''}>Airstrip</option>
+        </select>
       </label>
+      <label class="control-group">
+        <span class="control-label">Destination</span>
+        <select id="ctl-destination" class="control-select">
+          <option value="all" ${filterDestination === 'all' ? 'selected' : ''}>All</option>
+          ${destOptions}
+        </select>
+      </label>
+      <div class="control-group filter-chips">
+        <span class="control-label">Type</span>
+        <button class="filter-chip ${filterCategory === 'all' ? 'filter-chip--active' : ''}" data-cat="all">All</button>
+        <button class="filter-chip ${filterCategory === 'drug' ? 'filter-chip--active' : ''}" data-cat="drug">Drugs</button>
+        <button class="filter-chip ${filterCategory === 'plushie' ? 'filter-chip--active' : ''}" data-cat="plushie">Plushies</button>
+        <button class="filter-chip ${filterCategory === 'flower' ? 'filter-chip--active' : ''}" data-cat="flower">Flowers</button>
+      </div>
     </div>
   `;
 
@@ -82,10 +141,25 @@ export function renderControls(container, onChange) {
     persistControls();
     onChange();
   });
-  container.querySelector('#ctl-airstrip').addEventListener('change', (e) => {
-    hasAirstrip = e.target.checked;
+  container.querySelector('#ctl-flight-type').addEventListener('change', (e) => {
+    hasAirstrip = e.target.value === 'airstrip';
     persistControls();
     onChange();
+  });
+  container.querySelector('#ctl-destination').addEventListener('change', (e) => {
+    filterDestination = e.target.value;
+    persistFilters();
+    onChange();
+  });
+  container.querySelectorAll('.filter-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      filterCategory = btn.dataset.cat;
+      persistFilters();
+      // Update active state visually
+      container.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('filter-chip--active'));
+      btn.classList.add('filter-chip--active');
+      onChange();
+    });
   });
 }
 
@@ -102,8 +176,8 @@ export function setPlayerTravel(slots, airstrip) {
   }
   if (airstrip != null) {
     hasAirstrip = airstrip;
-    const el = document.getElementById('ctl-airstrip');
-    if (el) el.checked = hasAirstrip;
+    const el = document.getElementById('ctl-flight-type');
+    if (el) el.value = airstrip ? 'airstrip' : 'standard';
   }
   persistControls();
   renderTable();
@@ -112,8 +186,7 @@ export function setPlayerTravel(slots, airstrip) {
 // ── Data ───────────────────────────────────────────────────────
 
 /**
- * Set the known items from Supabase abroad_prices rows.
- * This is the primary data source — every item any player ever bought abroad.
+ * Set the known items from YATA abroad prices.
  */
 export function setKnownItems(rows) {
   knownItems = rows;
@@ -155,6 +228,11 @@ function formatDaysAgo(ms) {
   return `${days}d ago`;
 }
 
+function formatQuantity(qty) {
+  if (qty == null) return '<span class="muted">—</span>';
+  return Number(qty).toLocaleString('en-US');
+}
+
 function getBuyPriceInfo(row) {
   if (!row.reported_at) {
     return { price: row.buy_price, freshness: 'empty', reportedAgo: null };
@@ -183,10 +261,12 @@ function getSortValue(row, col) {
   switch (col) {
     case 'name':          return row.name || '';
     case 'destination':   return row.destination || '';
+    case 'quantity':      return row.quantity ?? -1;
     case 'buyPrice':      return row.buyPrice || 0;
     case 'sellPrice':     return row.sellPrice || 0;
     case 'marginPerItem': return row.metrics?.marginPerItem || 0;
     case 'marginPct':     return row.metrics?.marginPct || 0;
+    case 'runCost':       return row.metrics?.runCost || 0;
     case 'profitPerRun':  return row.metrics?.profitPerRun || 0;
     case 'profitPerHour': return row.metrics?.profitPerHour || 0;
     case 'flightMins':    return row.flightMins || 0;
@@ -229,13 +309,21 @@ function attachSortHandlers() {
 }
 
 /**
- * Build sorted row data from Supabase items + live sell prices.
+ * Build sorted row data from known items + live sell prices.
+ * Applies destination and category filters.
  */
 function buildRows() {
   const rows = [];
 
   for (const item of knownItems) {
     if (!item.item_id) continue;
+
+    // Apply destination filter
+    if (filterDestination !== 'all' && item.destination !== filterDestination) continue;
+
+    // Apply category filter
+    const category = getItemCategory(item.item_name);
+    if (filterCategory !== 'all' && category !== filterCategory) continue;
 
     const flightMins = getFlightMins(item.destination);
     const { price: buyPrice, freshness, reportedAgo } = getBuyPriceInfo(item);
@@ -258,6 +346,8 @@ function buildRows() {
       name: item.item_name,
       destination: item.destination,
       itemId: item.item_id,
+      quantity: item.quantity ?? null,
+      category,
       buyPrice,
       freshness,
       reportedAgo,
@@ -305,11 +395,11 @@ export function renderTable() {
   const rows = buildRows();
 
   if (rows.length === 0) {
-    tbody.innerHTML = `
-      <tr><td colspan="10" class="empty-msg">
-        No abroad price data yet. Log in after your next trip to populate prices automatically.
-      </td></tr>
-    `;
+    const hasFilters = filterDestination !== 'all' || filterCategory !== 'all';
+    const msg = hasFilters
+      ? 'No items match your current filters.'
+      : 'No abroad price data yet. Log in after your next trip to populate prices automatically.';
+    tbody.innerHTML = `<tr><td colspan="${COL_COUNT}" class="empty-msg">${msg}</td></tr>`;
     return;
   }
 
@@ -330,6 +420,9 @@ export function renderTable() {
     }
     const buyCell = `${formatMoney(r.buyPrice)} ${freshnessBadge}`;
 
+    // Stock cell
+    const stockCell = formatQuantity(r.quantity);
+
     // Sell price cell
     const noListings = r.isChecked && !r.hasSellPrice;
     const sellCell = r.hasSellPrice
@@ -342,6 +435,7 @@ export function renderTable() {
     const dash = '<span class="muted">—</span>';
     const marginCell = r.metrics ? formatMoney(r.metrics.marginPerItem) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const pctCell = r.metrics ? formatPct(r.metrics.marginPct) : (noListings ? dash : '<span class="shimmer-cell"></span>');
+    const runCostCell = r.metrics ? formatMoney(r.metrics.runCost) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const hrCell = r.metrics ? formatMoney(r.metrics.profitPerHour) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const flightCell = r.metrics
@@ -353,10 +447,12 @@ export function renderTable() {
         <td class="col-rank">${i + 1}</td>
         <td class="col-item">${r.name}</td>
         <td class="col-dest">${r.destination}</td>
+        <td class="col-stock">${stockCell}</td>
         <td class="col-buy">${buyCell}</td>
         <td class="col-sell">${sellCell}</td>
         <td class="col-margin">${marginCell}</td>
         <td class="col-pct">${pctCell}</td>
+        <td class="col-runcost">${runCostCell}</td>
         <td class="col-run">${runCell}</td>
         <td class="col-hr">${hrCell}</td>
         <td class="col-flight">${flightCell}</td>
@@ -390,7 +486,7 @@ export function renderShimmerTable(container) {
         ${Array.from({ length: 10 }, (_, i) => `
           <tr>
             <td class="col-rank">${i + 1}</td>
-            ${Array.from({ length: 9 }, () => '<td><span class="shimmer-cell"></span></td>').join('')}
+            ${Array.from({ length: COL_COUNT - 1 }, () => '<td><span class="shimmer-cell"></span></td>').join('')}
           </tr>
         `).join('')}
       </tbody>
