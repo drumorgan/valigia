@@ -1,7 +1,9 @@
 // Bazaar deal scanner — finds items listed in bazaars significantly below
-// item market price. Uses batched API calls to stay within rate limits.
+// item market price. Uses Supabase sell_prices cache for market reference
+// and only fetches bazaar listings from the Torn API (one call per item).
 
 import { callTornApi } from './torn-api.js';
+import { supabase } from './supabase.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
 const DEAL_THRESHOLD_PCT = 10;   // minimum % below market to flag as deal
@@ -31,6 +33,25 @@ function resolveWatchlistIds() {
   return resolved;
 }
 
+/**
+ * Fetch market prices from Supabase sell_prices cache.
+ * Returns Map of itemId → price.
+ */
+async function getMarketPricesFromCache(itemIds) {
+  const { data } = await supabase
+    .from('sell_prices')
+    .select('item_id, price')
+    .in('item_id', itemIds);
+
+  const map = new Map();
+  if (data) {
+    for (const row of data) {
+      if (row.price != null) map.set(row.item_id, row.price);
+    }
+  }
+  return map;
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -45,7 +66,6 @@ function extractLowestBazaar(bazaarData) {
   // Array format: [{ cost, quantity }, ...]
   if (Array.isArray(bazaarData)) {
     if (bazaarData.length === 0) return null;
-    // Already sorted by price in Torn API
     return { price: bazaarData[0].cost, quantity: bazaarData[0].quantity || 1 };
   }
 
@@ -64,27 +84,9 @@ function extractLowestBazaar(bazaarData) {
 }
 
 /**
- * Extract the lowest item market price from a Torn API response.
- * Handles v1 array and v2 listings format.
- */
-function extractLowestMarket(marketData) {
-  if (!marketData) return null;
-
-  // V2: { listings: [{ price, quantity }] }
-  if (marketData.listings && marketData.listings.length > 0) {
-    return marketData.listings[0].price;
-  }
-
-  // V1: [{ cost, quantity }]
-  if (Array.isArray(marketData) && marketData.length > 0) {
-    return marketData[0].cost;
-  }
-
-  return null;
-}
-
-/**
  * Scan bazaar listings for deals below market price.
+ * Market prices come from the Supabase sell_prices cache (shared across all users).
+ * Only bazaar listings are fetched live from the Torn API.
  *
  * @param {number} playerId - Torn player ID (for proxy auth)
  * @param {function} onProgress - Called with (scanned, total) after each item
@@ -95,31 +97,39 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
   const items = resolveWatchlistIds();
   if (items.length === 0) return [];
 
+  // Get market prices from Supabase cache (free, instant)
+  const marketPrices = await getMarketPricesFromCache(items.map(i => i.id));
+
+  // Filter to items that have a cached market price
+  const scannable = items.filter(i => marketPrices.has(i.id));
+
   const deals = [];
   let scanned = 0;
+  const total = scannable.length;
 
   // Process in batches to respect rate limits
-  for (let i = 0; i < items.length; i += BATCH_SIZE) {
-    const batch = items.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < scannable.length; i += BATCH_SIZE) {
+    const batch = scannable.slice(i, i + BATCH_SIZE);
 
     const promises = batch.map(async (item) => {
-      // Single call with both selections — returns bazaar + itemmarket
+      // Only fetch bazaar listings — market price comes from cache
       const data = await callTornApi({
         section: 'market',
         id: item.id,
-        selections: 'bazaar,itemmarket',
+        selections: 'bazaar',
         player_id: playerId,
       });
 
       scanned++;
-      if (onProgress) onProgress(scanned, items.length);
+      if (onProgress) onProgress(scanned, total);
 
       if (!data) return;
 
       const bazaar = extractLowestBazaar(data.bazaar);
-      const marketPrice = extractLowestMarket(data.itemmarket);
+      if (!bazaar) return;
 
-      if (!bazaar || !marketPrice || marketPrice <= 0) return;
+      const marketPrice = marketPrices.get(item.id);
+      if (!marketPrice || marketPrice <= 0) return;
 
       const savings = marketPrice - bazaar.price;
       const savingsPct = (savings / marketPrice) * 100;
@@ -141,8 +151,7 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
 
     await Promise.allSettled(promises);
 
-    // Delay between batches (skip after last batch)
-    if (i + BATCH_SIZE < items.length) {
+    if (i + BATCH_SIZE < scannable.length) {
       await sleep(BATCH_DELAY_MS);
     }
   }
