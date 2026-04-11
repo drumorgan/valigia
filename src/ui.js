@@ -451,12 +451,12 @@ export function renderTable() {
       <tr class="${rowClass}">
         <td class="col-rank">${i + 1}</td>
         <td class="col-item">${r.name}</td>
-        <td class="col-dest">${r.destination}</td>
+        <td class="col-dest"><a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener" class="dest-link" title="Travel to ${r.destination}">✈️</a> ${r.destination}</td>
         <td class="col-stock">${stockCell}</td>
         <td class="col-buy">${buyCell}</td>
         <td class="col-sell">${sellCell}</td>
         <td class="col-margin">${marginCell}</td>
-        <td class="col-runcost">${runCostCell}</td>
+        <td class="col-runcost">${r.metrics ? `<a href="https://www.torn.com/page.php?sid=stocks" target="_blank" rel="noopener" class="runcost-link" title="Stock Market">💰</a> ` : ''}${runCostCell}</td>
         <td class="col-run">${runCell}</td>
         <td class="col-hr">${hrCell}</td>
         <td class="col-flight">${flightCell}</td>

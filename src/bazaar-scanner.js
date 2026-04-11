@@ -252,11 +252,13 @@ async function writeBazaarPool(results) {
 }
 
 /**
- * Find the single best deal from LIVE-checked bazaar prices only.
+ * Collect all valid deals from LIVE-checked bazaar prices, pick one at random.
  * Pool data tells us where to look — only freshResults are real.
  * A price from a previous scan is almost certainly bought already.
+ *
+ * "Wheel of fortune" — you might get the best deal, or a surprise lesser one.
  */
-function findBestDeal(items, marketPrices, freshResults) {
+function findRandomDeal(items, marketPrices, freshResults) {
   // Build map of lowest live-checked price per item
   const livePrices = new Map(); // item_id → { price, quantity, bazaarOwnerId }
 
@@ -272,8 +274,8 @@ function findBestDeal(items, marketPrices, freshResults) {
     }
   }
 
-  // Find best deal from live prices only
-  let bestDeal = null;
+  // Collect ALL valid deals from live prices
+  const allDeals = [];
 
   for (const item of items) {
     const marketPrice = marketPrices.get(item.id);
@@ -289,7 +291,7 @@ function findBestDeal(items, marketPrices, freshResults) {
     // Skip "too good to be true" — locked/troll listings (e.g. $1 PCP)
     if (savingsPct > 90) continue;
 
-    const deal = {
+    allDeals.push({
       itemId: item.id,
       itemName: item.name,
       bazaarPrice: bazaar.price,
@@ -298,14 +300,21 @@ function findBestDeal(items, marketPrices, freshResults) {
       marketPrice,
       savings,
       savingsPct,
-    };
-
-    if (!bestDeal || deal.savingsPct > bestDeal.savingsPct) {
-      bestDeal = deal;
-    }
+    });
   }
 
-  return bestDeal;
+  if (allDeals.length === 0) return null;
+
+  // Weighted random — better deals are more likely to be picked.
+  // Weight = savingsPct², so a 10% deal is 100× more likely than a 1% deal.
+  const weights = allDeals.map(d => d.savingsPct * d.savingsPct);
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+  let roll = Math.random() * totalWeight;
+  for (let i = 0; i < allDeals.length; i++) {
+    roll -= weights[i];
+    if (roll <= 0) return allDeals[i];
+  }
+  return allDeals[allDeals.length - 1];
 }
 
 /**
@@ -358,8 +367,8 @@ export async function scanBazaarDeals(playerId, onProgress) {
   // Phase 4: Write back to shared pool (0 API calls)
   await writeBazaarPool(freshResults);
 
-  // Find the single best deal — only from live-checked prices
-  const bestDeal = findBestDeal(items, marketPrices, freshResults);
+  // Pick a random deal from all live-checked deals — wheel of fortune
+  const bestDeal = findRandomDeal(items, marketPrices, freshResults);
 
   // Record this scan in community stats
   const { error: rpcErr } = await supabase.rpc('record_scan', { found_deal: bestDeal != null });

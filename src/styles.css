@@ -432,6 +432,12 @@ body {
   color: var(--muted);
 }
 
+.dest-link, .runcost-link {
+  text-decoration: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
 .arb-table td.col-stock {
   color: var(--muted);
   font-size: 0.75rem;
