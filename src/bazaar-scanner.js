@@ -246,8 +246,8 @@ async function writeBazaarPool(results) {
  * Compares bazaar prices (from pool + fresh checks) against market prices.
  */
 function findBestDeal(items, marketPrices, pool, freshResults) {
-  // Merge pool data with fresh results
-  const allBazaarPrices = new Map(); // item_id → lowest price entry
+  // Merge pool data with fresh results, tracking which bazaar owner has lowest
+  const allBazaarPrices = new Map(); // item_id → { price, quantity, bazaarOwnerId }
 
   // From pool (existing data)
   for (const [itemId, sources] of pool) {
@@ -258,6 +258,7 @@ function findBestDeal(items, marketPrices, pool, freshResults) {
         allBazaarPrices.set(itemId, {
           price: src.price,
           quantity: src.quantity || 1,
+          bazaarOwnerId: src.bazaar_owner_id,
         });
       }
     }
@@ -271,6 +272,7 @@ function findBestDeal(items, marketPrices, pool, freshResults) {
       allBazaarPrices.set(r.item_id, {
         price: r.price,
         quantity: r.quantity || 1,
+        bazaarOwnerId: r.bazaar_owner_id,
       });
     }
   }
@@ -293,6 +295,7 @@ function findBestDeal(items, marketPrices, pool, freshResults) {
       itemName: item.name,
       bazaarPrice: bazaar.price,
       bazaarQty: bazaar.quantity,
+      bazaarOwnerId: bazaar.bazaarOwnerId,
       marketPrice,
       savings,
       savingsPct,

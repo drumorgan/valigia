@@ -11,9 +11,11 @@ const COOLDOWN_SEC = 60;
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function bazaarSearchUrl(itemName) {
-  const encoded = encodeURIComponent(itemName);
-  return `https://www.torn.com/imarket.php#/p=shop&step=shop&type=&searchname=${encoded}`;
+function bazaarUrl(bazaarOwnerId) {
+  if (bazaarOwnerId) {
+    return `https://www.torn.com/bazaar.php#/p=bazaar&userID=${bazaarOwnerId}`;
+  }
+  return `https://www.torn.com/bazaar.php`;
 }
 
 // ── Modal ────────────────────────────────────────────────────
@@ -114,8 +116,8 @@ async function runScan(playerId) {
             <span class="wof-price-value wof-price--savings">${formatMoney(bestDeal.savings)}</span>
           </div>
         </div>
-        <a href="${bazaarSearchUrl(bestDeal.itemName)}" target="_blank" rel="noopener"
-           class="wof-deal-link">Find in Bazaar &rarr;</a>
+        <a href="${bazaarUrl(bestDeal.bazaarOwnerId)}" target="_blank" rel="noopener"
+           class="wof-deal-link">Go to Bazaar &rarr;</a>
       </div>
     `;
   } else {
