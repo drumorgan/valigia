@@ -63,25 +63,17 @@ async function detectPlayerTravel(playerId) {
   // Detect airstrip: look for "Airstrip" in any perk string
   const airstrip = allPerks.some(p => /airstrip/i.test(p));
 
-  // Detect travel capacity: base 5, plus any perk mentioning travel + a number
+  // Detect travel capacity: base 5, plus "+N travel item(s)" perks
   let slots = 5;
-  const travelPerks = allPerks.filter(p => /travel/i.test(p) && /\d/.test(p));
-  for (const p of travelPerks) {
-    const nums = p.match(/\d+/g);
-    if (nums) {
-      slots += parseInt(nums[nums.length - 1], 10);
-    }
+  const capacityRegex = /\+?(\d+)\s+travel\s+items?\b/i;
+  for (const p of allPerks) {
+    const match = p.match(capacityRegex);
+    if (match) slots += parseInt(match[1], 10);
   }
 
-  // TEMPORARY DIAGNOSTIC — show faction perks separately to find missing +10
-  const factionPerks = data.faction_perks || [];
-  const allTravelPerks = allPerks.filter(p => /travel/i.test(p));
-  showToast(
-    `Detected ${slots} (saved: max with current).\n` +
-    `Travel perks: ${allTravelPerks.join(' | ') || 'none'}\n` +
-    `Faction perks (${factionPerks.length}): ${factionPerks.join(' | ') || 'none'}`,
-    'success'
-  );
+  // TEMPORARY DIAGNOSTIC
+  const matched = allPerks.filter(p => capacityRegex.test(p));
+  showToast(`Capacity: ${slots} slots. Matched: ${matched.join(' | ') || 'none'}`, 'success');
 
   setPlayerTravel(slots, airstrip);
 }
