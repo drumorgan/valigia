@@ -61,12 +61,24 @@ async function detectPlayerTravel(playerId) {
   // Detect airstrip: look for "Airstrip" in any perk string
   const airstrip = allPerks.some(p => /airstrip/i.test(p));
 
-  // Detect travel capacity: base 5, plus any "traveling capacity" bonuses
+  // Detect travel capacity: base 5, plus any perk containing a number and "travel"/"capacity"
   let slots = 5;
-  const capacityRegex = /(?:increases?\s+)?(?:maximum\s+)?travel(?:ing|l)?\s+(?:item\s+)?capacity\s+by\s+(\d+)/i;
-  for (const p of allPerks) {
-    const match = p.match(capacityRegex);
-    if (match) slots += parseInt(match[1], 10);
+  const travelPerks = allPerks.filter(p => /travel/i.test(p) && /capac|item/i.test(p));
+  for (const p of travelPerks) {
+    const nums = p.match(/\d+/g);
+    if (nums) {
+      // Use the last number found (typically the bonus amount)
+      slots += parseInt(nums[nums.length - 1], 10);
+    }
+  }
+
+  // TEMPORARY DIAGNOSTIC — shows matched travel perks on screen
+  if (travelPerks.length > 0) {
+    showToast(`Travel perks: ${travelPerks.join(' | ')} → ${slots} slots`, 'success');
+  } else {
+    // Show ALL perks so we can find the right ones
+    const sample = allPerks.filter(p => /travel|capac|item|carry/i.test(p));
+    showToast(`No travel perks matched. Related: ${sample.length > 0 ? sample.join(' | ') : 'none found'} (total perks: ${allPerks.length})`, 'warning');
   }
 
   setPlayerTravel(slots, airstrip);
