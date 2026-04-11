@@ -368,7 +368,51 @@ export async function scanBazaarDeals(playerId, onProgress) {
   await writeBazaarPool(freshResults);
 
   // Pick a random deal from all live-checked deals — wheel of fortune
-  const bestDeal = findRandomDeal(items, marketPrices, freshResults);
+  let bestDeal = findRandomDeal(items, marketPrices, freshResults);
+
+  // Phase 5: Verify — fetch FRESH market price for the chosen deal (1 API call).
+  // The cached sell_prices can be hours stale, leading to phantom deals.
+  if (bestDeal) {
+    const freshMarket = await callTornApi({
+      section: 'market',
+      id: bestDeal.itemId,
+      selections: 'itemmarket',
+      player_id: playerId,
+      v2: true,
+    });
+
+    let freshPrice = null;
+    if (freshMarket?.itemmarket) {
+      const listings = freshMarket.itemmarket?.listings || freshMarket.itemmarket;
+      if (Array.isArray(listings) && listings.length > 0) {
+        freshPrice = listings[0].cost || listings[0].price;
+      }
+    }
+
+    if (freshPrice != null) {
+      // Update cache so main table benefits too
+      try {
+        await supabase.from('sell_prices').upsert(
+          { item_id: bestDeal.itemId, price: freshPrice, updated_at: new Date().toISOString() },
+          { onConflict: 'item_id' }
+        );
+      } catch { /* non-fatal */ }
+
+      // Recalculate deal with verified price
+      const savings = freshPrice - bestDeal.bazaarPrice;
+      const savingsPct = freshPrice > 0 ? (savings / freshPrice) * 100 : 0;
+
+      if (savings > 0 && savingsPct <= 90) {
+        bestDeal.marketPrice = freshPrice;
+        bestDeal.savings = savings;
+        bestDeal.savingsPct = savingsPct;
+      } else {
+        // Deal evaporated — bazaar price isn't actually below market
+        bestDeal = null;
+      }
+    }
+    stats.apiCalls += 1;
+  }
 
   // Record this scan in community stats
   const { error: rpcErr } = await supabase.rpc('record_scan', { found_deal: bestDeal != null });
