@@ -1,5 +1,6 @@
 // Bazaar deal scanner — finds items listed in bazaars below item market price.
-// Makes two API calls per item: one for bazaar listings, one for market price.
+// Self-contained: resolves its own item IDs and fetches both bazaar + market
+// prices via separate API calls per item.
 
 import { callTornApi } from './torn-api.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
@@ -8,26 +9,47 @@ const BATCH_SIZE = 5;            // items per batch (2 calls each = 10 API calls
 const BATCH_DELAY_MS = 7000;     // delay between batches (respect 100 req/min)
 
 /**
- * Resolve watchlist item names to IDs using the cached Torn item catalog.
- * Returns array of { name, id }.
+ * Resolve watchlist item names to IDs.
+ * Tries localStorage cache first, then fetches the full Torn item catalog.
  */
-function resolveWatchlistIds() {
+async function resolveWatchlistIds(playerId) {
+  // Try cache first
+  let nameToId = null;
   const cached = localStorage.getItem('valigia_item_id_map');
-  if (!cached) return [];
+  if (cached) {
+    try { nameToId = JSON.parse(cached); } catch { /* ignore */ }
+  }
 
-  let nameToId;
-  try {
-    nameToId = JSON.parse(cached);
-  } catch {
-    return [];
+  // If no cache, fetch the item catalog ourselves
+  if (!nameToId) {
+    const data = await callTornApi({
+      section: 'torn',
+      selections: 'items',
+      player_id: playerId,
+    });
+
+    if (!data?.items) return [];
+
+    nameToId = {};
+    for (const [idStr, item] of Object.entries(data.items)) {
+      nameToId[item.name.toLowerCase()] = Number(idStr);
+    }
+    // Save for future use
+    localStorage.setItem('valigia_item_id_map', JSON.stringify(nameToId));
   }
 
   const resolved = [];
+  const unresolved = [];
   for (const name of BAZAAR_WATCHLIST) {
     const id = nameToId[name.toLowerCase()];
-    if (id) resolved.push({ name, id });
+    if (id) {
+      resolved.push({ name, id });
+    } else {
+      unresolved.push(name);
+    }
   }
-  return resolved;
+
+  return { resolved, unresolved };
 }
 
 function sleep(ms) {
@@ -41,13 +63,11 @@ function sleep(ms) {
 function extractLowest(listings) {
   if (!listings) return null;
 
-  // Array format: [{ cost, quantity }, ...] — already sorted by cost
   if (Array.isArray(listings)) {
     if (listings.length === 0) return null;
     return { price: listings[0].cost, quantity: listings[0].quantity || 1 };
   }
 
-  // Object format: { "listingId": { cost, quantity }, ... }
   if (typeof listings === 'object') {
     let lowest = null;
     for (const listing of Object.values(listings)) {
@@ -63,8 +83,6 @@ function extractLowest(listings) {
 
 /**
  * Scan bazaar listings for deals below market price.
- * Makes two separate API calls per item (bazaar + lookup) to guarantee
- * both datasets are returned correctly.
  *
  * @param {number} playerId - Torn player ID (for proxy auth)
  * @param {function} onProgress - Called with (scanned, total) after each item
@@ -72,14 +90,16 @@ function extractLowest(listings) {
  * @returns {Promise<object>} { deals, stats }
  */
 export async function scanBazaarDeals(playerId, onProgress, onDeal) {
-  const items = resolveWatchlistIds();
+  const { resolved: items, unresolved } = await resolveWatchlistIds(playerId);
 
   const stats = {
     watchlistSize: BAZAAR_WATCHLIST.length,
     resolved: items.length,
+    unresolved,
     hadBazaar: 0,
     hadMarket: 0,
     cheaper: 0,
+    apiErrors: 0,
   };
 
   if (items.length === 0) return { deals: [], stats };
@@ -88,12 +108,11 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
   let scanned = 0;
   const total = items.length;
 
-  // Process in batches to respect rate limits
   for (let i = 0; i < items.length; i += BATCH_SIZE) {
     const batch = items.slice(i, i + BATCH_SIZE);
 
     const promises = batch.map(async (item) => {
-      // Two separate calls — both proven to work individually
+      // Two separate API calls — both individually proven to work
       const [bazaarData, marketData] = await Promise.all([
         callTornApi({
           section: 'market',
@@ -112,11 +131,12 @@ export async function scanBazaarDeals(playerId, onProgress, onDeal) {
       scanned++;
       if (onProgress) onProgress(scanned, total);
 
-      // Extract lowest bazaar listing
+      if (!bazaarData) { stats.apiErrors++; }
+      if (!marketData) { stats.apiErrors++; }
+
       const bazaar = bazaarData ? extractLowest(bazaarData.bazaar) : null;
       if (bazaar) stats.hadBazaar++;
 
-      // Extract lowest market price
       let marketPrice = null;
       if (marketData && Array.isArray(marketData.itemmarket) && marketData.itemmarket.length > 0) {
         marketPrice = marketData.itemmarket[0].cost;
