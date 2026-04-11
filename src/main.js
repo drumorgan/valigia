@@ -50,10 +50,12 @@ async function detectPlayerTravel(playerId) {
 
   if (!data) return; // key may lack perks permission — silent fallback
 
-  // Flatten all perk arrays into one list of strings
+  // Flatten all perk arrays into one list of strings, track categories
   const allPerks = [];
+  const perkCategories = [];
   for (const key of Object.keys(data)) {
     if (Array.isArray(data[key])) {
+      perkCategories.push(`${key}(${data[key].length})`);
       allPerks.push(...data[key]);
     }
   }
@@ -61,25 +63,22 @@ async function detectPlayerTravel(playerId) {
   // Detect airstrip: look for "Airstrip" in any perk string
   const airstrip = allPerks.some(p => /airstrip/i.test(p));
 
-  // Detect travel capacity: base 5, plus any perk containing a number and "travel"/"capacity"
+  // Detect travel capacity: base 5, plus any perk mentioning travel + a number
   let slots = 5;
-  const travelPerks = allPerks.filter(p => /travel/i.test(p) && /capac|item/i.test(p));
+  const travelPerks = allPerks.filter(p => /travel/i.test(p) && /\d/.test(p));
   for (const p of travelPerks) {
     const nums = p.match(/\d+/g);
     if (nums) {
-      // Use the last number found (typically the bonus amount)
       slots += parseInt(nums[nums.length - 1], 10);
     }
   }
 
-  // TEMPORARY DIAGNOSTIC — shows matched travel perks on screen
-  if (travelPerks.length > 0) {
-    showToast(`Travel perks: ${travelPerks.join(' | ')} → ${slots} slots`, 'success');
-  } else {
-    // Show ALL perks so we can find the right ones
-    const sample = allPerks.filter(p => /travel|capac|item|carry/i.test(p));
-    showToast(`No travel perks matched. Related: ${sample.length > 0 ? sample.join(' | ') : 'none found'} (total perks: ${allPerks.length})`, 'warning');
-  }
+  // TEMPORARY DIAGNOSTIC — shows ALL travel-related perks
+  const allTravelPerks = allPerks.filter(p => /travel/i.test(p));
+  showToast(
+    `Categories: ${perkCategories.join(', ')}\nTravel perks (${allTravelPerks.length}): ${allTravelPerks.join(' | ')}\n→ ${slots} slots, airstrip: ${airstrip}`,
+    'success'
+  );
 
   setPlayerTravel(slots, airstrip);
 }
