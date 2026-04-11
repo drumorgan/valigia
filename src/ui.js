@@ -3,7 +3,7 @@
 import { getFlightMins } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { ABROAD_ITEMS } from './data/abroad-items.js';
-import { calculateMargins, formatFlightTime, formatMoney, formatPct } from './calculator.js';
+import { calculateMargins, formatFlightTime, formatMoney } from './calculator.js';
 
 // ── Category lookup from static item data ─────────────────────
 const CATEGORY_LOOKUP = new Map();
@@ -45,8 +45,7 @@ const COLUMNS = [
   { key: 'quantity',      label: 'Stock',       css: 'col-stock' },
   { key: 'buyPrice',      label: 'Buy',         css: 'col-buy' },
   { key: 'sellPrice',     label: 'Sell',        css: 'col-sell' },
-  { key: 'marginPerItem', label: 'Margin $',    css: 'col-margin' },
-  { key: 'marginPct',     label: 'Margin %',    css: 'col-pct' },
+  { key: 'marginPerItem', label: 'Margin',      css: 'col-margin' },
   { key: 'runCost',       label: 'Run Cost',    css: 'col-runcost' },
   { key: 'profitPerRun',  label: 'Profit/Run',  css: 'col-run' },
   { key: 'profitPerHour', label: 'Profit/hr',   css: 'col-hr' },
@@ -265,7 +264,6 @@ function getSortValue(row, col) {
     case 'buyPrice':      return row.buyPrice || 0;
     case 'sellPrice':     return row.sellPrice || 0;
     case 'marginPerItem': return row.metrics?.marginPerItem || 0;
-    case 'marginPct':     return row.metrics?.marginPct || 0;
     case 'runCost':       return row.metrics?.runCost || 0;
     case 'profitPerRun':  return row.metrics?.profitPerRun || 0;
     case 'profitPerHour': return row.metrics?.profitPerHour || 0;
@@ -434,7 +432,7 @@ export function renderTable() {
     // Metric cells
     const dash = '<span class="muted">—</span>';
     const marginCell = r.metrics ? formatMoney(r.metrics.marginPerItem) : (noListings ? dash : '<span class="shimmer-cell"></span>');
-    const pctCell = r.metrics ? formatPct(r.metrics.marginPct) : (noListings ? dash : '<span class="shimmer-cell"></span>');
+
     const runCostCell = r.metrics ? formatMoney(r.metrics.runCost) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const hrCell = r.metrics ? formatMoney(r.metrics.profitPerHour) : (noListings ? dash : '<span class="shimmer-cell"></span>');
@@ -451,7 +449,6 @@ export function renderTable() {
         <td class="col-buy">${buyCell}</td>
         <td class="col-sell">${sellCell}</td>
         <td class="col-margin">${marginCell}</td>
-        <td class="col-pct">${pctCell}</td>
         <td class="col-runcost">${runCostCell}</td>
         <td class="col-run">${runCell}</td>
         <td class="col-hr">${hrCell}</td>
