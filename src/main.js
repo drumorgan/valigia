@@ -50,12 +50,10 @@ async function detectPlayerTravel(playerId) {
 
   if (!data) return; // key may lack perks permission — silent fallback
 
-  // Flatten all perk arrays into one list of strings, track categories
+  // Flatten all perk arrays into one list of strings
   const allPerks = [];
-  const perkCategories = [];
   for (const key of Object.keys(data)) {
     if (Array.isArray(data[key])) {
-      perkCategories.push(`${key}(${data[key].length})`);
       allPerks.push(...data[key]);
     }
   }
@@ -94,9 +92,7 @@ async function startDashboard(playerId) {
   // Fetch abroad prices from YATA and detect travel perks in parallel
   const [items] = await Promise.all([
     fetchAbroadPrices().catch(() => null),
-    detectPlayerTravel(playerId).catch((err) =>
-      console.warn('perks detection error:', err.message)
-    ),
+    detectPlayerTravel(playerId).catch(() => {}),
   ]);
 
   if (!items || items.length === 0) {

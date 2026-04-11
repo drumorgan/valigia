@@ -80,12 +80,6 @@ serve(async (req) => {
         .delete()
         .eq('torn_player_id', player_id);
 
-      await supabase.from('secret_audit_log').insert({
-        torn_player_id: player_id,
-        action: 'invalidated',
-        edge_function: 'auto-login',
-      });
-
       return new Response(
         JSON.stringify({
           success: false,
@@ -95,13 +89,6 @@ serve(async (req) => {
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-
-    // Audit the successful decryption
-    await supabase.from('secret_audit_log').insert({
-      torn_player_id: player_id,
-      action: 'decrypt_used',
-      edge_function: 'auto-login',
-    });
 
     return new Response(
       JSON.stringify({
