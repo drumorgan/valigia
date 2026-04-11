@@ -6,7 +6,7 @@ import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { showToast } from './ui.js';
 
-const MAX_REFRESH_PER_VISIT = 5;  // max Torn API calls per page load
+const MAX_REFRESH_PER_VISIT = 15;  // max Torn API calls per page load
 const STALE_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 /**
@@ -79,15 +79,6 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     }
 
     apiSuccessCount++;
-
-    // DIAGNOSTIC — show raw response structure for first call
-    if (apiSuccessCount === 1) {
-      const keys = Object.keys(data);
-      const imData = data.itemmarket;
-      const imType = Array.isArray(imData) ? `array(${imData.length})` : typeof imData;
-      const sample = Array.isArray(imData) && imData[0] ? JSON.stringify(imData[0]).slice(0, 120) : (imData?.listings ? `listings(${imData.listings.length}): ${JSON.stringify(imData.listings[0]).slice(0, 120)}` : 'no listings key');
-      showToast(`API item ${itemId}: keys=[${keys}], itemmarket=${imType}, ${sample}`, 'success');
-    }
 
     let lowestPrice = null;
     // V2 format: data.itemmarket.listings[].price
