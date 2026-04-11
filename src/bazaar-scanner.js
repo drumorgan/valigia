@@ -351,5 +351,8 @@ export async function scanBazaarDeals(playerId, onProgress) {
   // Find the single best deal — only from live-checked prices
   const bestDeal = findBestDeal(items, marketPrices, freshResults);
 
+  // Record this scan in community stats
+  supabase.rpc('record_scan', { found_deal: bestDeal != null }).catch(() => {});
+
   return { bestDeal, stats };
 }

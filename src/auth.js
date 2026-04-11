@@ -1,7 +1,7 @@
 // Auth module — API key entry, validation, encrypted server-side storage.
 // Plaintext key NEVER stored in localStorage — only player_id.
 
-import { supabaseUrl, supabaseAnonKey } from './supabase.js';
+import { supabaseUrl, supabaseAnonKey, supabase } from './supabase.js';
 import { callTornApi } from './torn-api.js';
 import { showToast } from './ui.js';
 
@@ -108,8 +108,12 @@ export async function handleLogin(apiKey) {
     return null;
   }
 
-  // Step 3: save player ID locally
+  // Step 3: save player ID locally + record new user in community stats
+  const isNewUser = !getPlayerId();
   setPlayerId(playerId);
+  if (isNewUser) {
+    supabase.rpc('record_new_user').catch(() => {});
+  }
 
   return {
     success: true,

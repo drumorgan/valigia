@@ -5,7 +5,7 @@ import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
 import { fetchAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
-import { renderScanButton } from './bazaar-ui.js';
+import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel
@@ -124,9 +124,10 @@ async function startDashboard(playerId) {
     await fetchAllSellPrices(playerId, itemIds, onSellPrice);
   }
 
-  // Show bazaar deal scanner button after travel data is loaded
+  // Show bazaar deal scanner button + community stats
   const bazaarContainer = document.getElementById('bazaar-container');
   renderScanButton(bazaarContainer, playerId);
+  renderCommunityStats(bazaarContainer);
 }
 
 // ── Header ─────────────────────────────────────────────────────

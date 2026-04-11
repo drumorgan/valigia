@@ -715,6 +715,71 @@ tr.row--negative td {
   text-shadow: 0 0 8px rgba(232, 200, 74, 0.4);
 }
 
+/* ── Community Stats ──────────────────────────────────────── */
+
+.community-stats {
+  text-align: center;
+  padding: 1.25rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 0.75rem;
+}
+
+.cs-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+  margin-bottom: 0.85rem;
+}
+
+.cs-counters {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  margin-bottom: 0.85rem;
+}
+
+.cs-counter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.cs-value {
+  font-family: 'Syne Mono', monospace;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+  text-shadow: 0 0 8px rgba(232, 200, 74, 0.3);
+}
+
+.cs-label {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.6rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.cs-divider {
+  width: 1px;
+  height: 2rem;
+  background: var(--border);
+}
+
+.cs-cta {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--positive);
+  line-height: 1.5;
+}
+
 /* ── Bazaar Modal Overlay ──────────────────────────────────── */
 
 .bazaar-overlay {
