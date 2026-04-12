@@ -22,7 +22,7 @@ import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
 const DISCOVER_BUDGET = 5;    // API calls for discovering new bazaar sources
 const CHECK_BUDGET = 25;      // API calls for checking bazaar prices
-const MIN_SOURCES_FOR_SKIP = 5; // items with >= this many sources skip discovery
+const MIN_SOURCES_FOR_SKIP = 15; // items with >= this many sources skip discovery
 const POOL_STALE_MS = 30 * 60 * 1000; // 30 min — re-check bazaars older than this
 
 /**
@@ -303,18 +303,26 @@ function findRandomDeal(items, marketPrices, freshResults) {
     });
   }
 
-  if (allDeals.length === 0) return null;
+  if (allDeals.length === 0) return { picked: null, allDeals: [] };
 
   // Weighted random — better deals are more likely to be picked.
   // Weight = savingsPct², so a 10% deal is 100× more likely than a 1% deal.
   const weights = allDeals.map(d => d.savingsPct * d.savingsPct);
   const totalWeight = weights.reduce((sum, w) => sum + w, 0);
   let roll = Math.random() * totalWeight;
+  let pickedIdx = allDeals.length - 1;
   for (let i = 0; i < allDeals.length; i++) {
     roll -= weights[i];
-    if (roll <= 0) return allDeals[i];
+    if (roll <= 0) { pickedIdx = i; break; }
   }
-  return allDeals[allDeals.length - 1];
+
+  // Return picked deal + remaining deals as fallbacks for verification
+  const picked = allDeals[pickedIdx];
+  const fallbacks = [...allDeals.slice(0, pickedIdx), ...allDeals.slice(pickedIdx + 1)];
+  // Sort fallbacks by savings % desc so best alternatives are tried first
+  fallbacks.sort((a, b) => b.savingsPct - a.savingsPct);
+
+  return { picked, allDeals, fallbacks };
 }
 
 /**
@@ -368,18 +376,42 @@ export async function scanBazaarDeals(playerId, onProgress) {
   await writeBazaarPool(freshResults);
 
   // Pick a random deal from all live-checked deals — wheel of fortune
-  let bestDeal = findRandomDeal(items, marketPrices, freshResults);
+  const { picked, allDeals, fallbacks } = findRandomDeal(items, marketPrices, freshResults);
+  stats.dealsFound = allDeals.length;
 
-  // Phase 5: Verify — fetch FRESH market price for the chosen deal (1 API call).
+  // Phase 5: Verify — fetch FRESH market price for the chosen deal.
   // The cached sell_prices can be hours stale, leading to phantom deals.
-  if (bestDeal) {
+  // If the deal evaporates, try fallbacks (up to 3 extra API calls).
+  let bestDeal = null;
+  const candidates = picked ? [picked, ...fallbacks] : [];
+  const verifiedItems = new Map(); // itemId → freshPrice (avoid re-checking same item)
+  const MAX_VERIFY = 4; // max verification API calls
+  let verifyCount = 0;
+
+  for (const candidate of candidates) {
+    if (verifyCount >= MAX_VERIFY) break;
+    if (verifiedItems.has(candidate.itemId)) {
+      // Already verified this item's market price — reuse it
+      const cached = verifiedItems.get(candidate.itemId);
+      if (cached != null) {
+        const savings = cached - candidate.bazaarPrice;
+        const savingsPct = cached > 0 ? (savings / cached) * 100 : 0;
+        if (savings > 0 && savingsPct <= 90) {
+          bestDeal = { ...candidate, marketPrice: cached, savings, savingsPct };
+          break;
+        }
+      }
+      continue;
+    }
+
     const freshMarket = await callTornApi({
       section: 'market',
-      id: bestDeal.itemId,
+      id: candidate.itemId,
       selections: 'itemmarket',
       player_id: playerId,
       v2: true,
     });
+    verifyCount++;
 
     let freshPrice = null;
     if (freshMarket?.itemmarket) {
@@ -389,30 +421,29 @@ export async function scanBazaarDeals(playerId, onProgress) {
       }
     }
 
+    // Cache the verified price for this item
+    verifiedItems.set(candidate.itemId, freshPrice);
+
     if (freshPrice != null) {
-      // Update cache so main table benefits too
+      // Update Supabase cache so main table benefits too
       try {
         await supabase.from('sell_prices').upsert(
-          { item_id: bestDeal.itemId, price: freshPrice, updated_at: new Date().toISOString() },
+          { item_id: candidate.itemId, price: freshPrice, updated_at: new Date().toISOString() },
           { onConflict: 'item_id' }
         );
       } catch { /* non-fatal */ }
 
       // Recalculate deal with verified price
-      const savings = freshPrice - bestDeal.bazaarPrice;
+      const savings = freshPrice - candidate.bazaarPrice;
       const savingsPct = freshPrice > 0 ? (savings / freshPrice) * 100 : 0;
 
       if (savings > 0 && savingsPct <= 90) {
-        bestDeal.marketPrice = freshPrice;
-        bestDeal.savings = savings;
-        bestDeal.savingsPct = savingsPct;
-      } else {
-        // Deal evaporated — bazaar price isn't actually below market
-        bestDeal = null;
+        bestDeal = { ...candidate, marketPrice: freshPrice, savings, savingsPct };
+        break;
       }
     }
-    stats.apiCalls += 1;
   }
+  stats.apiCalls += verifyCount;
 
   // Record this scan in community stats
   const { error: rpcErr } = await supabase.rpc('record_scan', { found_deal: bestDeal != null });
