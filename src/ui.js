@@ -399,8 +399,20 @@ function renderStockCell(row) {
 
   // When ETA materially differs from now, flag it. "Likely empty" replaces
   // the number entirely so the user reads the verdict, not a hopeful "1".
+  //
+  // Restock case: Now=0 plus we've seen enough restocks to project one that
+  // should land before arrival — override the empty-shelf verdict with the
+  // expected post-restock quantity. This is the "China at 0" scenario; on a
+  // long flight a restock cadence of <arrivalMins makes "likely empty"
+  // wrong more often than it's right.
   let etaLine;
-  if (eta === 0 && now > 0) {
+  const restockBeforeArrival = f.restockEtaMins != null && f.restockQty != null;
+  if (now === 0 && restockBeforeArrival) {
+    const mins = f.restockEtaMins;
+    const qty = Number(f.restockQty).toLocaleString('en-US');
+    const minsLabel = mins === 0 ? 'imminent' : `~${mins}m`;
+    etaLine = `<span class="stock-eta stock-eta--restock" title="Based on observed restock cadence for this item">restock ${minsLabel} → ${qty}</span>`;
+  } else if (eta === 0 && now > 0) {
     etaLine = `<span class="stock-eta stock-eta--empty" title="Recent depletion rate projects the shelf to be empty when you land">likely empty</span>`;
   } else {
     const confClass = f.confidence === 'ok' ? 'stock-eta--ok' : 'stock-eta--low';
