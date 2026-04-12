@@ -24,14 +24,18 @@ const SELL_TIME_MINS = {
   other: 30,
 };
 
-// The badge text shown in the Profit/hr column so the assumption is visible
-// to the user and not silently hidden inside the math.
+// Single-glyph badges shown in the Profit/hr column. The numeric sell-time
+// lived here originally ("⚡ 2m", "~30m", etc.) but it was the noisiest
+// per-row text on the page and the magnitudes are already folded into the
+// profit/hr value. The glyph still communicates fast / medium / slow at a
+// glance, and the tooltip carries the exact minutes for anyone who wants
+// to read the assumption.
 const LIQUIDITY_BADGES = {
-  drug:     { label: '⚡ 2m',   level: 'fast',   title: 'Drugs sell in seconds on the item market — ~2 min to list and walk away.' },
-  flower:   { label: '⚡ 3m',   level: 'fast',   title: 'Flowers are liquid post-2024 Points update — ~3 min to list.' },
-  plushie:  { label: '~10m',    level: 'medium', title: 'Plushies sell quickly but not instantly — ~10 min typical.' },
-  artifact: { label: '⏳ 90m',  level: 'slow',   title: 'Artifacts sit on the market — ~90 min assumed, often longer. Expect capital to be tied up.' },
-  other:    { label: '~30m',    level: 'medium', title: 'Unknown category — assuming a moderate 30 min to sell. Use caution.' },
+  drug:     { label: '⚡', level: 'fast',   title: 'Drugs sell in seconds — ~2 min baked into profit/hr.' },
+  flower:   { label: '⚡', level: 'fast',   title: 'Flowers are liquid — ~3 min baked into profit/hr.' },
+  plushie:  { label: '●', level: 'medium', title: 'Plushies sell quickly but not instantly — ~10 min baked into profit/hr.' },
+  artifact: { label: '⏳', level: 'slow',   title: 'Artifacts sit on the market — ~90 min baked into profit/hr. Capital stays tied up.' },
+  other:    { label: '●', level: 'medium', title: 'Unknown category — ~30 min conservative sell-time baked into profit/hr.' },
 };
 
 /**

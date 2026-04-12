@@ -277,18 +277,20 @@ export function onSellPrice(itemId, price) {
 
 // ── Table helpers ──────────────────────────────────────────────
 
+// "ago" is implied by the freshness-dot icon next to the value —
+// spelling it out on every row was wasted width. Kept short and dense:
+// "2m", "1h 30m", "5d". The tooltip still includes the full phrase.
 function formatTimeAgo(ms) {
   const mins = Math.floor(ms / 60000);
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return `${mins}m`;
   const hrs = Math.floor(mins / 60);
   const rem = mins % 60;
-  return `${hrs}h ${rem}m ago`;
+  return `${hrs}h ${rem}m`;
 }
 
 function formatDaysAgo(ms) {
   const days = Math.floor(ms / (1000 * 60 * 60 * 24));
-  if (days === 1) return '1d ago';
-  return `${days}d ago`;
+  return `${days}d`;
 }
 
 function formatQuantity(qty) {
@@ -735,7 +737,11 @@ export function renderTable() {
     if (r.metrics) {
       const base = formatMoney(r.metrics.runCost);
       runCostCell = r.metrics.stockLimited
-        ? `${base} <span class="stock-limited" title="Limited by available stock — only ${r.metrics.effectiveSlots} of ${slotCount} slots fillable">&#9888; ${r.metrics.effectiveSlots}/${slotCount}</span>`
+        // Drop the "/29" — the configured slot count is already shown in
+        // the Slots input at the top of the page, so repeating it on every
+        // row was noise. The warning icon plus the fillable number alone
+        // communicates the constraint.
+        ? `${base} <span class="stock-limited" title="Limited by available stock — only ${r.metrics.effectiveSlots} of ${slotCount} slots fillable">&#9888;${r.metrics.effectiveSlots}</span>`
         : base;
     } else {
       runCostCell = noListings ? dash : '<span class="shimmer-cell"></span>';
