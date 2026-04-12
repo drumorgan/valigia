@@ -594,6 +594,14 @@ tr.row--negative td {
   font-weight: 600;
 }
 
+.stock-eta--restock {
+  /* Distinct from both "empty" (bad news) and "depletion ETA" (neutral).
+     Positive green signals that the shelf will be refilled by the time
+     you land, turning an apparent dead run into a live one. */
+  color: var(--positive);
+  font-weight: 600;
+}
+
 /* ── Best Run Right Now summary card ───────────────────────────── */
 
 .best-run-card {

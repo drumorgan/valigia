@@ -148,6 +148,60 @@ export async function loadForecastData(items) {
 }
 
 /**
+ * Scan the full sample series for restock events — indices where quantity
+ * went UP between consecutive samples. We capture when each restock landed
+ * and what quantity it produced so callers can estimate cadence and the
+ * typical post-restock shelf size.
+ *
+ * Returns an array of { atTime, postQty } in chronological order, or [].
+ */
+function detectRestockEvents(samples) {
+  if (!samples || samples.length < 2) return [];
+  const events = [];
+  for (let i = 1; i < samples.length; i++) {
+    if (samples[i].quantity > samples[i - 1].quantity) {
+      events.push({ atTime: samples[i].snappedAt, postQty: samples[i].quantity });
+    }
+  }
+  return events;
+}
+
+/**
+ * Given the detected restock events, estimate when the next one is due and
+ * what quantity it will produce. We use the MEDIAN of observed intervals
+ * and post-restock quantities — robust to noise with tiny sample counts.
+ *
+ * Needs at least two restock events in the 4h window to yield a non-null
+ * result — one interval sample is the minimum we'll project from. Below
+ * that the caller keeps the depletion-only story (no restock prediction).
+ *
+ * Returns {
+ *   timeToNextMins: number (can be 0 if overdue),
+ *   typicalPostQty: number,
+ * } or null.
+ */
+function estimateNextRestock(events, nowMs) {
+  if (events.length < 2) return null;
+  // Intervals between consecutive restock events.
+  const gaps = [];
+  for (let i = 1; i < events.length; i++) {
+    gaps.push((events[i].atTime - events[i - 1].atTime) / 60_000);
+  }
+  gaps.sort((a, b) => a - b);
+  const medianInterval = gaps[Math.floor(gaps.length / 2)];
+  if (!(medianInterval > 0)) return null;
+
+  const postQtys = events.map(e => e.postQty).sort((a, b) => a - b);
+  const typicalPostQty = postQtys[Math.floor(postQtys.length / 2)];
+
+  const lastRestockAt = events[events.length - 1].atTime;
+  const sinceLastMins = (nowMs - lastRestockAt) / 60_000;
+  const timeToNextMins = Math.max(0, medianInterval - sinceLastMins);
+
+  return { timeToNextMins, typicalPostQty };
+}
+
+/**
  * Find the most recent monotonic-non-increasing run in the sample series.
  * This is the cheapest way to avoid a linear fit being corrupted by a
  * restock jump (quantity suddenly goes up). We walk backward from the
@@ -176,6 +230,13 @@ function latestDepletionSegment(samples) {
  * time. Returns a result object that ALWAYS includes a usable `nowQty` and
  * `etaQty`; callers can trust both numbers even when history is thin.
  *
+ * `restockEtaMins` is set ONLY when we have enough history to project one
+ * and the current stock is empty — otherwise we leave the depletion-only
+ * story alone. Rationale: bumping a non-zero ETA upward to "predict a
+ * restock during flight" doubles up two noisy signals; on a row that's at
+ * 0 now, adding a restock prediction is the difference between "false
+ * negative" and "useful answer".
+ *
  * @param {number} itemId
  * @param {string} destination
  * @param {number} arrivalMins - one-way flight duration accounting for multipliers
@@ -185,7 +246,9 @@ function latestDepletionSegment(samples) {
  *   nowQty: number|null,
  *   etaQty: number|null,
  *   confidence: 'none'|'low'|'ok',
- *   hasHistory: boolean
+ *   hasHistory: boolean,
+ *   restockEtaMins: number|null,
+ *   restockQty: number|null
  * }}
  */
 export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty = null) {
@@ -199,6 +262,8 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
       etaQty: fallbackNowQty,
       confidence: fallbackNowQty != null ? 'low' : 'none',
       hasHistory: false,
+      restockEtaMins: null,
+      restockQty: null,
     };
   }
 
@@ -212,17 +277,34 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // back to the snapshot number if YATA didn't give us one this visit.
   const nowQty = fallbackNowQty ?? latest.quantity;
 
+  // Estimate the next restock independently of the depletion slope — the
+  // two live on different signals (positive deltas vs. a slope fit). We
+  // only fold the restock back into etaQty when it clearly beats "0".
+  const restockEvents = detectRestockEvents(samples);
+  const restockEst = estimateNextRestock(restockEvents, Date.now());
+  const restockDuringFlight = !!(
+    restockEst && restockEst.timeToNextMins <= arrivalMins
+  );
+  const restockEtaMins = restockDuringFlight
+    ? Math.round(restockEst.timeToNextMins)
+    : null;
+  const restockQty = restockDuringFlight ? restockEst.typicalPostQty : null;
+
   const segment = latestDepletionSegment(samples);
   if (!segment) {
     // Only one sample in cache, or we just restocked — no slope to extrapolate.
-    return { nowQty, etaQty: nowQty, confidence: 'low', hasHistory: true };
+    // If the shelf is empty and a restock is due before we land, project the
+    // refill; otherwise keep etaQty pinned to nowQty.
+    const eta = (nowQty === 0 && restockQty != null) ? restockQty : nowQty;
+    return { nowQty, etaQty: eta, confidence: 'low', hasHistory: true, restockEtaMins, restockQty };
   }
 
   const first = segment[0];
   const last = segment[segment.length - 1];
   const spanMins = (last.snappedAt - first.snappedAt) / 60_000;
   if (spanMins < 1) {
-    return { nowQty, etaQty: nowQty, confidence: 'low', hasHistory: true };
+    const eta = (nowQty === 0 && restockQty != null) ? restockQty : nowQty;
+    return { nowQty, etaQty: eta, confidence: 'low', hasHistory: true, restockEtaMins, restockQty };
   }
 
   // slope is quantity-per-minute; depleting shelves make it ≤ 0.
@@ -233,12 +315,22 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // walker missed. Rather than show a misleading ETA higher than Now, pin
   // the ETA to Now (i.e., "no confident depletion") and let the confidence
   // flag tell the rest of the story.
-  const etaQty = Math.max(0, Math.min(nowQty, Math.round(projected)));
+  let etaQty = Math.max(0, Math.min(nowQty, Math.round(projected)));
+
+  // Restock override: if the depletion forecast bottomed out at 0 AND a
+  // restock is expected before arrival, replace the empty shelf with the
+  // typical post-restock quantity. This is deliberately narrow — we don't
+  // bump a non-zero ETA upward based on restock prediction because that
+  // would compound two noisy signals. "0 vs. typical post-restock" is the
+  // clearest, highest-value correction our thin history supports.
+  if (etaQty === 0 && restockQty != null) {
+    etaQty = restockQty;
+  }
 
   const confidence =
     segment.length >= MIN_SAMPLES_FOR_OK && spanMins >= MIN_SPAN_MINS_FOR_OK
       ? 'ok'
       : 'low';
 
-  return { nowQty, etaQty, confidence, hasHistory: true };
+  return { nowQty, etaQty, confidence, hasHistory: true, restockEtaMins, restockQty };
 }
