@@ -3,6 +3,7 @@
 // community database at https://yata.yt/api/v1/travel/export/
 
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
+const CACHE_KEY = 'valigia_yata_cache_v1';
 
 // YATA uses 3-letter country codes → map to our destination names
 const COUNTRY_MAP = {
@@ -19,16 +20,44 @@ const COUNTRY_MAP = {
   sou: 'South Africa',
 };
 
+function readCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.items) || !parsed.fetchedAt) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(items) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      items,
+      fetchedAt: Date.now(),
+    }));
+  } catch {
+    // Storage full or disabled — non-fatal.
+  }
+}
+
 /**
  * Fetch abroad prices from the YATA community API.
- * Returns an array of items in the same shape as the abroad_prices table:
- *   { item_id, item_name, destination, buy_price, reported_at }
- * Returns null on failure.
+ *
+ * Returns { items, cached, cachedAt }:
+ *   - items: array in the shape of abroad_prices rows
+ *     { item_id, item_name, destination, buy_price, reported_at, quantity }
+ *   - cached: true iff live fetch failed and we're returning the last good payload
+ *   - cachedAt: epoch ms of when the cached payload was fetched (null when live)
+ *
+ * Returns null only if the live fetch failed AND there's no cache to fall back on.
  */
 export async function fetchAbroadPrices() {
   try {
     const res = await fetch(YATA_URL);
-    if (!res.ok) return null;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();
 
@@ -59,9 +88,14 @@ export async function fetchAbroadPrices() {
       }
     }
 
-    return items;
-  } catch (err) {
-    // CORS or network error
+    if (items.length > 0) writeCache(items);
+    return { items, cached: false, cachedAt: null };
+  } catch {
+    // Live fetch failed — fall back to cache if we have one.
+    const cache = readCache();
+    if (cache && cache.items.length > 0) {
+      return { items: cache.items, cached: true, cachedAt: cache.fetchedAt };
+    }
     return null;
   }
 }
