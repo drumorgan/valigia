@@ -7,7 +7,10 @@
   --warning:  #e8824a;
   --negative: #e84a4a;
   --text:     #c8cdd8;
-  --muted:    #5a6070;
+  /* #5a6070 was below WCAG AA on the dark bg; #8a8fa0 clears 4.5:1 while
+     still reading as a clearly subdued secondary color. Many badges also
+     layered opacity < 1 on top, which compounded the legibility hit. */
+  --muted:    #8a8fa0;
 }
 
 *, *::before, *::after {
@@ -429,13 +432,32 @@ body {
 }
 
 .arb-table td.col-dest {
-  color: var(--muted);
+  /* Primary content (the 3-letter code) uses --text; the flag speaks for
+     itself. --muted was hiding the actual destination label on iPad. */
+  color: var(--text);
 }
 
 .dest-link, .runcost-link {
   text-decoration: none;
   cursor: pointer;
   font-size: 0.8rem;
+}
+
+/* Flag + country code compact display. Keeps the destination column
+   narrow while remaining instantly recognisable. Full country name lives
+   in each span's title attribute for a long-press tooltip on iPad. */
+.dest-flag {
+  font-size: 0.95rem;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.dest-code {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  margin-left: 0.15rem;
 }
 
 .arb-table td.col-stock {
@@ -518,7 +540,8 @@ tr.row--negative td {
   vertical-align: baseline;
   cursor: help;
   white-space: nowrap;
-  opacity: 0.75;
+  /* Previously 0.75 — legible now that --muted itself is brighter. */
+  opacity: 0.95;
 }
 
 .liquidity--fast {
@@ -560,7 +583,9 @@ tr.row--negative td {
 
 .stock-eta--low {
   color: var(--muted);
-  opacity: 0.7;
+  /* Italic already signals low-confidence; the heavy opacity hit was
+     making these unreadable on the iPad. */
+  opacity: 0.9;
   font-style: italic;
 }
 
