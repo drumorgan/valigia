@@ -52,13 +52,14 @@ export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, f
 }
 
 /**
- * Format minutes as "Xh Ym RT" string.
+ * Format minutes as "Xh Ym" string. Round-trip is implied by the Flight
+ * column header — spelling out "RT" on every row was wasted width.
  */
 export function formatFlightTime(totalMins) {
   const h = Math.floor(totalMins / 60);
   const m = Math.round(totalMins % 60);
-  if (h === 0) return `${m}m RT`;
-  return `${h}h ${m}m RT`;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
 }
 
 /**
