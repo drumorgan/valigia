@@ -5,6 +5,8 @@
 import { scanBazaarDeals } from './bazaar-scanner.js';
 import { supabase } from './supabase.js';
 import { formatMoney } from './calculator.js';
+import { getItemTypeById } from './item-resolver.js';
+import { getLiquidityBadge } from './data/liquidity.js';
 
 let isScanning = false;
 let currentPlayerId = null;
@@ -32,16 +34,20 @@ function renderRunnersUp(featured, allDeals) {
 
   if (others.length === 0) return '';
 
-  const rows = others.slice(0, 10).map(d => `
+  const rows = others.slice(0, 10).map(d => {
+    const badge = getLiquidityBadge(getItemTypeById(d.itemId));
+    return `
     <li class="wof-runners-row">
       <a href="${bazaarUrl(d.bazaarOwnerId)}" target="_blank" rel="noopener"
          class="wof-runners-link">
+        <span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>
         <span class="wof-runners-name">${d.itemName}</span>
         <span class="wof-runners-savings">${formatMoney(d.savings)}</span>
         <span class="wof-runners-pct">${d.savingsPct.toFixed(0)}%</span>
       </a>
     </li>
-  `).join('');
+  `;
+  }).join('');
 
   const moreNote = others.length > 10
     ? `<div class="wof-runners-more">+${others.length - 10} more</div>`
@@ -163,10 +169,17 @@ async function runScan(playerId) {
 
   if (bestDeal) {
     const pctOff = bestDeal.savingsPct.toFixed(1);
+    const dealBadge = getLiquidityBadge(getItemTypeById(bestDeal.itemId));
+    const liquidityNote = dealBadge.level === 'slow'
+      ? `<div class="wof-deal-liquidity wof-deal-liquidity--slow" title="${dealBadge.title}">${dealBadge.label} Slow to sell — capital stays tied up</div>`
+      : dealBadge.level === 'medium'
+        ? `<div class="wof-deal-liquidity wof-deal-liquidity--medium" title="${dealBadge.title}">${dealBadge.label} Medium liquidity</div>`
+        : `<div class="wof-deal-liquidity wof-deal-liquidity--fast" title="${dealBadge.title}">${dealBadge.label} Liquid — sells fast</div>`;
     resultEl.innerHTML = `
       <div class="wof-deal wof-deal--reveal">
         <div class="wof-deal-badge">${pctOff}% OFF</div>
         <div class="wof-deal-name">${bestDeal.itemName}</div>
+        ${liquidityNote}
         <div class="wof-deal-prices">
           <div class="wof-price-row">
             <span class="wof-price-label">Bazaar</span>

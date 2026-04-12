@@ -1377,7 +1377,35 @@ tr.row--negative td {
   font-size: 1.2rem;
   font-weight: 700;
   color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+
+.wof-deal-liquidity {
+  display: inline-block;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.5rem;
   margin-bottom: 1rem;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  cursor: help;
+}
+
+.wof-deal-liquidity--fast {
+  color: var(--positive);
+  border-color: rgba(74, 232, 160, 0.35);
+}
+
+.wof-deal-liquidity--medium {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.wof-deal-liquidity--slow {
+  color: var(--warning);
+  border-color: rgba(232, 130, 74, 0.45);
+  background: rgba(232, 130, 74, 0.06);
 }
 
 .wof-deal-prices {
@@ -1503,13 +1531,20 @@ tr.row--negative td {
 
 .wof-runners-link {
   display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 0.75rem;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 0.6rem;
   align-items: center;
   padding: 0.4rem 0.25rem;
   color: var(--text);
   text-decoration: none;
   font-size: 0.8rem;
+}
+
+.wof-runners-link .liquidity {
+  margin-left: 0;
+  font-size: 0.72rem;
+  min-width: 0.9em;
+  text-align: center;
 }
 
 .wof-runners-link:hover {

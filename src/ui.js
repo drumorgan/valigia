@@ -567,8 +567,18 @@ function buildRows() {
 
 /**
  * Normalize a verified bazaar deal into a "run" we can rank next to travel
- * runs. Uses a nominal transaction time so profit/hr is comparable.
+ * runs. Uses a nominal transaction time + category sell-time so profit/hr
+ * is comparable to a travel run under the same liquidity assumptions.
  * Returns null if the deal can't produce any profit at the current slot count.
+ *
+ * Why sell-time matters here too: before this fix, a $10M armour bazaar
+ * "steal" would dominate the Best Run card because the math assumed a
+ * flat 5-minute cycle. But you still have to *sell* the armour afterwards
+ * on the same illiquid market. Folding in the same per-category sell-time
+ * the travel rows use means armour bazaar deals get the same ~20x haircut
+ * that armour travel runs do — and the card stops lying about them.
+ *
+ * In 'ideal' realism mode we skip the sell-time, matching the travel side.
  */
 function buildBazaarRun(deal) {
   if (!deal) return null;
@@ -578,12 +588,15 @@ function buildBazaarRun(deal) {
   const profitPerRun = deal.savings * effectiveSlots; // savings is already post-5%-fee
   if (profitPerRun <= 0) return null;
 
-  const roundTripMins = BAZAAR_NOMINAL_TRANSACTION_MINS;
-  const profitPerHour = (profitPerRun / roundTripMins) * 60;
+  const category = getItemTypeById(deal.itemId);
+  const sellTimeMins = realismMode === 'ideal' ? 0 : getSellTimeMins(category);
+  const cycleMins = BAZAAR_NOMINAL_TRANSACTION_MINS + sellTimeMins;
+  const profitPerHour = (profitPerRun / cycleMins) * 60;
 
   return {
     type: 'bazaar',
     name: deal.itemName,
+    category,
     bazaarOwnerId: deal.bazaarOwnerId,
     metrics: {
       profitPerRun,
@@ -591,7 +604,12 @@ function buildBazaarRun(deal) {
       marginPct: deal.savingsPct,
       effectiveSlots,
       stockLimited: effectiveSlots < slotCount,
-      roundTripMins,
+      // roundTripMins stays as the bazaar transaction time alone so the UI
+      // can still say "5 min transaction" without the sell-time padding.
+      // cycleMins is the full number used for profit/hr.
+      roundTripMins: BAZAAR_NOMINAL_TRANSACTION_MINS,
+      sellTimeMins,
+      cycleMins,
     },
   };
 }
@@ -681,6 +699,15 @@ function renderBazaarBestRun(container, best) {
     ? `<span class="best-run-stock" title="Bazaar has ${best.metrics.effectiveSlots} unit(s) available">qty: ${best.metrics.effectiveSlots}</span>`
     : `<span>qty: ${best.metrics.effectiveSlots}</span>`;
 
+  // Liquidity badge — same visual language as the table rows, so the
+  // user can see at a glance whether this bazaar deal is on a fast-moving
+  // item (drugs) or one that's going to sit on their market for an hour.
+  // In Ideal mode we hide it since sell-time is zero by design.
+  const badge = realismMode === 'ideal' ? null : getLiquidityBadge(best.category);
+  const liquidityNote = badge
+    ? `<span class="best-run-sep">&middot;</span><span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>`
+    : '';
+
   container.innerHTML = `
     <div class="best-run-card best-run-card--bazaar">
       <div class="best-run-label">
@@ -703,6 +730,7 @@ function renderBazaarBestRun(container, best) {
         ${qtyNote}
         <span class="best-run-sep">&middot;</span>
         <span>${best.metrics.marginPct.toFixed(0)}% off market</span>
+        ${liquidityNote}
       </div>
       <a href="${bazaarUrl}" target="_blank" rel="noopener"
          class="best-run-cta best-run-cta--bazaar">Go to Bazaar &rarr;</a>
