@@ -256,9 +256,9 @@ body {
 .controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 0.6rem 0.9rem;
   align-items: center;
-  padding: 0.75rem 1rem;
+  padding: 0.6rem 0.85rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -304,6 +304,11 @@ body {
   outline: none;
 }
 
+.control-input--slim {
+  width: 2.6rem;
+  padding: 0.25rem 0.3rem;
+}
+
 .control-input:focus {
   border-color: var(--accent);
 }
@@ -321,6 +326,52 @@ body {
 
 .control-select:focus {
   border-color: var(--accent);
+}
+
+/* Compact select: the collapsed control text is hidden (transparent) and we
+   render a short overlay (flag / short code) via .select-display, but the
+   native picker still shows the full option labels when tapped open. */
+.select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.control-select--compact {
+  color: transparent;
+  /* Safari renders selected-option text in the caret color if `color` is
+     transparent on some builds — match background to be safe. */
+  text-shadow: none;
+  padding-left: 0.4rem;
+  padding-right: 1.2rem;
+  width: 4.2rem;
+}
+
+.select--flag {
+  width: 3.4rem;
+}
+
+.control-select--compact option {
+  color: var(--text);
+}
+
+.select-display {
+  position: absolute;
+  left: 0.45rem;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+/* Flag display renders a bit larger so the single emoji is legible. */
+.select--flag + .select-display {
+  font-size: 1rem;
+  left: 0.4rem;
 }
 
 /* Filter chips */

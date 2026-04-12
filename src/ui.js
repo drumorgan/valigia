@@ -8,11 +8,13 @@ import { forecastStock } from './stock-forecast.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
 
 // ── Flight type definitions ───────────────────────────────────
+// `short` is what we display in the collapsed control so the whole bar
+// fits on one line. The native picker still shows `label`.
 const FLIGHT_TYPES = [
-  { value: 'standard',     label: 'Standard',       multiplier: 1.0 },
-  { value: 'airstrip',     label: 'Airstrip',        multiplier: 0.7 },
-  { value: 'wlt',          label: 'WLT',             multiplier: 0.7 },
-  { value: 'airstrip_wlt', label: 'Airstrip + WLT',  multiplier: 0.49 },
+  { value: 'standard',     label: 'Standard',       short: 'STD', multiplier: 1.0 },
+  { value: 'airstrip',     label: 'Airstrip',       short: 'A/S', multiplier: 0.7 },
+  { value: 'wlt',          label: 'WLT',            short: 'WLT', multiplier: 0.7 },
+  { value: 'airstrip_wlt', label: 'Airstrip + WLT', short: 'A+W', multiplier: 0.49 },
 ];
 
 function getFlightMultiplier() {
@@ -131,33 +133,48 @@ function getAvailableDestinations() {
 
 export function renderControls(container, onChange) {
   const destinations = getAvailableDestinations();
-  const destOptions = destinations.map(d =>
-    `<option value="${d}" ${filterDestination === d ? 'selected' : ''}>${d}</option>`
-  ).join('');
+  // Options show the full country name + flag so the native picker is clear,
+  // but the collapsed control only shows a flag via an overlay span (see CSS).
+  const destOptions = destinations.map(d => {
+    const { flag } = getDestinationBadge(d);
+    const prefix = flag ? `${flag} ` : '';
+    return `<option value="${d}" ${filterDestination === d ? 'selected' : ''}>${prefix}${d}</option>`;
+  }).join('');
 
   const flightOptions = FLIGHT_TYPES.map(ft =>
     `<option value="${ft.value}" ${flightType === ft.value ? 'selected' : ''}>${ft.label}</option>`
   ).join('');
 
+  const selectedFlight = FLIGHT_TYPES.find(f => f.value === flightType) || FLIGHT_TYPES[0];
+  const selectedDestFlag = filterDestination === 'all'
+    ? 'ALL'
+    : (getDestinationBadge(filterDestination).flag || filterDestination);
+
   container.innerHTML = `
     <div class="controls">
       <label class="control-group">
         <span class="control-label">Slots</span>
-        <input type="number" id="ctl-slots" class="control-input"
+        <input type="number" id="ctl-slots" class="control-input control-input--slim"
                value="${slotCount}" min="5" max="44" />
       </label>
       <label class="control-group">
         <span class="control-label">Flight</span>
-        <select id="ctl-flight-type" class="control-select">
-          ${flightOptions}
-        </select>
+        <span class="select-wrap">
+          <select id="ctl-flight-type" class="control-select control-select--compact">
+            ${flightOptions}
+          </select>
+          <span class="select-display" id="ctl-flight-display">${selectedFlight.short}</span>
+        </span>
       </label>
       <label class="control-group">
-        <span class="control-label">Destination</span>
-        <select id="ctl-destination" class="control-select">
-          <option value="all" ${filterDestination === 'all' ? 'selected' : ''}>All</option>
-          ${destOptions}
-        </select>
+        <span class="control-label">Dest</span>
+        <span class="select-wrap">
+          <select id="ctl-destination" class="control-select control-select--compact select--flag">
+            <option value="all" ${filterDestination === 'all' ? 'selected' : ''}>All destinations</option>
+            ${destOptions}
+          </select>
+          <span class="select-display" id="ctl-destination-display">${selectedDestFlag}</span>
+        </span>
       </label>
       <div class="control-group filter-chips">
         <span class="control-label">Type</span>
@@ -182,11 +199,20 @@ export function renderControls(container, onChange) {
   });
   container.querySelector('#ctl-flight-type').addEventListener('change', (e) => {
     flightType = e.target.value;
+    const ft = FLIGHT_TYPES.find(f => f.value === flightType);
+    const disp = container.querySelector('#ctl-flight-display');
+    if (ft && disp) disp.textContent = ft.short;
     persistControls();
     onChange();
   });
   container.querySelector('#ctl-destination').addEventListener('change', (e) => {
     filterDestination = e.target.value;
+    const disp = container.querySelector('#ctl-destination-display');
+    if (disp) {
+      disp.textContent = filterDestination === 'all'
+        ? 'ALL'
+        : (getDestinationBadge(filterDestination).flag || filterDestination);
+    }
     persistFilters();
     onChange();
   });
@@ -231,6 +257,9 @@ export function setPlayerTravel(slots, airstrip) {
     flightType = 'airstrip';
     const el = document.getElementById('ctl-flight-type');
     if (el) el.value = 'airstrip';
+    const disp = document.getElementById('ctl-flight-display');
+    const ft = FLIGHT_TYPES.find(f => f.value === 'airstrip');
+    if (disp && ft) disp.textContent = ft.short;
   }
   persistControls();
   renderTable();
