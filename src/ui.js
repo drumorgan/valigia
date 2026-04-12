@@ -374,7 +374,7 @@ function renderStockCell(row) {
     const confTitle = f.confidence === 'ok'
       ? 'Projected from recent depletion rate'
       : 'Limited history — rough estimate';
-    etaLine = `<span class="stock-eta ${confClass}" title="${confTitle}">ETA ~${Number(eta).toLocaleString('en-US')}</span>`;
+    etaLine = `<span class="stock-eta ${confClass}" title="${confTitle}">ETA ${Number(eta).toLocaleString('en-US')}</span>`;
   }
 
   return `
@@ -774,7 +774,7 @@ export function renderTable() {
     }
     const buyCell = `${formatMoney(r.buyPrice)} ${freshnessBadge}`;
 
-    // Stock cell: "Now X" + projected "ETA ~Y" when we have history.
+    // Stock cell: "Now X" + projected "ETA Y" when we have history.
     const stockCell = renderStockCell(r);
 
     // Sell price cell — show net price (after 5% item market fee) so math is visible.
