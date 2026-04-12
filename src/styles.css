@@ -555,6 +555,11 @@ tr.row--negative td {
   color: var(--bg);
 }
 
+.toast--warning {
+  background: var(--warning);
+  color: var(--bg);
+}
+
 /* ── Cross-link box ──────────────────────────────────────────── */
 
 .crosslink-box {

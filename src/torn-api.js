@@ -47,14 +47,13 @@ export async function callTornApi(params) {
     if (data.error) {
       const code = data.error.code;
       const critical = [2, 13, 16];
-      // Transient errors that resolve on retry — don't toast during batch scans
-      const silent = [5, 17];
       const messages = {
         2: 'Invalid API key — please log out and re-enter a valid key',
         5: 'Too many requests — wait a moment',
         10: 'Key owner is in federal jail',
         13: 'Key disabled (owner inactive >7 days) — please create a new key',
         16: 'Key access too low — delete your current key on Torn and create a new one with the "Create a Custom Key" link on the login screen',
+        17: 'Torn backend hiccup — scan continues',
       };
       if (critical.includes(code)) {
         // Show once — don't let subsequent failures overwrite this message
@@ -62,8 +61,9 @@ export async function callTornApi(params) {
           criticalErrorShown = true;
           showToast(messages[code]);
         }
-      } else if (!silent.includes(code)) {
-        showToast(messages[code] || `Torn API error ${code}: ${data.error.error}`);
+      } else {
+        const type = code === 17 ? 'warning' : 'error';
+        showToast(messages[code] || `Torn API error ${code}: ${data.error.error}`, type);
       }
       return null;
     }
