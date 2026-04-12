@@ -55,6 +55,13 @@ const COLUMNS = [
 
 const COL_COUNT = COLUMNS.length;
 
+// Items with absurdly high buy prices (> $10M) are almost always rare
+// collector variants (e.g. "Dozen White Roses" at $950M) that share a name
+// with a real abroad item. They aren't real travel arbitrage targets.
+// Hide them when the market also confirms "no listings" — at that point
+// they're noise, not opportunity.
+const OUTLIER_BUY_PRICE_THRESHOLD = 10_000_000;
+
 // ── Toast ──────────────────────────────────────────────────────
 let toastTimeout;
 
@@ -334,6 +341,13 @@ function buildRows() {
     const sellPrice = sellPrices.get(item.item_id);
     const hasSellPrice = sellPrice != null;
     const isChecked = checkedItems.has(item.item_id);
+
+    // Suppress outlier rows: confirmed no market listings AND a buy price
+    // far above any legitimate abroad item. These are misidentified rare
+    // variants, not real runs.
+    if (isChecked && !hasSellPrice && buyPrice > OUTLIER_BUY_PRICE_THRESHOLD) {
+      continue;
+    }
 
     let metrics = null;
     if (hasSellPrice && flightMins > 0) {
