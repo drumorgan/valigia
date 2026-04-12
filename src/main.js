@@ -177,32 +177,6 @@ function renderYataOfflineBanner(tableContainer, cachedAt) {
   tableContainer.parentNode.insertBefore(banner, tableContainer);
 }
 
-// ── YATA-offline banner ────────────────────────────────────────
-/**
- * Render a warning banner above the table explaining that YATA is
- * unreachable and we're showing cached prices. The banner is inserted
- * before the table so it scrolls with the content.
- */
-function renderYataOfflineBanner(tableContainer, cachedAt) {
-  const ageMins = Math.max(1, Math.floor((Date.now() - cachedAt) / 60000));
-  const ageLabel = ageMins < 60
-    ? `${ageMins}m ago`
-    : ageMins < 1440
-      ? `${Math.floor(ageMins / 60)}h ago`
-      : `${Math.floor(ageMins / 1440)}d ago`;
-
-  const banner = document.createElement('div');
-  banner.className = 'yata-offline-banner';
-  banner.innerHTML = `
-    <span class="yata-offline-icon">&#9888;</span>
-    <span class="yata-offline-text">
-      YATA is offline &mdash; showing cached prices from ${ageLabel}.
-      Refresh later for live data.
-    </span>
-  `;
-  tableContainer.parentNode.insertBefore(banner, tableContainer);
-}
-
 // ── Header ─────────────────────────────────────────────────────
 function showPlayerHeader(name, level) {
   let badge = document.getElementById('player-badge');
