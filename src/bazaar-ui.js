@@ -141,7 +141,7 @@ async function runScan(playerId) {
             <span class="wof-price-value wof-price--savings">${formatMoney(bestDeal.savings)}</span>
           </div>
         </div>
-        <a href="${bazaarUrl(bestDeal.bazaarOwnerId)}"
+        <a href="${bazaarUrl(bestDeal.bazaarOwnerId)}" target="_blank"
            class="wof-deal-link">Go to Bazaar &rarr;</a>
       </div>
     `;
