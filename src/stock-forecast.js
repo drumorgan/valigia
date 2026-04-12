@@ -203,7 +203,14 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   }
 
   const latest = samples[samples.length - 1];
-  const nowQty = latest.quantity ?? fallbackNowQty;
+  // Anchor the projection on YATA's live reading (what the UI labels "Now"),
+  // not the latest DB snapshot. Snapshots can be older than the current page
+  // load — another user may have written the most recent row with a stale
+  // YATA reading, or our own write hasn't landed yet (recordSnapshots and
+  // loadForecastData race in main.js). Using fallbackNowQty keeps the ETA
+  // line internally consistent with the "Now" column above it. We only fall
+  // back to the snapshot number if YATA didn't give us one this visit.
+  const nowQty = fallbackNowQty ?? latest.quantity;
 
   const segment = latestDepletionSegment(samples);
   if (!segment) {
@@ -221,7 +228,12 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // slope is quantity-per-minute; depleting shelves make it ≤ 0.
   const slope = (last.quantity - first.quantity) / spanMins;
   const projected = nowQty + slope * arrivalMins;
-  const etaQty = Math.max(0, Math.round(projected));
+  // Clamp within [0, nowQty]. A depletion run cannot grow — any positive
+  // projection would indicate the segment picked up noise or a restock the
+  // walker missed. Rather than show a misleading ETA higher than Now, pin
+  // the ETA to Now (i.e., "no confident depletion") and let the confidence
+  // flag tell the rest of the story.
+  const etaQty = Math.max(0, Math.min(nowQty, Math.round(projected)));
 
   const confidence =
     segment.length >= MIN_SAMPLES_FOR_OK && spanMins >= MIN_SPAN_MINS_FOR_OK
