@@ -505,6 +505,34 @@ tr.row--negative td {
   white-space: nowrap;
 }
 
+/* ── Liquidity badge on Profit/hr cell ────────────────────────── */
+/* Surfaces the sell-time assumption that's folded into profit/hr so the
+   user can see why an artifact with "great" margin ranks lower than a
+   drug with a modest margin. Colors intentionally muted so they don't
+   compete with the primary profit/hr number. */
+
+.liquidity {
+  display: inline-block;
+  font-size: 0.62rem;
+  margin-left: 0.3rem;
+  vertical-align: baseline;
+  cursor: help;
+  white-space: nowrap;
+  opacity: 0.75;
+}
+
+.liquidity--fast {
+  color: var(--positive);
+}
+
+.liquidity--medium {
+  color: var(--muted);
+}
+
+.liquidity--slow {
+  color: var(--warning);
+}
+
 /* ── Stock Now / ETA forecast ─────────────────────────────────── */
 /* The Stock cell shows the YATA-live quantity ("Now N") on top and a
    projected arrival-time quantity ("ETA ~M" or "likely empty") below.
