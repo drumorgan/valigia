@@ -3,18 +3,23 @@
 // Strategy: every scan contributes to a shared Supabase pool. Over time the
 // system learns which bazaars carry which items and at what prices.
 //
+// Watchlist: static curated list + dynamic high-value items from sell_prices
+// (anything above DYNAMIC_WATCHLIST_MIN_PRICE auto-joins).
+//
 // Per-scan flow (budget: ~30 API calls):
 //   Phase 1 — FREE (Supabase reads, 0 API calls)
 //     • Read market prices from sell_prices cache
 //     • Read known bazaar sources from bazaar_prices pool
-//   Phase 2 — DISCOVER (~5 API calls)
-//     • Pick random items with few known sources
+//   Phase 2 — DISCOVER (~8 API calls)
+//     • Rank items by (marketPrice / (sourceCount + 1)) with jitter
 //     • V2 market/{id}/bazaar → discover new bazaar IDs
 //   Phase 3 — CHECK (~25 API calls)
 //     • Check bazaars, prioritizing least-recently-checked
 //     • V1 user/{bazaarId}/bazaar → actual prices
 //   Phase 4 — WRITE BACK (Supabase upsert, 0 API calls)
-//     • All discoveries written to bazaar_prices for everyone
+//     • Hits reset miss_count; misses ++ it; MAX_MISS_COUNT → prune
+//
+// prescanBazaarPool() runs a tiny fire-and-forget variant on page load.
 
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
@@ -24,6 +29,10 @@ const DISCOVER_BUDGET = 8;    // API calls for discovering new bazaar sources
 const CHECK_BUDGET = 25;      // API calls for checking unique bazaar owners
 const MIN_SOURCES_FOR_SKIP = 15; // items with >= this many sources skip discovery
 const POOL_STALE_MS = 30 * 60 * 1000; // 30 min — re-check bazaars older than this
+const MAX_MISS_COUNT = 3;     // after this many consecutive misses, prune the entry
+const PRESCAN_CHECK_BUDGET = 8; // quiet background scan: just a handful of stale refreshes
+const DYNAMIC_WATCHLIST_MIN_PRICE = 50000;  // items above this sell price auto-join the watchlist
+const DYNAMIC_WATCHLIST_CAP = 150;          // max extra items pulled from sell_prices
 
 /**
  * Resolve watchlist item names to IDs using cached item catalog.
@@ -46,6 +55,46 @@ function resolveWatchlistIds() {
     }
   }
   return { resolved, unresolved };
+}
+
+/**
+ * Extend the static watchlist with high-value items from sell_prices.
+ * Any item cached with a sell price >= DYNAMIC_WATCHLIST_MIN_PRICE becomes
+ * a bazaar deal candidate, even if nobody curated it into the static list.
+ * Item names come from the local item catalog so we can display them.
+ */
+async function buildDynamicWatchlist(staticItemIds) {
+  try {
+    const { data, error } = await supabase
+      .from('sell_prices')
+      .select('item_id, price')
+      .gte('price', DYNAMIC_WATCHLIST_MIN_PRICE)
+      .order('price', { ascending: false })
+      .limit(DYNAMIC_WATCHLIST_CAP);
+
+    if (error || !data) return [];
+
+    const cached = localStorage.getItem('valigia_item_id_map');
+    let idToName = {};
+    if (cached) {
+      try {
+        const nameToId = JSON.parse(cached);
+        for (const [name, id] of Object.entries(nameToId)) idToName[id] = name;
+      } catch { /* fall through */ }
+    }
+
+    const extras = [];
+    for (const row of data) {
+      if (staticItemIds.has(row.item_id)) continue; // already in static list
+      extras.push({
+        name: idToName[row.item_id] || `Item ${row.item_id}`,
+        id: row.item_id,
+      });
+    }
+    return extras;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -76,7 +125,7 @@ async function readBazaarPool(itemIds) {
   try {
     const { data, error } = await supabase
       .from('bazaar_prices')
-      .select('item_id, bazaar_owner_id, price, quantity, checked_at')
+      .select('item_id, bazaar_owner_id, price, quantity, checked_at, miss_count')
       .in('item_id', itemIds);
 
     if (error || !data) return new Map();
@@ -100,14 +149,26 @@ async function readBazaarPool(itemIds) {
  * Writes ALL discovered (item, bazaar_owner) pairs to the pool immediately
  * so they persist even if not checked this spin.
  *
+ * Candidates are ranked by `marketPrice / (sourceCount + 1)` so high-value
+ * items with few known sources are prioritized. An expensive Xanax source is
+ * far more valuable to discover than another Dahlia source.
+ *
  * Returns Map(item_id → [owner_ids])
  */
-async function discoverBazaars(items, pool, playerId, onProgress) {
-  // Pick items with fewest known sources, randomized
+async function discoverBazaars(items, pool, marketPrices, playerId, onProgress) {
+  // Rank items by value density: high-value + low-source-count first.
+  // A small jitter (±15%) keeps the discovery from getting stuck on the
+  // same handful of items every scan.
   const candidates = items
-    .map(item => ({ ...item, sourceCount: (pool.get(item.id) || []).length }))
+    .map(item => {
+      const sourceCount = (pool.get(item.id) || []).length;
+      const marketPrice = marketPrices.get(item.id) || 1000; // assume low value if unknown
+      const jitter = 0.85 + Math.random() * 0.3;
+      const score = (marketPrice / (sourceCount + 1)) * jitter;
+      return { ...item, sourceCount, score };
+    })
     .filter(item => item.sourceCount < MIN_SOURCES_FOR_SKIP)
-    .sort(() => Math.random() - 0.5)
+    .sort((a, b) => b.score - a.score)
     .slice(0, DISCOVER_BUDGET);
 
   const discovered = new Map(); // item_id → [bazaar_owner_ids]
@@ -182,7 +243,10 @@ async function checkBazaars(items, pool, discovered, playerId, onProgress) {
 
   // Build a map of unique bazaar owners → best staleness score.
   // Multiple items may point to the same bazaar — we only need to check it once.
+  // Also track which (item_id, owner_id) pairs we *expected* to find from the
+  // pool, so we can increment miss_count on pairs that didn't turn up.
   const bazaarMap = new Map(); // bazaarOwnerId → { staleness, isNew }
+  const expectedPairs = []; // [{ item_id, bazaar_owner_id, miss_count }]
 
   for (const item of items) {
     const knownSources = pool.get(item.id) || [];
@@ -193,6 +257,15 @@ async function checkBazaars(items, pool, discovered, playerId, onProgress) {
       const existing = bazaarMap.get(src.bazaar_owner_id);
       if (!existing || age > existing.staleness) {
         bazaarMap.set(src.bazaar_owner_id, { staleness: age, isNew: false });
+      }
+      // Only pairs with a previously-known price are "expected" — null-priced
+      // seeds are speculative and missing them doesn't count against the pair.
+      if (src.price != null) {
+        expectedPairs.push({
+          item_id: item.id,
+          bazaar_owner_id: src.bazaar_owner_id,
+          miss_count: src.miss_count || 0,
+        });
       }
     }
 
@@ -214,6 +287,7 @@ async function checkBazaars(items, pool, discovered, playerId, onProgress) {
 
   // Take top N unique bazaars within budget
   const batch = toCheck.slice(0, CHECK_BUDGET);
+  const checkedOwnerIds = new Set(batch.map(e => e.bazaarOwnerId));
   let checked = 0;
   const total = batch.length;
 
@@ -253,30 +327,99 @@ async function checkBazaars(items, pool, discovered, playerId, onProgress) {
 
   await Promise.allSettled(promises);
   results.apiCalls = batch.length;
+  results.expectedPairs = expectedPairs;
+  results.checkedOwnerIds = checkedOwnerIds;
   return results;
 }
 
 /**
- * Phase 4: Write discoveries back to the shared pool.
+ * Phase 4: Write discoveries back to the shared pool, increment miss_count
+ * for expected-but-missing pairs, and delete pairs that crossed the threshold.
+ *
+ * Returns { hits, misses, pruned } counts for stats reporting.
  */
 async function writeBazaarPool(results) {
-  if (results.length === 0) return;
+  const now = new Date().toISOString();
+  const hits = results.length;
+  const expectedPairs = results.expectedPairs || [];
+  const checkedOwnerIds = results.checkedOwnerIds || new Set();
+  let pruned = 0;
+  let misses = 0;
+
+  // Build a set of (item_id, bazaar_owner_id) pairs that were found this scan.
+  const foundKeys = new Set(
+    results.map(r => `${r.item_id}:${r.bazaar_owner_id}`)
+  );
+
+  // Work out which expected pairs were checked-but-missing (miss) vs just
+  // not-checked-this-scan (leave alone).
+  const toIncrement = []; // pairs to ++miss_count
+  const toPrune = [];     // pairs to delete (threshold exceeded)
+
+  for (const pair of expectedPairs) {
+    if (!checkedOwnerIds.has(pair.bazaar_owner_id)) continue; // not checked
+    const key = `${pair.item_id}:${pair.bazaar_owner_id}`;
+    if (foundKeys.has(key)) continue; // found — will be upserted as hit
+
+    if (pair.miss_count + 1 >= MAX_MISS_COUNT) {
+      toPrune.push(pair);
+    } else {
+      toIncrement.push(pair);
+    }
+  }
+  misses = toIncrement.length + toPrune.length;
+  pruned = toPrune.length;
 
   try {
-    const rows = results.map(r => ({
-      item_id: r.item_id,
-      bazaar_owner_id: r.bazaar_owner_id,
-      price: r.price,
-      quantity: r.quantity,
-      checked_at: new Date().toISOString(),
-    }));
+    // Upsert hits: fresh price + quantity, reset miss_count to 0.
+    if (hits > 0) {
+      const rows = results.map(r => ({
+        item_id: r.item_id,
+        bazaar_owner_id: r.bazaar_owner_id,
+        price: r.price,
+        quantity: r.quantity,
+        checked_at: now,
+        miss_count: 0,
+      }));
+      await supabase
+        .from('bazaar_prices')
+        .upsert(rows, { onConflict: 'item_id,bazaar_owner_id' });
+    }
 
-    await supabase
-      .from('bazaar_prices')
-      .upsert(rows, { onConflict: 'item_id,bazaar_owner_id' });
+    // Increment miss_count for expected-but-missing pairs (still under threshold).
+    // Upsert with a computed miss_count (read value + 1). Price cleared to null
+    // so stale prices from weeks ago don't mislead the next deal pick.
+    if (toIncrement.length > 0) {
+      const rows = toIncrement.map(p => ({
+        item_id: p.item_id,
+        bazaar_owner_id: p.bazaar_owner_id,
+        price: null,
+        quantity: null,
+        checked_at: now,
+        miss_count: p.miss_count + 1,
+      }));
+      await supabase
+        .from('bazaar_prices')
+        .upsert(rows, { onConflict: 'item_id,bazaar_owner_id' });
+    }
+
+    // Prune pairs that have now missed MAX_MISS_COUNT times in a row.
+    if (toPrune.length > 0) {
+      // Supabase client can't match composite keys in one .delete(); delete
+      // per-pair. Pool pruning is infrequent so the extra round-trips are fine.
+      await Promise.allSettled(toPrune.map(p =>
+        supabase
+          .from('bazaar_prices')
+          .delete()
+          .eq('item_id', p.item_id)
+          .eq('bazaar_owner_id', p.bazaar_owner_id)
+      ));
+    }
   } catch {
     // Pool write failed — non-fatal, scan results still valid
   }
+
+  return { hits, misses, pruned };
 }
 
 /**
@@ -334,8 +477,10 @@ function findRandomDeal(items, marketPrices, freshResults) {
   if (allDeals.length === 0) return { picked: null, allDeals: [] };
 
   // Weighted random — better deals are more likely to be picked.
-  // Weight = savingsPct², so a 10% deal is 100× more likely than a 1% deal.
-  const weights = allDeals.map(d => d.savingsPct * d.savingsPct);
+  // Weight = absolute savings × savings %, so a $100K/5% deal beats a
+  // $750/15% deal. Both axes matter: pure-percentage weighting over-rewards
+  // tiny-ticket deals, pure-dollar weighting ignores how "good" a find is.
+  const weights = allDeals.map(d => Math.max(1, d.savings) * d.savingsPct);
   const totalWeight = weights.reduce((sum, w) => sum + w, 0);
   let roll = Math.random() * totalWeight;
   let pickedIdx = allDeals.length - 1;
@@ -361,11 +506,20 @@ function findRandomDeal(items, marketPrices, freshResults) {
  * @param {function} onProgress - (checked, total) progress callback
  */
 export async function scanBazaarDeals(playerId, onProgress) {
-  const { resolved: items, unresolved } = resolveWatchlistIds();
+  const { resolved: staticItems, unresolved } = resolveWatchlistIds();
+
+  // Extend the static watchlist with any cached sell_prices entry above
+  // DYNAMIC_WATCHLIST_MIN_PRICE. This lets the scanner follow market trends
+  // automatically — any high-value item a user looked up becomes a deal
+  // candidate for everyone.
+  const staticIds = new Set(staticItems.map(i => i.id));
+  const dynamicItems = await buildDynamicWatchlist(staticIds);
+  const items = [...staticItems, ...dynamicItems];
 
   const stats = {
     watchlistSize: BAZAAR_WATCHLIST.length,
-    resolved: items.length,
+    resolved: staticItems.length,
+    dynamicItems: dynamicItems.length,
     unresolved,
     poolHits: 0,
     marketHits: 0,
@@ -398,7 +552,7 @@ export async function scanBazaarDeals(playerId, onProgress) {
   // Phase 2: Discover new bazaar sources (~8 API calls)
   // Discovered pairs are written to pool immediately with null prices
   // so they persist across spins even if not checked this time.
-  const discovered = await discoverBazaars(items, pool, playerId);
+  const discovered = await discoverBazaars(items, pool, marketPrices, playerId);
   // Count unique NEW bazaar owners (not already in pool)
   const newBazaarOwners = new Set();
   for (const ids of discovered.values()) {
@@ -416,10 +570,16 @@ export async function scanBazaarDeals(playerId, onProgress) {
   stats.bazaarsChecked = freshResults.apiCalls || 0;
   stats.pricesFound = freshResults.length;
 
-  // Phase 4: Write checked prices back to shared pool (0 API calls)
-  await writeBazaarPool(freshResults);
+  // Phase 4: Write checked prices back to shared pool (0 API calls).
+  // Also increments miss_count for expected-but-missing pairs and prunes
+  // pairs that have crossed MAX_MISS_COUNT consecutive misses.
+  const writeStats = await writeBazaarPool(freshResults);
+  stats.poolMisses = writeStats.misses;
+  stats.poolPruned = writeStats.pruned;
 
-  // Pick a random deal from all live-checked deals — wheel of fortune
+  // Pick a random deal from all live-checked deals — wheel of fortune.
+  // We also surface the full ranked deal list so users who want the whole
+  // picture can see every bargain found this scan, not just the spin pick.
   const { picked, allDeals, fallbacks } = findRandomDeal(items, marketPrices, freshResults);
   stats.dealsFound = allDeals.length;
 
@@ -493,5 +653,109 @@ export async function scanBazaarDeals(playerId, onProgress) {
   const { error: rpcErr } = await supabase.rpc('record_scan', { found_deal: bestDeal != null });
   if (rpcErr) stats.rpcError = rpcErr.message;
 
-  return { bestDeal, stats };
+  // Return a de-duplicated, absolute-savings-sorted list of *all* deals found
+  // this scan so the UI can show the full set as runners-up.
+  const sortedDeals = [...allDeals].sort((a, b) => b.savings - a.savings);
+
+  return { bestDeal, allDeals: sortedDeals, stats };
+}
+
+/**
+ * Background pre-scan — silently refresh the stalest entries in the bazaar
+ * pool so when the user clicks "Spin for a Deal" the pool is already warm.
+ *
+ * Only runs Phase 1 (pool read) + Phase 3 (check a tiny batch) + Phase 4
+ * (write back). No discovery, no deal picking, no verification. Returns
+ * quickly; callers should fire-and-forget.
+ *
+ * @param {number} playerId
+ * @returns {Promise<{ refreshed: number }>}
+ */
+export async function prescanBazaarPool(playerId) {
+  try {
+    const { resolved: staticItems } = resolveWatchlistIds();
+    const staticIds = new Set(staticItems.map(i => i.id));
+    const dynamicItems = await buildDynamicWatchlist(staticIds);
+    const items = [...staticItems, ...dynamicItems];
+    if (items.length === 0) return { refreshed: 0 };
+
+    const itemIds = items.map(i => i.id);
+    const pool = await readBazaarPool(itemIds);
+    if (pool.size === 0) return { refreshed: 0 };
+
+    // Build list of checkable bazaar owners, staleness-ranked.
+    const now = Date.now();
+    const bazaarMap = new Map();
+    for (const item of items) {
+      const sources = pool.get(item.id) || [];
+      for (const src of sources) {
+        const age = now - new Date(src.checked_at).getTime();
+        const existing = bazaarMap.get(src.bazaar_owner_id);
+        if (!existing || age > existing.staleness) {
+          bazaarMap.set(src.bazaar_owner_id, { staleness: age });
+        }
+      }
+    }
+
+    // Only check entries that are actually stale — otherwise this pre-scan
+    // would burn fresh-API calls on already-current data.
+    const toCheck = [...bazaarMap.entries()]
+      .filter(([, info]) => info.staleness >= POOL_STALE_MS)
+      .sort((a, b) => b[1].staleness - a[1].staleness)
+      .slice(0, PRESCAN_CHECK_BUDGET);
+
+    if (toCheck.length === 0) return { refreshed: 0 };
+
+    const watchlistIds = new Set(itemIds);
+    const results = [];
+    const checkedOwnerIds = new Set();
+    const expectedPairs = [];
+    for (const item of items) {
+      for (const src of (pool.get(item.id) || [])) {
+        if (src.price != null) {
+          expectedPairs.push({
+            item_id: item.id,
+            bazaar_owner_id: src.bazaar_owner_id,
+            miss_count: src.miss_count || 0,
+          });
+        }
+      }
+    }
+
+    await Promise.allSettled(toCheck.map(async ([bazaarOwnerId]) => {
+      checkedOwnerIds.add(bazaarOwnerId);
+      const data = await callTornApi({
+        section: 'user',
+        id: bazaarOwnerId,
+        selections: 'bazaar',
+        player_id: playerId,
+      });
+      if (!data?.bazaar) return;
+
+      const bazaarItems = Array.isArray(data.bazaar)
+        ? data.bazaar
+        : Object.values(data.bazaar || {});
+      for (const item of bazaarItems) {
+        const itemId = item.ID || item.id;
+        const price = item.cost || item.price || item.market_price;
+        if (!itemId || !price) continue;
+        if (watchlistIds.has(itemId)) {
+          results.push({
+            item_id: itemId,
+            bazaar_owner_id: bazaarOwnerId,
+            price,
+            quantity: item.quantity || 1,
+          });
+        }
+      }
+    }));
+
+    results.expectedPairs = expectedPairs;
+    results.checkedOwnerIds = checkedOwnerIds;
+    await writeBazaarPool(results);
+
+    return { refreshed: toCheck.length };
+  } catch {
+    return { refreshed: 0 };
+  }
 }

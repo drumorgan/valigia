@@ -343,6 +343,7 @@ function buildRows() {
         slotCount,
         flightMins,
         flightMultiplier: getFlightMultiplier(),
+        stockQty: item.quantity ?? null,
       });
     }
 
@@ -388,6 +389,64 @@ function buildRows() {
 }
 
 /**
+ * Pick the single best actionable run from the current row set and render
+ * a summary card above the table. "Best" = highest profit/hr among rows
+ * with positive margin, a live sell price, and enough stock to matter.
+ */
+function renderBestRunCard(rows) {
+  const container = document.getElementById('best-run-container');
+  if (!container) return;
+
+  // Eligible: positive margin, live sell price, at least 1 unit of stock (or unknown).
+  const candidates = rows.filter(r =>
+    r.metrics &&
+    r.metrics.marginPerItem > 0 &&
+    r.metrics.effectiveSlots > 0
+  );
+
+  if (candidates.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  // Always rank the card by profit/hr regardless of the table's sort column —
+  // "best run" means best rate, not best whatever-the-user-last-clicked.
+  const best = candidates.slice().sort(
+    (a, b) => (b.metrics.profitPerHour || 0) - (a.metrics.profitPerHour || 0)
+  )[0];
+
+  const stockNote = best.metrics.stockLimited
+    ? `<span class="best-run-stock" title="Only ${best.metrics.effectiveSlots} units in stock">stock: ${best.metrics.effectiveSlots}</span>`
+    : '';
+
+  container.innerHTML = `
+    <div class="best-run-card">
+      <div class="best-run-label">Best Run Right Now</div>
+      <div class="best-run-body">
+        <div class="best-run-item">
+          <span class="best-run-name">${best.name}</span>
+          <span class="best-run-dest">&rarr; ${best.destination}</span>
+        </div>
+        <div class="best-run-rate">
+          <span class="best-run-rate-value">${formatMoney(best.metrics.profitPerHour)}</span>
+          <span class="best-run-rate-unit">/hr</span>
+        </div>
+      </div>
+      <div class="best-run-meta">
+        <span>${formatMoney(best.metrics.profitPerRun)} per run</span>
+        <span class="best-run-sep">&middot;</span>
+        <span>${formatFlightTime(best.metrics.roundTripMins)}</span>
+        <span class="best-run-sep">&middot;</span>
+        <span>${best.metrics.marginPct.toFixed(0)}% margin</span>
+        ${stockNote ? `<span class="best-run-sep">&middot;</span>${stockNote}` : ''}
+      </div>
+      <a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener"
+         class="best-run-cta">Travel &rarr;</a>
+    </div>
+  `;
+}
+
+/**
  * Render (or re-render) the arbitrage table.
  */
 export function renderTable() {
@@ -397,6 +456,7 @@ export function renderTable() {
   updateHeaderSort();
 
   const rows = buildRows();
+  renderBestRunCard(rows);
 
   if (rows.length === 0) {
     const hasFilters = filterDestination !== 'all' || filterCategory !== 'all';
@@ -440,7 +500,17 @@ export function renderTable() {
     const dash = '<span class="muted">—</span>';
     const marginCell = r.metrics ? formatMoney(r.metrics.marginPerItem) : (noListings ? dash : '<span class="shimmer-cell"></span>');
 
-    const runCostCell = r.metrics ? formatMoney(r.metrics.runCost) : (noListings ? dash : '<span class="shimmer-cell"></span>');
+    // Run cost cell — add a stock-limited badge when the run can't be filled
+    // because the destination doesn't carry enough stock.
+    let runCostCell;
+    if (r.metrics) {
+      const base = formatMoney(r.metrics.runCost);
+      runCostCell = r.metrics.stockLimited
+        ? `${base} <span class="stock-limited" title="Limited by available stock — only ${r.metrics.effectiveSlots} of ${slotCount} slots fillable">&#9888; ${r.metrics.effectiveSlots}/${slotCount}</span>`
+        : base;
+    } else {
+      runCostCell = noListings ? dash : '<span class="shimmer-cell"></span>';
+    }
     const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const hrCell = r.metrics ? formatMoney(r.metrics.profitPerHour) : (noListings ? dash : '<span class="shimmer-cell"></span>');
     const flightCell = r.metrics

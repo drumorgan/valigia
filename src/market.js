@@ -39,10 +39,12 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   }
 
   // 2. Serve ALL cached prices immediately (even stale — better than nothing)
-  //    Collect missing and stale IDs separately so missing gets priority
+  //    Collect missing and stale IDs separately so missing gets priority.
+  //    Within each bucket, prioritize high-value items: a stale $850K Xanax
+  //    matters far more than a stale $500 Dahlia.
   const missingIds = [];
   const nullPriceIds = [];
-  const staleIds = [];
+  const staleIds = []; // [{ itemId, price }] — sorted by price desc below
   for (const itemId of itemIds) {
     const row = cacheMap.get(itemId);
     if (row) {
@@ -53,7 +55,7 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
         // Null price — re-check sooner (listings may have appeared)
         nullPriceIds.push(itemId);
       } else if (age >= STALE_MS) {
-        staleIds.push(itemId);
+        staleIds.push({ itemId, price: row.price || 0 });
       }
     } else {
       // Missing entirely — highest priority
@@ -63,8 +65,14 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
 
   if (missingIds.length === 0 && nullPriceIds.length === 0 && staleIds.length === 0) return;
 
-  // 3. Priority: missing → null-priced (re-check) → stale. Up to cap per visit.
-  const toRefresh = [...missingIds, ...nullPriceIds, ...staleIds].slice(0, MAX_REFRESH_PER_VISIT);
+  // Sort stale items by cached price descending so high-value stale prices
+  // get refreshed first. (Missing items have no cached price, so we preserve
+  // input order; null-priced items re-check aggressively regardless of value.)
+  staleIds.sort((a, b) => b.price - a.price);
+  const staleIdsByValue = staleIds.map(s => s.itemId);
+
+  // 3. Priority: missing → null-priced (re-check) → stale-by-value. Up to cap per visit.
+  const toRefresh = [...missingIds, ...nullPriceIds, ...staleIdsByValue].slice(0, MAX_REFRESH_PER_VISIT);
   const freshPrices = [];
   let apiSuccessCount = 0;
   let apiFailCount = 0;
