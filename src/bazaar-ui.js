@@ -164,8 +164,9 @@ async function runScan(playerId) {
     `Market prices (from cache): ${stats.marketHits}`,
     `Pool: ${stats.poolHits} items across ${stats.uniqueBazaars || '?'} unique bazaars`,
     `New bazaars discovered: ${stats.discovered}`,
+    `Prices harvested from discovery: ${stats.harvested || 0}`,
     `Bazaars checked this spin: ${stats.bazaarsChecked}`,
-    `Prices found: ${stats.pricesFound}`,
+    `Prices found from checks: ${stats.pricesFound}`,
     `Deals below market: ${stats.dealsFound || 0}`,
     `~${stats.apiCalls + stats.bazaarsChecked} API calls used`,
   ];

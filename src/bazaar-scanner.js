@@ -97,6 +97,10 @@ async function readBazaarPool(itemIds) {
 /**
  * Phase 2: Discover new bazaar sources for items with few known sources.
  * Uses V2 market/{id}/bazaar to find bazaars that sell each item.
+ * NOW also harvests prices directly — the V2 response includes price/qty
+ * for each listing, so we get free data without extra API calls.
+ *
+ * Returns { discovered: Map(item_id → [owner_ids]), harvested: [...prices] }
  */
 async function discoverBazaars(items, pool, playerId, onProgress) {
   // Pick items with fewest known sources, randomized
@@ -107,6 +111,7 @@ async function discoverBazaars(items, pool, playerId, onProgress) {
     .slice(0, DISCOVER_BUDGET);
 
   const discovered = new Map(); // item_id → [bazaar_owner_ids]
+  const harvested = [];         // prices harvested directly from discovery
 
   const promises = candidates.map(async (item) => {
     const data = await callTornApi({
@@ -119,13 +124,26 @@ async function discoverBazaars(items, pool, playerId, onProgress) {
 
     if (!data?.bazaar) return;
 
-    // V2 bazaar returns { bazaar: { specialized: [...], ... } }
+    // V2 bazaar returns listings grouped by category or as flat array
     const ids = [];
-    for (const category of Object.values(data.bazaar)) {
-      if (Array.isArray(category)) {
-        for (const baz of category) {
-          if (baz.id) ids.push(baz.id);
-        }
+    const listings = Array.isArray(data.bazaar)
+      ? data.bazaar
+      : Object.values(data.bazaar).flat().filter(x => x && typeof x === 'object');
+
+    for (const baz of listings) {
+      const ownerId = baz.player_id || baz.id;
+      if (!ownerId) continue;
+      ids.push(ownerId);
+
+      // Harvest price data directly — no need to re-check this bazaar
+      const price = baz.cost || baz.price;
+      if (price) {
+        harvested.push({
+          item_id: item.id,
+          bazaar_owner_id: ownerId,
+          price,
+          quantity: baz.quantity || 1,
+        });
       }
     }
 
@@ -135,7 +153,7 @@ async function discoverBazaars(items, pool, playerId, onProgress) {
   });
 
   await Promise.allSettled(promises);
-  return discovered;
+  return { discovered, harvested };
 }
 
 /**
@@ -363,23 +381,32 @@ export async function scanBazaarDeals(playerId, onProgress) {
   }
   stats.uniqueBazaars = uniqueBazaars.size;
 
-  // Phase 2: Discover new bazaar sources (~5 API calls)
-  const discovered = await discoverBazaars(items, pool, playerId);
+  // Phase 2: Discover new bazaar sources + harvest prices (~8 API calls)
+  const { discovered, harvested } = await discoverBazaars(items, pool, playerId);
   let totalDiscovered = 0;
   for (const ids of discovered.values()) totalDiscovered += ids.length;
   stats.discovered = totalDiscovered;
+  stats.harvested = harvested.length;
   stats.apiCalls += Math.min(DISCOVER_BUDGET, items.filter(i => (pool.get(i.id) || []).length < MIN_SOURCES_FOR_SKIP).length);
+
+  // Write harvested prices to pool immediately — free data from discovery
+  if (harvested.length > 0) {
+    await writeBazaarPool(harvested);
+  }
 
   // Phase 3: Check bazaars (~25 API calls)
   const freshResults = await checkBazaars(items, pool, discovered, playerId, onProgress);
   stats.bazaarsChecked = freshResults.apiCalls || 0;
   stats.pricesFound = freshResults.length;
 
-  // Phase 4: Write back to shared pool (0 API calls)
+  // Phase 4: Write checked prices back to shared pool (0 API calls)
   await writeBazaarPool(freshResults);
 
+  // Combine harvested + checked for deal finding (both are live data)
+  const allFresh = [...harvested, ...freshResults];
+
   // Pick a random deal from all live-checked deals — wheel of fortune
-  const { picked, allDeals, fallbacks } = findRandomDeal(items, marketPrices, freshResults);
+  const { picked, allDeals, fallbacks } = findRandomDeal(items, marketPrices, allFresh);
   stats.dealsFound = allDeals.length;
 
   // Phase 5: Verify — fetch FRESH market price for the chosen deal.
