@@ -27,6 +27,7 @@ const STORAGE_SORT_COL = 'valigia_sort_col';
 const STORAGE_SORT_DIR = 'valigia_sort_dir';
 const STORAGE_FILTER_DEST = 'valigia_filter_dest';
 const STORAGE_FILTER_CAT = 'valigia_filter_cat';
+const STORAGE_REALISM = 'valigia_realism_mode';
 
 let slotCount = parseInt(localStorage.getItem(STORAGE_SLOTS)) || 29;
 let flightType = localStorage.getItem(STORAGE_FLIGHT_TYPE) || 'standard';
@@ -34,6 +35,15 @@ let sortCol = localStorage.getItem(STORAGE_SORT_COL) || 'profitPerHour';
 let sortDir = localStorage.getItem(STORAGE_SORT_DIR) || 'desc';
 let filterDestination = localStorage.getItem(STORAGE_FILTER_DEST) || 'all';
 let filterCategory = localStorage.getItem(STORAGE_FILTER_CAT) || 'all';
+// realismMode:
+//   'realistic' — clamp slots to arrival-time stock forecast AND include
+//                 category sell-time in the profit/hr denominator. Default.
+//                 Answers "what will I actually make on this run".
+//   'ideal'     — ignore stock (assume full slots) and ignore sell-time
+//                 (assume instant liquidation). Answers "what's the peak
+//                 theoretical return of this arbitrage pairing right now".
+//                 Useful as a sanity check and for planning ahead.
+let realismMode = localStorage.getItem(STORAGE_REALISM) || 'realistic';
 
 // Live data — populated as prices arrive
 const sellPrices = new Map();   // itemId → sell price
@@ -104,6 +114,10 @@ function persistFilters() {
   localStorage.setItem(STORAGE_FILTER_CAT, filterCategory);
 }
 
+function persistRealism() {
+  localStorage.setItem(STORAGE_REALISM, realismMode);
+}
+
 /**
  * Get sorted list of destinations from known items, ordered by flight time (longest first).
  */
@@ -153,6 +167,11 @@ export function renderControls(container, onChange) {
         <button class="filter-chip ${filterCategory === 'flower' ? 'filter-chip--active' : ''}" data-cat="flower">Flowers</button>
         <button class="filter-chip ${filterCategory === 'artifact' ? 'filter-chip--active' : ''}" data-cat="artifact">Artifacts</button>
       </div>
+      <div class="control-group filter-chips" title="Realistic: clamp slots to arrival-stock forecast and add sell-time to profit/hr. Ideal: assume full slots and instant liquidation.">
+        <span class="control-label">Mode</span>
+        <button class="filter-chip ${realismMode === 'realistic' ? 'filter-chip--active' : ''}" data-realism="realistic">Realistic</button>
+        <button class="filter-chip ${realismMode === 'ideal' ? 'filter-chip--active' : ''}" data-realism="ideal">Ideal</button>
+      </div>
     </div>
   `;
 
@@ -171,12 +190,25 @@ export function renderControls(container, onChange) {
     persistFilters();
     onChange();
   });
-  container.querySelectorAll('.filter-chip').forEach(btn => {
+  // Category filter chips (scoped by data-cat so they don't collide with
+  // the Mode chips below).
+  container.querySelectorAll('.filter-chip[data-cat]').forEach(btn => {
     btn.addEventListener('click', () => {
       filterCategory = btn.dataset.cat;
       persistFilters();
-      // Update active state visually
-      container.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('filter-chip--active'));
+      container.querySelectorAll('.filter-chip[data-cat]').forEach(b => b.classList.remove('filter-chip--active'));
+      btn.classList.add('filter-chip--active');
+      onChange();
+    });
+  });
+
+  // Realism toggle — flips the Stock clamp and sell-time penalty on/off.
+  // Scoped by data-realism so it's independent of the category chips.
+  container.querySelectorAll('.filter-chip[data-realism]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      realismMode = btn.dataset.realism;
+      persistRealism();
+      container.querySelectorAll('.filter-chip[data-realism]').forEach(b => b.classList.remove('filter-chip--active'));
       btn.classList.add('filter-chip--active');
       onChange();
     });
@@ -274,6 +306,11 @@ function formatQuantity(qty) {
 function renderStockCell(row) {
   const now = row.quantity;
   if (now == null) return '<span class="muted">—</span>';
+
+  // In Ideal mode we're intentionally ignoring the arrival-time forecast
+  // (slot clamping is off), so hiding the ETA line here keeps the Stock
+  // cell honest about what the math is actually using.
+  if (realismMode === 'ideal') return formatQuantity(now);
 
   const f = row.forecast;
   // No history loaded yet (first visit, or cache still coming in) — just
@@ -417,6 +454,11 @@ function buildRows() {
       item.quantity ?? null,
     );
 
+    // Realism toggle: in 'ideal' mode we strip both the stock clamp and
+    // the sell-time penalty so the table answers "what's the theoretical
+    // peak return". In 'realistic' (default) both are applied.
+    const isIdeal = realismMode === 'ideal';
+
     let metrics = null;
     if (hasSellPrice && flightMins > 0) {
       metrics = calculateMargins({
@@ -425,14 +467,12 @@ function buildRows() {
         slotCount,
         flightMins,
         flightMultiplier: getFlightMultiplier(),
-        // Use the arrival-time estimate so effective_slots reflects what
-        // the shelf will actually hold when the plane lands, not what's
-        // there now. forecastStock falls back to nowQty when no history.
-        stockQty: forecast.etaQty,
-        // Sell-time penalty: drugs clear in 2 min, artifacts can sit for
-        // hours. Folding this into profit/hr stops illiquid-but-high-margin
-        // items from artificially dominating the ranking over drugs.
-        sellTimeMins: getSellTimeMins(category),
+        // Realistic: clamp to arrival-time stock forecast.
+        // Ideal:     null => calculator assumes full slot fill.
+        stockQty: isIdeal ? null : forecast.etaQty,
+        // Realistic: add per-category sell-time tail to cycle length.
+        // Ideal:     0 => instant liquidation on landing.
+        sellTimeMins: isIdeal ? 0 : getSellTimeMins(category),
       });
     }
 
@@ -689,14 +729,20 @@ export function renderTable() {
       runCostCell = noListings ? dash : '<span class="shimmer-cell"></span>';
     }
     const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : (noListings ? dash : '<span class="shimmer-cell"></span>');
-    // Profit/hr cell — include the liquidity assumption as a small trailing
-    // badge so the user can see why a drug row "beats" an artifact row that
-    // has nominally higher margin. The sell-time is already baked into the
-    // hourly number; the badge just makes the assumption visible.
+    // Profit/hr cell — in Realistic mode include the liquidity assumption
+    // as a small trailing badge so the user can see why a drug row "beats"
+    // an artifact row that has nominally higher margin. The sell-time is
+    // already baked into the hourly number; the badge just makes the
+    // assumption visible. In Ideal mode the sell-time is zero by design,
+    // so the badge would be misleading.
     let hrCell;
     if (r.metrics) {
-      const badge = getLiquidityBadge(r.category);
-      hrCell = `${formatMoney(r.metrics.profitPerHour)} <span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>`;
+      if (realismMode === 'ideal') {
+        hrCell = formatMoney(r.metrics.profitPerHour);
+      } else {
+        const badge = getLiquidityBadge(r.category);
+        hrCell = `${formatMoney(r.metrics.profitPerHour)} <span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>`;
+      }
     } else {
       hrCell = noListings ? dash : '<span class="shimmer-cell"></span>';
     }
