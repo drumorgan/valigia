@@ -16,7 +16,9 @@ const NULL_STALE_MS = 5 * 60 * 1000; // 5 minutes for items with no listings (re
  *
  * @param {number} playerId - Torn player ID (for server-side key decrypt)
  * @param {number[]} itemIds - unique item IDs to fetch
- * @param {function} onPrice - Called as each price resolves: (itemId, sellPrice|null)
+ * @param {function} onPrice - Called as each price resolves:
+ *   (itemId, sellPrice|null, depth|null) where depth is
+ *   { floorQty, listingCount } or null if unknown / no listings.
  */
 export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   const now = Date.now();
@@ -24,7 +26,7 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   // 1. Read all cached sell prices from Supabase (single query)
   const { data: cached, error: readErr } = await supabase
     .from('sell_prices')
-    .select('item_id, price, updated_at')
+    .select('item_id, price, updated_at, floor_qty, listing_count')
     .in('item_id', itemIds);
 
   if (readErr) {
@@ -48,8 +50,11 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   for (const itemId of itemIds) {
     const row = cacheMap.get(itemId);
     if (row) {
-      // Serve cached price regardless of age
-      if (onPrice) onPrice(itemId, row.price);
+      // Serve cached price (and depth if we have it) regardless of age.
+      const cachedDepth = (row.floor_qty != null || row.listing_count != null)
+        ? { floorQty: row.floor_qty, listingCount: row.listing_count }
+        : null;
+      if (onPrice) onPrice(itemId, row.price, cachedDepth);
       const age = now - new Date(row.updated_at).getTime();
       if (row.price == null && age >= NULL_STALE_MS) {
         // Null price — re-check sooner (listings may have appeared)
@@ -100,14 +105,33 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     apiSuccessCount++;
 
     let lowestPrice = null;
+    let floorQty = null;
+    let listingCount = null;
     // V2 itemmarket returns { itemmarket: [...] } or { itemmarket: { listings: [...] } }
     const listings = data.itemmarket?.listings || data.itemmarket;
     if (Array.isArray(listings) && listings.length > 0) {
       lowestPrice = listings[0].cost || listings[0].price;
+      // Torn v2 uses `amount`; older shapes occasionally used `quantity`.
+      // Fall back to 1 so a listing with no qty field at least counts itself.
+      floorQty = listings[0].amount ?? listings[0].quantity ?? 1;
+      listingCount = listings.length;
+    } else if (Array.isArray(listings)) {
+      // Empty listings array — record a zero so the cell explicitly shows
+      // "no listings" depth rather than stale history.
+      listingCount = 0;
     }
 
-    freshPrices.push({ item_id: itemId, price: lowestPrice, updated_at: new Date().toISOString() });
-    if (onPrice) onPrice(itemId, lowestPrice);
+    freshPrices.push({
+      item_id: itemId,
+      price: lowestPrice,
+      floor_qty: floorQty,
+      listing_count: listingCount,
+      updated_at: new Date().toISOString(),
+    });
+    const depth = (floorQty != null || listingCount != null)
+      ? { floorQty, listingCount }
+      : null;
+    if (onPrice) onPrice(itemId, lowestPrice, depth);
   });
 
   await Promise.allSettled(promises);
