@@ -37,6 +37,13 @@ let filterCategory = localStorage.getItem(STORAGE_FILTER_CAT) || 'all';
 const sellPrices = new Map();   // itemId → sell price
 const checkedItems = new Set();  // itemIds where sell price has been looked up
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at, quantity }
+let bestBazaarRun = null;        // Optional verified bazaar deal, set by main.js
+
+// A bazaar purchase + re-list is a short, one-shot task. 5 min is a
+// defensible nominal duration: click bazaar link → buy → go to item market
+// → list. This is what we divide absolute profit by to compare against a
+// travel run's profit/hr.
+const BAZAAR_NOMINAL_TRANSACTION_MINS = 5;
 
 // ── Column definitions for sortable headers ───────────────────
 const COLUMNS = [
@@ -195,6 +202,16 @@ export function setPlayerTravel(slots, airstrip) {
  */
 export function setKnownItems(rows) {
   knownItems = rows;
+}
+
+/**
+ * Set a verified bazaar-deal candidate from main.js's background search.
+ * When set, the "Best Run Right Now" card will compare this against the
+ * top travel run by profit/hr and show whichever wins. Pass null to clear.
+ */
+export function setBestBazaarRun(deal) {
+  bestBazaarRun = deal;
+  renderTable();
 }
 
 /**
@@ -389,38 +406,90 @@ function buildRows() {
 }
 
 /**
- * Pick the single best actionable run from the current row set and render
- * a summary card above the table. "Best" = highest profit/hr among rows
- * with positive margin, a live sell price, and enough stock to matter.
+ * Normalize a verified bazaar deal into a "run" we can rank next to travel
+ * runs. Uses a nominal transaction time so profit/hr is comparable.
+ * Returns null if the deal can't produce any profit at the current slot count.
+ */
+function buildBazaarRun(deal) {
+  if (!deal) return null;
+  const effectiveSlots = Math.min(slotCount, deal.bazaarQty);
+  if (effectiveSlots <= 0) return null;
+
+  const profitPerRun = deal.savings * effectiveSlots; // savings is already post-5%-fee
+  if (profitPerRun <= 0) return null;
+
+  const roundTripMins = BAZAAR_NOMINAL_TRANSACTION_MINS;
+  const profitPerHour = (profitPerRun / roundTripMins) * 60;
+
+  return {
+    type: 'bazaar',
+    name: deal.itemName,
+    bazaarOwnerId: deal.bazaarOwnerId,
+    metrics: {
+      profitPerRun,
+      profitPerHour,
+      marginPct: deal.savingsPct,
+      effectiveSlots,
+      stockLimited: effectiveSlots < slotCount,
+      roundTripMins,
+    },
+  };
+}
+
+/**
+ * Pick the single best actionable run (travel OR bazaar) and render a
+ * summary card above the table. Both are normalized to profit/hr for
+ * comparison; the winner is shown in its own visual variant.
  */
 function renderBestRunCard(rows) {
   const container = document.getElementById('best-run-container');
   if (!container) return;
 
-  // Eligible: positive margin, live sell price, at least 1 unit of stock (or unknown).
-  const candidates = rows.filter(r =>
+  // Candidate 1: best travel run (positive margin, live price, stock).
+  const travelCandidates = rows.filter(r =>
     r.metrics &&
     r.metrics.marginPerItem > 0 &&
     r.metrics.effectiveSlots > 0
   );
+  const bestTravel = travelCandidates.length > 0
+    ? travelCandidates.slice().sort(
+        (a, b) => (b.metrics.profitPerHour || 0) - (a.metrics.profitPerHour || 0)
+      )[0]
+    : null;
 
-  if (candidates.length === 0) {
+  // Candidate 2: verified bazaar deal from main.js background search.
+  const bestBazaar = buildBazaarRun(bestBazaarRun);
+
+  // Pick the winner by profit/hr. A bazaar deal almost always wins on rate
+  // (short nominal time) — that's correct. It's a "grab it now" opportunity.
+  let winner = null;
+  if (bestTravel && bestBazaar) {
+    winner = bestBazaar.metrics.profitPerHour > bestTravel.metrics.profitPerHour
+      ? bestBazaar
+      : bestTravel;
+  } else {
+    winner = bestBazaar || bestTravel;
+  }
+
+  if (!winner) {
     container.innerHTML = '';
     return;
   }
 
-  // Always rank the card by profit/hr regardless of the table's sort column —
-  // "best run" means best rate, not best whatever-the-user-last-clicked.
-  const best = candidates.slice().sort(
-    (a, b) => (b.metrics.profitPerHour || 0) - (a.metrics.profitPerHour || 0)
-  )[0];
+  if (winner.type === 'bazaar') {
+    renderBazaarBestRun(container, winner);
+  } else {
+    renderTravelBestRun(container, winner);
+  }
+}
 
+function renderTravelBestRun(container, best) {
   const stockNote = best.metrics.stockLimited
     ? `<span class="best-run-stock" title="Only ${best.metrics.effectiveSlots} units in stock">stock: ${best.metrics.effectiveSlots}</span>`
     : '';
 
   container.innerHTML = `
-    <div class="best-run-card">
+    <div class="best-run-card best-run-card--travel">
       <div class="best-run-label">Best Run Right Now</div>
       <div class="best-run-body">
         <div class="best-run-item">
@@ -442,6 +511,41 @@ function renderBestRunCard(rows) {
       </div>
       <a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener"
          class="best-run-cta">Travel &rarr;</a>
+    </div>
+  `;
+}
+
+function renderBazaarBestRun(container, best) {
+  const bazaarUrl = `https://www.torn.com/bazaar.php?userId=${best.bazaarOwnerId}#/`;
+  const qtyNote = best.metrics.stockLimited
+    ? `<span class="best-run-stock" title="Bazaar has ${best.metrics.effectiveSlots} unit(s) available">qty: ${best.metrics.effectiveSlots}</span>`
+    : `<span>qty: ${best.metrics.effectiveSlots}</span>`;
+
+  container.innerHTML = `
+    <div class="best-run-card best-run-card--bazaar">
+      <div class="best-run-label">
+        Best Run Right Now
+        <span class="best-run-badge" title="Live-verified bazaar listing — act fast">&#x26A1; Bazaar</span>
+      </div>
+      <div class="best-run-body">
+        <div class="best-run-item">
+          <span class="best-run-name">${best.name}</span>
+          <span class="best-run-dest">from bazaar</span>
+        </div>
+        <div class="best-run-rate">
+          <span class="best-run-rate-value">${formatMoney(best.metrics.profitPerHour)}</span>
+          <span class="best-run-rate-unit">/hr</span>
+        </div>
+      </div>
+      <div class="best-run-meta">
+        <span>${formatMoney(best.metrics.profitPerRun)} total profit</span>
+        <span class="best-run-sep">&middot;</span>
+        ${qtyNote}
+        <span class="best-run-sep">&middot;</span>
+        <span>${best.metrics.marginPct.toFixed(0)}% off market</span>
+      </div>
+      <a href="${bazaarUrl}" target="_blank" rel="noopener"
+         class="best-run-cta best-run-cta--bazaar">Go to Bazaar &rarr;</a>
     </div>
   `;
 }
