@@ -276,8 +276,59 @@ export function renderScanButton(container, playerId) {
     sparkRaf = requestAnimationFrame(trackSpark);
   }
 
+  let cooldownEndsAt = 0;
+  let cooldownInterval = null;
+  let cooldownVisibilityHandler = null;
+
+  function finishCooldown() {
+    if (cooldownInterval) {
+      clearInterval(cooldownInterval);
+      cooldownInterval = null;
+    }
+    if (cooldownVisibilityHandler) {
+      document.removeEventListener('visibilitychange', cooldownVisibilityHandler);
+      cooldownVisibilityHandler = null;
+    }
+    if (sparkRaf) {
+      cancelAnimationFrame(sparkRaf);
+      sparkRaf = null;
+    }
+    btn.disabled = false;
+    btn.classList.remove('bazaar-trigger-btn--cooldown');
+    btn.classList.add('bazaar-trigger-btn--ready');
+    fuseLabel.textContent = 'Spin for a Deal';
+    fuseTrack.style.display = 'none';
+    fuseTimer.style.display = 'none';
+    fuseLine.style.transition = 'none';
+  }
+
+  function tickCooldown() {
+    const msLeft = cooldownEndsAt - Date.now();
+    if (msLeft <= 0) {
+      finishCooldown();
+      return;
+    }
+    fuseTimer.textContent = `${Math.ceil(msLeft / 1000)}s`;
+  }
+
+  function resyncFuseLine() {
+    // Snap the CSS fuse-line width to match wall-clock remaining time.
+    // Needed after the tab was hidden, since CSS transitions pause while
+    // the page isn't rendering and would otherwise lag behind.
+    const msLeft = Math.max(0, cooldownEndsAt - Date.now());
+    const pctLeft = (msLeft / (COOLDOWN_SEC * 1000)) * 100;
+    fuseLine.style.transition = 'none';
+    fuseLine.style.width = `${pctLeft}%`;
+    // Force reflow so the next transition starts from the snapped width.
+    void fuseLine.offsetWidth;
+    if (msLeft > 0) {
+      fuseLine.style.transition = `width ${msLeft}ms linear`;
+      fuseLine.style.width = '0%';
+    }
+  }
+
   function startCooldown() {
-    let remaining = COOLDOWN_SEC;
+    cooldownEndsAt = Date.now() + COOLDOWN_SEC * 1000;
     btn.disabled = true;
     btn.classList.remove('bazaar-trigger-btn--ready');
     btn.classList.add('bazaar-trigger-btn--cooldown');
@@ -287,7 +338,7 @@ export function renderScanButton(container, playerId) {
     fuseLine.style.transition = 'none';
     fuseLine.style.width = '100%';
     fuseSpark.style.display = 'block';
-    fuseTimer.textContent = `${remaining}s`;
+    fuseTimer.textContent = `${COOLDOWN_SEC}s`;
 
     // Start spark tracking + fuse burn
     requestAnimationFrame(() => {
@@ -296,22 +347,20 @@ export function renderScanButton(container, playerId) {
       trackSpark();
     });
 
-    const interval = setInterval(() => {
-      remaining--;
-      if (remaining <= 0) {
-        clearInterval(interval);
-        if (sparkRaf) cancelAnimationFrame(sparkRaf);
-        btn.disabled = false;
-        btn.classList.remove('bazaar-trigger-btn--cooldown');
-        btn.classList.add('bazaar-trigger-btn--ready');
-        fuseLabel.textContent = 'Spin for a Deal';
-        fuseTrack.style.display = 'none';
-        fuseTimer.style.display = 'none';
-        fuseLine.style.transition = 'none';
-      } else {
-        fuseTimer.textContent = `${remaining}s`;
-      }
-    }, 1000);
+    if (cooldownInterval) clearInterval(cooldownInterval);
+    cooldownInterval = setInterval(tickCooldown, 1000);
+
+    // When the tab comes back, snap the timer + fuse line to wall-clock
+    // reality — the setInterval and CSS transition both pause while hidden.
+    if (cooldownVisibilityHandler) {
+      document.removeEventListener('visibilitychange', cooldownVisibilityHandler);
+    }
+    cooldownVisibilityHandler = () => {
+      if (document.hidden) return;
+      tickCooldown();
+      if (cooldownInterval) resyncFuseLine();
+    };
+    document.addEventListener('visibilitychange', cooldownVisibilityHandler);
   }
 
   btn.addEventListener('click', async () => {
