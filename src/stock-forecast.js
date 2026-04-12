@@ -31,12 +31,18 @@ async function reportSnapshotError(message) {
   }
 }
 
-// How far back to look when estimating depletion. Beyond this, samples are
-// too old to reflect the current rate of play.
-const HISTORY_WINDOW_MINS = 240; // 4 h
+// How far back to look when estimating depletion + restock cadence.
+// Originally 4h when every page load wrote a fresh row, but dedup-on-write
+// drops ~99% of inserts (stable shelves now write once, not every visit),
+// so we can safely widen the window. More history = tighter median on
+// restock-interval estimates, which was the weakest link of the restock
+// predictor with only 1-2 observed events.
+const HISTORY_WINDOW_MINS = 48 * 60; // 48 h
 
 // How old a snapshot is allowed to be before the prune sweep drops it.
-const PRUNE_OLDER_THAN_MINS = 240; // 4 h
+// Kept in sync with HISTORY_WINDOW_MINS so we don't delete anything the
+// forecaster would still read.
+const PRUNE_OLDER_THAN_MINS = 48 * 60; // 48 h
 
 // Minimum samples + minimum span before we upgrade confidence from "low" to "ok".
 const MIN_SAMPLES_FOR_OK = 3;
@@ -73,13 +79,56 @@ export async function recordSnapshots(items) {
 
   if (rows.length === 0) return;
 
+  // Dedup on write. Original implementation wrote every (item, destination)
+  // on every page load — with multiple users and stable shelves, the table
+  // filled with thousands of identical rows carrying zero signal. The
+  // forecaster only cares about transitions: a restock (positive delta) or
+  // a depletion step. Re-observing the same quantity over and over adds
+  // nothing. So we pull the latest existing reading per (item, destination)
+  // for items in this batch and insert only the rows where quantity or
+  // buy_price has changed.
+  //
+  // Race condition accepted: if two users load simultaneously and both see
+  // "no row yet" they'll each insert — one duplicate, not a regression.
+  // The next prune sweep catches it, or it dedups out when one changes.
+  const itemIds = [...new Set(rows.map(r => r.item_id))];
+  const latestMap = new Map(); // "itemId|destination" -> { quantity, buy_price }
+  try {
+    const { data, error } = await supabase
+      .from('yata_snapshots')
+      .select('item_id, destination, quantity, buy_price, snapped_at')
+      .in('item_id', itemIds)
+      .order('snapped_at', { ascending: false });
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        const key = `${row.item_id}|${row.destination}`;
+        // First row per key wins because we ordered desc by snapped_at.
+        if (!latestMap.has(key)) latestMap.set(key, row);
+      }
+    }
+    // If the read failed, fall through to unfiltered insert. Worst case is
+    // one duplicate row — better than dropping a transition entirely.
+  } catch {
+    // Same fall-through — treat unknown latest as "no prior reading".
+  }
+
+  const changed = rows.filter(r => {
+    const prev = latestMap.get(`${r.item_id}|${r.destination}`);
+    if (!prev) return true; // never seen — always record
+    const prevPrice = prev.buy_price ?? null;
+    const newPrice = r.buy_price ?? null;
+    return prev.quantity !== r.quantity || prevPrice !== newPrice;
+  });
+
+  if (changed.length === 0) return; // shelf looks identical to last reading
+
   // Supabase-js v2 does NOT throw on write errors — it returns an `error`
   // object. A bare try/catch around .insert() was catching nothing, which
   // hid a silent RLS/permission failure during initial rollout. Surface
   // the real Postgres message to the user once per session so the UI is
   // an honest diagnostic surface (we're iPad-only, no DevTools).
   try {
-    const { error } = await supabase.from('yata_snapshots').insert(rows);
+    const { error } = await supabase.from('yata_snapshots').insert(changed);
     if (error) {
       reportSnapshotError(`Stock history write failed: ${error.message}`);
     }
