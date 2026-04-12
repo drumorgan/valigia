@@ -51,6 +51,10 @@ let realismMode = localStorage.getItem(STORAGE_REALISM) || 'realistic';
 const sellPrices = new Map();   // itemId → sell price
 const marketDepth = new Map();  // itemId → { floorQty, listingCount }
 const checkedItems = new Set();  // itemIds where sell price has been looked up
+// Timestamp of the data source for each known sell price — Supabase row's
+// updated_at when served from cache, Date.now() when fetched fresh.
+// Drives the category-filter "refresh anything >5min old" hook.
+const sellPriceFetchedAt = new Map(); // itemId → ms since epoch
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at, quantity }
 let bestBazaarRun = null;        // Optional verified bazaar deal, set by main.js
 
@@ -132,7 +136,7 @@ function getAvailableDestinations() {
   return [...dests].sort((a, b) => (getFlightMins(b) || 0) - (getFlightMins(a) || 0));
 }
 
-export function renderControls(container, onChange) {
+export function renderControls(container, onChange, onCategoryChange) {
   const destinations = getAvailableDestinations();
   // Options show the full country name + flag so the native picker is clear,
   // but the collapsed control only shows a flag via an overlay span (see CSS).
@@ -230,6 +234,7 @@ export function renderControls(container, onChange) {
       container.querySelectorAll('.filter-chip[data-cat]').forEach(b => b.classList.remove('filter-chip--active'));
       btn.classList.add('filter-chip--active');
       onChange();
+      if (onCategoryChange) onCategoryChange(filterCategory);
     });
   });
 
@@ -307,13 +312,36 @@ export function getItemIdsForPriceFetch() {
  * @param {{floorQty: number|null, listingCount: number|null}|null} [depth]
  *   Market depth snapshot at the time of the fetch. Optional for back-compat.
  */
-export function onSellPrice(itemId, price, depth) {
+export function onSellPrice(itemId, price, depth, fetchedAt) {
   if (price != null) sellPrices.set(itemId, price);
   if (depth && (depth.floorQty != null || depth.listingCount != null)) {
     marketDepth.set(itemId, depth);
   }
+  if (fetchedAt != null) sellPriceFetchedAt.set(itemId, fetchedAt);
   checkedItems.add(itemId);
   renderTable();
+}
+
+/**
+ * Return unique item IDs belonging to the given Torn category whose sell
+ * price is older than maxAgeMs (or has never been fetched in this session).
+ * Called from the category filter click handler to trigger a targeted
+ * on-demand refresh. "all" returns nothing — we only refresh when the user
+ * has narrowed the view to a specific category.
+ */
+export function getStaleItemIdsForCategory(category, maxAgeMs) {
+  if (!category || category === 'all') return [];
+  const now = Date.now();
+  const ids = new Set();
+  for (const item of knownItems) {
+    if (!item.item_id) continue;
+    if (getItemTypeById(item.item_id) !== category) continue;
+    const fetchedAt = sellPriceFetchedAt.get(item.item_id);
+    if (fetchedAt == null || now - fetchedAt > maxAgeMs) {
+      ids.add(item.item_id);
+    }
+  }
+  return [...ids];
 }
 
 // ── Table helpers ──────────────────────────────────────────────

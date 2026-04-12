@@ -3,7 +3,7 @@
 import { callTornApi } from './torn-api.js';
 import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
 import { fetchAbroadPrices } from './log-sync.js';
-import { fetchAllSellPrices } from './market.js';
+import { fetchAllSellPrices, refreshSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
 import { prescanBazaarPool, findBestBazaarRun } from './bazaar-scanner.js';
@@ -11,11 +11,21 @@ import { recordSnapshots, loadForecastData } from './stock-forecast.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
-  setBestBazaarRun
+  setBestBazaarRun, getStaleItemIdsForCategory
 } from './ui.js';
+
+// Category chip clicks top up any sell prices in that category older than
+// this threshold. Kept short — the whole point is to surface fresh margins
+// the moment a user narrows the view.
+const CATEGORY_REFRESH_AGE_MS = 5 * 60 * 1000;
 
 const screenContainer = document.getElementById('screen-container');
 const headerEl = document.getElementById('app-header');
+
+// When knownItems was last sourced from YATA. A live fetch sets this to
+// Date.now(); a cached fetch preserves YATA's original timestamp so we
+// re-attempt the live call as soon as the user engages a category filter.
+let yataFetchedAt = 0;
 
 // ── Boot ───────────────────────────────────────────────────────
 async function boot() {
@@ -118,6 +128,7 @@ async function startDashboard(playerId) {
   }
 
   const { items, cached, cachedAt } = priceResult;
+  yataFetchedAt = cached ? (cachedAt || 0) : Date.now();
 
   // If we fell back to cache, let the user know — the freshness badges on
   // each row tell the detailed story, but a single banner explains why
@@ -128,7 +139,7 @@ async function startDashboard(playerId) {
 
   // Set items, re-render controls (populates destination dropdown), and render table
   setKnownItems(items);
-  renderControls(controlsBar, () => renderTable());
+  renderControls(controlsBar, () => renderTable(), (cat) => handleCategoryRefresh(cat, playerId));
   renderTable();
 
   // Kick off the stock-history pipeline in parallel with everything else.
@@ -161,6 +172,40 @@ async function startDashboard(playerId) {
   prescanBazaarPool(playerId).then(() => findBestBazaarRun(playerId)).then(deal => {
     if (deal) setBestBazaarRun(deal);
   });
+}
+
+// ── Category filter refresh ───────────────────────────────────
+/**
+ * Triggered when the user clicks a category filter chip (drugs / plushies /
+ * flowers / artifacts). Refreshes both stock (one YATA fetch covers every
+ * row) and the per-item sell prices for that category, but only when each
+ * source is already older than CATEGORY_REFRESH_AGE_MS. Clicking "all" is
+ * treated as a pure filter change — no network calls.
+ */
+async function handleCategoryRefresh(category, playerId) {
+  if (!category || category === 'all') return;
+
+  // Stock + buy prices: a single YATA request. Covers every row at once, so
+  // we only gate on the last snapshot age, not on the selected category.
+  if (Date.now() - yataFetchedAt > CATEGORY_REFRESH_AGE_MS) {
+    const result = await fetchAbroadPrices().catch(() => null);
+    if (result && result.items && result.items.length > 0) {
+      setKnownItems(result.items);
+      yataFetchedAt = result.cached ? (result.cachedAt || yataFetchedAt) : Date.now();
+      renderTable();
+    }
+  }
+
+  // Sell prices: per-item Torn API calls, so scope to just the clicked
+  // category and only those whose snapshot is already past the threshold.
+  const staleIds = getStaleItemIdsForCategory(category, CATEGORY_REFRESH_AGE_MS);
+  if (staleIds.length === 0) return;
+
+  showToast(
+    `Refreshing ${staleIds.length} ${category} price${staleIds.length === 1 ? '' : 's'}…`,
+    'success',
+  );
+  await refreshSellPrices(playerId, staleIds, onSellPrice);
 }
 
 // ── YATA-offline banner ────────────────────────────────────────
