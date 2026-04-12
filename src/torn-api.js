@@ -47,6 +47,8 @@ export async function callTornApi(params) {
     if (data.error) {
       const code = data.error.code;
       const critical = [2, 13, 16];
+      // Transient errors that resolve on retry — don't toast during batch scans
+      const silent = [5, 17];
       const messages = {
         2: 'Invalid API key — please log out and re-enter a valid key',
         5: 'Too many requests — wait a moment',
@@ -60,7 +62,7 @@ export async function callTornApi(params) {
           criticalErrorShown = true;
           showToast(messages[code]);
         }
-      } else {
+      } else if (!silent.includes(code)) {
         showToast(messages[code] || `Torn API error ${code}: ${data.error.error}`);
       }
       return null;
