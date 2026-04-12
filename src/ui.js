@@ -5,6 +5,7 @@ import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById } from './item-resolver.js';
 import { calculateMargins, formatFlightTime, formatMoney } from './calculator.js';
 import { forecastStock } from './stock-forecast.js';
+import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
 
 // ── Flight type definitions ───────────────────────────────────
 const FLIGHT_TYPES = [
@@ -428,6 +429,10 @@ function buildRows() {
         // the shelf will actually hold when the plane lands, not what's
         // there now. forecastStock falls back to nowQty when no history.
         stockQty: forecast.etaQty,
+        // Sell-time penalty: drugs clear in 2 min, artifacts can sit for
+        // hours. Folding this into profit/hr stops illiquid-but-high-margin
+        // items from artificially dominating the ranking over drugs.
+        sellTimeMins: getSellTimeMins(category),
       });
     }
 
@@ -684,7 +689,17 @@ export function renderTable() {
       runCostCell = noListings ? dash : '<span class="shimmer-cell"></span>';
     }
     const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : (noListings ? dash : '<span class="shimmer-cell"></span>');
-    const hrCell = r.metrics ? formatMoney(r.metrics.profitPerHour) : (noListings ? dash : '<span class="shimmer-cell"></span>');
+    // Profit/hr cell — include the liquidity assumption as a small trailing
+    // badge so the user can see why a drug row "beats" an artifact row that
+    // has nominally higher margin. The sell-time is already baked into the
+    // hourly number; the badge just makes the assumption visible.
+    let hrCell;
+    if (r.metrics) {
+      const badge = getLiquidityBadge(r.category);
+      hrCell = `${formatMoney(r.metrics.profitPerHour)} <span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>`;
+    } else {
+      hrCell = noListings ? dash : '<span class="shimmer-cell"></span>';
+    }
     const flightCell = r.metrics
       ? formatFlightTime(r.metrics.roundTripMins)
       : (r.flightMins > 0 ? formatFlightTime(r.flightMins * 2) : '—');

@@ -9,9 +9,10 @@
  * @param {number} params.flightMins - One-way flight time in minutes
  * @param {number} params.flightMultiplier - Flight time multiplier (1.0 = standard, 0.7 = airstrip/WLT, 0.49 = both)
  * @param {number|null} [params.stockQty] - Available stock at destination. When set, caps effective slot fill to min(slotCount, stockQty).
+ * @param {number} [params.sellTimeMins] - Estimated minutes to liquidate the run after landing. Defaults to 0 (instant sell). Gets added to the profit/hr denominator so illiquid items (armor, artifacts) stop looking artificially better than drugs.
  * @returns {object} Calculated metrics
  */
-export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, flightMultiplier = 1.0, stockQty = null }) {
+export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, flightMultiplier = 1.0, stockQty = null, sellTimeMins = 0 }) {
   const netSell = sellPrice * 0.95; // 5% item market fee
   const marginPerItem = netSell - buyPrice;
   const marginPct = buyPrice > 0 ? (marginPerItem / buyPrice) * 100 : 0;
@@ -28,7 +29,12 @@ export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, f
   const profitPerRun = marginPerItem * effectiveSlots;
   const effectiveFlightMins = flightMins * flightMultiplier;
   const roundTripMins = effectiveFlightMins * 2;
-  const profitPerHour = roundTripMins > 0 ? (profitPerRun / roundTripMins) * 60 : 0;
+
+  // Cycle time is what your capital is ACTUALLY locked up for: fly there,
+  // fly back, AND wait for the stack to sell. For a Xanax run sellTimeMins
+  // is ~2; for an armor piece it can be 90+ and materially lowers the rate.
+  const cycleMins = roundTripMins + sellTimeMins;
+  const profitPerHour = cycleMins > 0 ? (profitPerRun / cycleMins) * 60 : 0;
 
   return {
     netSell,
@@ -37,6 +43,8 @@ export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, f
     runCost,
     profitPerRun,
     roundTripMins,
+    sellTimeMins,
+    cycleMins,
     profitPerHour,
     effectiveSlots,
     stockLimited,
