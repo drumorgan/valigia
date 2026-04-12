@@ -1638,3 +1638,28 @@ tr.row--negative td {
     margin: 1rem;
   }
 }
+
+/* ── YATA offline banner ───────────────────────────────────────── */
+.yata-offline-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  margin: 0 0 0.75rem;
+  background: rgba(232, 130, 74, 0.08);
+  border: 1px solid rgba(232, 130, 74, 0.35);
+  border-radius: 6px;
+  color: var(--warning);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.yata-offline-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.yata-offline-text {
+  color: var(--text);
+}

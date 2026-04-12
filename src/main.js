@@ -94,12 +94,12 @@ async function startDashboard(playerId) {
   await resolveItemIds(playerId);
 
   // Fetch abroad prices from YATA and detect travel perks in parallel
-  const [items] = await Promise.all([
+  const [priceResult] = await Promise.all([
     fetchAbroadPrices().catch(() => null),
     detectPlayerTravel(playerId).catch(() => {}),
   ]);
 
-  if (!items || items.length === 0) {
+  if (!priceResult || priceResult.items.length === 0) {
     showToast('Could not fetch abroad prices from YATA. Try refreshing.', 'warning');
     tableContainer.innerHTML = `
       <div style="text-align:center;padding:3rem 1rem;font-family:'Syne Mono',monospace;">
@@ -113,6 +113,15 @@ async function startDashboard(playerId) {
       </div>
     `;
     return;
+  }
+
+  const { items, cached, cachedAt } = priceResult;
+
+  // If we fell back to cache, let the user know — the freshness badges on
+  // each row tell the detailed story, but a single banner explains why
+  // nothing is marked "fresh".
+  if (cached) {
+    renderYataOfflineBanner(tableContainer, cachedAt);
   }
 
   // Set items, re-render controls (populates destination dropdown), and render table
@@ -135,6 +144,32 @@ async function startDashboard(playerId) {
   // stalest entries so the user's next "Spin" has fresh data to work with.
   // Fire-and-forget: errors are swallowed inside prescanBazaarPool.
   prescanBazaarPool(playerId);
+}
+
+// ── YATA-offline banner ────────────────────────────────────────
+/**
+ * Render a warning banner above the table explaining that YATA is
+ * unreachable and we're showing cached prices. The banner is inserted
+ * before the table so it scrolls with the content.
+ */
+function renderYataOfflineBanner(tableContainer, cachedAt) {
+  const ageMins = Math.max(1, Math.floor((Date.now() - cachedAt) / 60000));
+  const ageLabel = ageMins < 60
+    ? `${ageMins}m ago`
+    : ageMins < 1440
+      ? `${Math.floor(ageMins / 60)}h ago`
+      : `${Math.floor(ageMins / 1440)}d ago`;
+
+  const banner = document.createElement('div');
+  banner.className = 'yata-offline-banner';
+  banner.innerHTML = `
+    <span class="yata-offline-icon">&#9888;</span>
+    <span class="yata-offline-text">
+      YATA is offline &mdash; showing cached prices from ${ageLabel}.
+      Refresh later for live data.
+    </span>
+  `;
+  tableContainer.parentNode.insertBefore(banner, tableContainer);
 }
 
 // ── Header ─────────────────────────────────────────────────────
