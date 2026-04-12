@@ -53,6 +53,7 @@ export async function callTornApi(params) {
         10: 'Key owner is in federal jail',
         13: 'Key disabled (owner inactive >7 days) — please create a new key',
         16: 'Key access too low — delete your current key on Torn and create a new one with the "Create a Custom Key" link on the login screen',
+        17: 'Torn backend hiccup — scan continues',
       };
       if (critical.includes(code)) {
         // Show once — don't let subsequent failures overwrite this message
@@ -61,7 +62,8 @@ export async function callTornApi(params) {
           showToast(messages[code]);
         }
       } else {
-        showToast(messages[code] || `Torn API error ${code}: ${data.error.error}`);
+        const type = code === 17 ? 'warning' : 'error';
+        showToast(messages[code] || `Torn API error ${code}: ${data.error.error}`, type);
       }
       return null;
     }
