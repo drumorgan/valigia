@@ -6,6 +6,7 @@ import { fetchAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
+import { prescanBazaarPool } from './bazaar-scanner.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel
@@ -77,6 +78,7 @@ async function detectPlayerTravel(playerId) {
 async function startDashboard(playerId) {
   screenContainer.innerHTML = `
     <div id="controls-bar"></div>
+    <div id="best-run-container"></div>
     <div id="table-container"></div>
     <div id="bazaar-container"></div>
   `;
@@ -128,6 +130,11 @@ async function startDashboard(playerId) {
   const bazaarContainer = document.getElementById('bazaar-container');
   renderScanButton(bazaarContainer, playerId);
   renderCommunityStats(bazaarContainer);
+
+  // Silently pre-warm the bazaar pool in the background. Refreshes the few
+  // stalest entries so the user's next "Spin" has fresh data to work with.
+  // Fire-and-forget: errors are swallowed inside prescanBazaarPool.
+  prescanBazaarPool(playerId);
 }
 
 // ── Header ─────────────────────────────────────────────────────

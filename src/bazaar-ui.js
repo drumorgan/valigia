@@ -19,6 +19,45 @@ function bazaarUrl(bazaarOwnerId) {
   return `https://www.torn.com/page.php?sid=bazaar`;
 }
 
+/**
+ * Render a collapsed list of every deal the scanner found this spin,
+ * excluding the already-shown featured deal. Empty string if no extras.
+ */
+function renderRunnersUp(featured, allDeals) {
+  const others = featured
+    ? allDeals.filter(d =>
+        d.itemId !== featured.itemId || d.bazaarOwnerId !== featured.bazaarOwnerId
+      )
+    : allDeals;
+
+  if (others.length === 0) return '';
+
+  const rows = others.slice(0, 10).map(d => `
+    <li class="wof-runners-row">
+      <a href="${bazaarUrl(d.bazaarOwnerId)}" target="_blank" rel="noopener"
+         class="wof-runners-link">
+        <span class="wof-runners-name">${d.itemName}</span>
+        <span class="wof-runners-savings">${formatMoney(d.savings)}</span>
+        <span class="wof-runners-pct">${d.savingsPct.toFixed(0)}%</span>
+      </a>
+    </li>
+  `).join('');
+
+  const moreNote = others.length > 10
+    ? `<div class="wof-runners-more">+${others.length - 10} more</div>`
+    : '';
+
+  return `
+    <details class="wof-runners">
+      <summary class="wof-runners-summary">
+        See all ${others.length + (featured ? 1 : 0)} deals this spin
+      </summary>
+      <ol class="wof-runners-list">${rows}</ol>
+      ${moreNote}
+    </details>
+  `;
+}
+
 // ── Modal ────────────────────────────────────────────────────
 
 function showModal(playerId) {
@@ -84,6 +123,7 @@ async function runScan(playerId) {
   subtextEl.textContent = 'Reading shared pool';
 
   let bestDeal = null;
+  let allDeals = [];
   let stats = null;
 
   try {
@@ -94,6 +134,7 @@ async function runScan(playerId) {
       }
     );
     bestDeal = result.bestDeal;
+    allDeals = result.allDeals || [];
     stats = result.stats;
   } catch (err) {
     // Scan failed — show error state instead of freezing
@@ -144,6 +185,7 @@ async function runScan(playerId) {
         <a href="${bazaarUrl(bestDeal.bazaarOwnerId)}" target="_blank"
            class="wof-deal-link">Go to Bazaar &rarr;</a>
       </div>
+      ${renderRunnersUp(bestDeal, allDeals)}
     `;
   } else {
     resultEl.innerHTML = `
@@ -155,18 +197,20 @@ async function runScan(playerId) {
           Every scan teaches the system new bazaars — try again later!
         </div>
       </div>
+      ${renderRunnersUp(null, allDeals)}
     `;
   }
 
   // Diagnostics (collapsible)
   const diagLines = [
-    `Watchlist: ${stats.resolved}/${stats.watchlistSize} resolved`,
+    `Watchlist: ${stats.resolved}/${stats.watchlistSize} curated + ${stats.dynamicItems || 0} auto-added`,
     `Market prices (from cache): ${stats.marketHits}`,
     `Pool: ${stats.poolHits} items across ${stats.uniqueBazaars || '?'} unique bazaars`,
     `New bazaars discovered: ${stats.discovered} (saved to pool)`,
     `Bazaars checked this spin: ${stats.bazaarsChecked}`,
     `Prices found: ${stats.pricesFound}`,
     `Deals below market: ${stats.dealsFound || 0}`,
+    `Pool hygiene: ${stats.poolMisses || 0} misses (${stats.poolPruned || 0} pruned)`,
     `~${stats.apiCalls + stats.bazaarsChecked} API calls used`,
   ];
   if (stats.unresolved.length > 0) {
