@@ -146,9 +146,11 @@ export function renderControls(container, onChange) {
   ).join('');
 
   const selectedFlight = FLIGHT_TYPES.find(f => f.value === flightType) || FLIGHT_TYPES[0];
-  const selectedDestFlag = filterDestination === 'all'
+  const destIsAll = filterDestination === 'all';
+  const selectedDestDisplay = destIsAll
     ? 'ALL'
     : (getDestinationBadge(filterDestination).flag || filterDestination);
+  const destDisplayClass = destIsAll ? '' : 'select-display--flag';
 
   container.innerHTML = `
     <div class="controls">
@@ -173,7 +175,7 @@ export function renderControls(container, onChange) {
             <option value="all" ${filterDestination === 'all' ? 'selected' : ''}>All destinations</option>
             ${destOptions}
           </select>
-          <span class="select-display" id="ctl-destination-display">${selectedDestFlag}</span>
+          <span class="select-display ${destDisplayClass}" id="ctl-destination-display">${selectedDestDisplay}</span>
         </span>
       </label>
       <div class="control-group filter-chips">
@@ -184,7 +186,7 @@ export function renderControls(container, onChange) {
         <button class="filter-chip ${filterCategory === 'flower' ? 'filter-chip--active' : ''}" data-cat="flower">Flowers</button>
         <button class="filter-chip ${filterCategory === 'artifact' ? 'filter-chip--active' : ''}" data-cat="artifact">Artifacts</button>
       </div>
-      <div class="control-group filter-chips" title="Realistic: clamp slots to arrival-stock forecast and add sell-time to profit/hr. Ideal: assume full slots and instant liquidation.">
+      <div class="control-group filter-chips control-group--right" title="Realistic: clamp slots to arrival-stock forecast and add sell-time to profit/hr. Ideal: assume full slots and instant liquidation.">
         <span class="control-label">Mode</span>
         <button class="filter-chip ${realismMode === 'realistic' ? 'filter-chip--active' : ''}" data-realism="realistic">Realistic</button>
         <button class="filter-chip ${realismMode === 'ideal' ? 'filter-chip--active' : ''}" data-realism="ideal">Ideal</button>
@@ -209,9 +211,11 @@ export function renderControls(container, onChange) {
     filterDestination = e.target.value;
     const disp = container.querySelector('#ctl-destination-display');
     if (disp) {
-      disp.textContent = filterDestination === 'all'
+      const isAll = filterDestination === 'all';
+      disp.textContent = isAll
         ? 'ALL'
         : (getDestinationBadge(filterDestination).flag || filterDestination);
+      disp.classList.toggle('select-display--flag', !isAll);
     }
     persistFilters();
     onChange();

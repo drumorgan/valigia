@@ -284,6 +284,13 @@ body {
   cursor: pointer;
 }
 
+/* Pushes a control group to the far right of the controls row, adding
+   visual separation between logically distinct groups (e.g. Mode vs. the
+   category Type chips beside it). */
+.control-group--right {
+  margin-left: auto;
+}
+
 .control-label {
   color: var(--muted);
   text-transform: uppercase;
@@ -368,8 +375,9 @@ body {
   white-space: nowrap;
 }
 
-/* Flag display renders a bit larger so the single emoji is legible. */
-.select--flag + .select-display {
+/* When the display is actually a flag emoji, bump the size so the glyph is
+   legible. Plain text values like "ALL" keep the normal control font. */
+.select-display--flag {
   font-size: 1rem;
   left: 0.4rem;
 }
