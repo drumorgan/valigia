@@ -12,6 +12,25 @@
 
 import { supabase } from './supabase.js';
 
+// Track whether we've already surfaced a snapshot-write error this session.
+// Supabase rejects every insert for the same reason (e.g. RLS), so one toast
+// is enough — we don't want to spam on every reload.
+let snapshotErrorReported = false;
+
+// Dynamic import dodges the circular dependency between this module and
+// ui.js (ui.js imports forecastStock). At runtime the module graph has
+// already settled by the time we actually need to show a toast.
+async function reportSnapshotError(message) {
+  if (snapshotErrorReported) return;
+  snapshotErrorReported = true;
+  try {
+    const { showToast } = await import('./ui.js');
+    showToast(message, 'error');
+  } catch {
+    // If even the toast module won't load, give up silently — we tried.
+  }
+}
+
 // How far back to look when estimating depletion. Beyond this, samples are
 // too old to reflect the current rate of play.
 const HISTORY_WINDOW_MINS = 240; // 4 h
@@ -54,10 +73,18 @@ export async function recordSnapshots(items) {
 
   if (rows.length === 0) return;
 
+  // Supabase-js v2 does NOT throw on write errors — it returns an `error`
+  // object. A bare try/catch around .insert() was catching nothing, which
+  // hid a silent RLS/permission failure during initial rollout. Surface
+  // the real Postgres message to the user once per session so the UI is
+  // an honest diagnostic surface (we're iPad-only, no DevTools).
   try {
-    await supabase.from('yata_snapshots').insert(rows);
-  } catch {
-    // Non-fatal — history will just be one sample shorter.
+    const { error } = await supabase.from('yata_snapshots').insert(rows);
+    if (error) {
+      reportSnapshotError(`Stock history write failed: ${error.message}`);
+    }
+  } catch (e) {
+    reportSnapshotError(`Stock history write threw: ${e?.message || e}`);
   }
 
   // Prune old rows so the table stays bounded. Cheap enough to run every
@@ -65,6 +92,8 @@ export async function recordSnapshots(items) {
   try {
     const cutoff = new Date(Date.now() - PRUNE_OLDER_THAN_MINS * 60_000).toISOString();
     await supabase.from('yata_snapshots').delete().lt('snapped_at', cutoff);
+    // Deliberately do NOT surface delete errors — a failed prune is not
+    // user-visible and the table self-heals on the next successful prune.
   } catch {
     // Non-fatal — table grows a little.
   }
@@ -97,7 +126,11 @@ export async function loadForecastData(items) {
       .gte('snapped_at', cutoff)
       .order('snapped_at', { ascending: true });
 
-    if (error || !Array.isArray(data)) return false;
+    if (error) {
+      reportSnapshotError(`Stock history read failed: ${error.message}`);
+      return false;
+    }
+    if (!Array.isArray(data)) return false;
 
     for (const row of data) {
       const key = cacheKey(row.item_id, row.destination);
