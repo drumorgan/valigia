@@ -141,7 +141,7 @@ async function runScan(playerId) {
             <span class="wof-price-value wof-price--savings">${formatMoney(bestDeal.savings)}</span>
           </div>
         </div>
-        <a href="${bazaarUrl(bestDeal.bazaarOwnerId)}" target="_blank" rel="noopener"
+        <a href="${bazaarUrl(bestDeal.bazaarOwnerId)}"
            class="wof-deal-link">Go to Bazaar &rarr;</a>
       </div>
     `;
@@ -163,10 +163,9 @@ async function runScan(playerId) {
     `Watchlist: ${stats.resolved}/${stats.watchlistSize} resolved`,
     `Market prices (from cache): ${stats.marketHits}`,
     `Pool: ${stats.poolHits} items across ${stats.uniqueBazaars || '?'} unique bazaars`,
-    `New bazaars discovered: ${stats.discovered}`,
-    `Prices harvested from discovery: ${stats.harvested || 0}`,
+    `New bazaars discovered: ${stats.discovered} (saved to pool)`,
     `Bazaars checked this spin: ${stats.bazaarsChecked}`,
-    `Prices found from checks: ${stats.pricesFound}`,
+    `Prices found: ${stats.pricesFound}`,
     `Deals below market: ${stats.dealsFound || 0}`,
     `~${stats.apiCalls + stats.bazaarsChecked} API calls used`,
   ];
