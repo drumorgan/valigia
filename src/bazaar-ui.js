@@ -274,18 +274,24 @@ export function renderScanButton(container, playerId) {
  */
 async function refreshStats() {
   try {
-    const [statsRes, countRes] = await Promise.all([
+    const [statsRes, countRes, bazaarRes] = await Promise.all([
       supabase.from('community_stats').select('total_spins').eq('id', 1).single(),
       supabase.rpc('get_player_count'),
+      supabase.from('bazaar_prices').select('bazaar_owner_id'),
     ]);
 
     const spinsEl = document.getElementById('cs-spins');
     const usersEl = document.getElementById('cs-users');
+    const bazaarsEl = document.getElementById('cs-bazaars');
     if (statsRes.data && spinsEl) {
       spinsEl.textContent = statsRes.data.total_spins.toLocaleString();
     }
     if (countRes.data != null && usersEl) {
       usersEl.textContent = countRes.data.toLocaleString();
+    }
+    if (bazaarRes.data && bazaarsEl) {
+      const unique = new Set(bazaarRes.data.map(r => r.bazaar_owner_id));
+      bazaarsEl.textContent = unique.size.toLocaleString();
     }
   } catch {
     // Stats not available — leave as-is
@@ -309,6 +315,11 @@ export async function renderCommunityStats(container) {
       <div class="cs-counter">
         <span class="cs-value" id="cs-users">--</span>
         <span class="cs-label">players</span>
+      </div>
+      <div class="cs-divider"></div>
+      <div class="cs-counter">
+        <span class="cs-value" id="cs-bazaars">--</span>
+        <span class="cs-label">bazaars known</span>
       </div>
     </div>
     <div class="cs-cta">
