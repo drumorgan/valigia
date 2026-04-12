@@ -6,10 +6,11 @@ import { fetchAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
-import { prescanBazaarPool } from './bazaar-scanner.js';
+import { prescanBazaarPool, findBestBazaarRun } from './bazaar-scanner.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
-  setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel
+  setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
+  setBestBazaarRun
 } from './ui.js';
 
 const screenContainer = document.getElementById('screen-container');
@@ -131,10 +132,14 @@ async function startDashboard(playerId) {
   renderScanButton(bazaarContainer, playerId);
   renderCommunityStats(bazaarContainer);
 
-  // Silently pre-warm the bazaar pool in the background. Refreshes the few
-  // stalest entries so the user's next "Spin" has fresh data to work with.
-  // Fire-and-forget: errors are swallowed inside prescanBazaarPool.
-  prescanBazaarPool(playerId);
+  // Silently pre-warm the bazaar pool in the background, THEN try to find
+  // a verified bazaar deal good enough to claim the "Best Run Right Now"
+  // slot. Running sequentially (not parallel) means the best-run search
+  // sees the freshest pool data that the pre-scan just wrote.
+  // Fire-and-forget: errors are swallowed inside both functions.
+  prescanBazaarPool(playerId).then(() => findBestBazaarRun(playerId)).then(deal => {
+    if (deal) setBestBazaarRun(deal);
+  });
 }
 
 // ── Header ─────────────────────────────────────────────────────

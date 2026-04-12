@@ -34,6 +34,12 @@ const PRESCAN_CHECK_BUDGET = 8; // quiet background scan: just a handful of stal
 const DYNAMIC_WATCHLIST_MIN_PRICE = 50000;  // items above this sell price auto-join the watchlist
 const DYNAMIC_WATCHLIST_CAP = 150;          // max extra items pulled from sell_prices
 
+// Best-run bazaar candidate tunables
+const BEST_RUN_FRESH_MS = 10 * 60 * 1000;  // only consider bazaar entries checked in the last 10 min
+const BEST_RUN_MAX_VERIFY = 3;             // max fresh market-price verifications per dashboard load
+const BEST_RUN_MAX_SAVINGS_PCT = 90;       // skip "too good to be true" deals (locked/troll listings)
+const BEST_RUN_MIN_SAVINGS = 10000;        // don't bother surfacing sub-$10K absolute-savings deals
+
 /**
  * Resolve watchlist item names to IDs using cached item catalog.
  */
@@ -757,5 +763,154 @@ export async function prescanBazaarPool(playerId) {
     return { refreshed: toCheck.length };
   } catch {
     return { refreshed: 0 };
+  }
+}
+
+/**
+ * Find the single best currently-actionable bazaar deal, verified with a
+ * fresh market-price check. Designed to feed the "Best Run Right Now"
+ * summary card: this is the one bazaar listing worth acting on right now.
+ *
+ * Returns null if nothing in the pool is fresh enough, or if every
+ * candidate evaporates on verification. Up to BEST_RUN_MAX_VERIFY Torn API
+ * calls (one per candidate).
+ *
+ * Why this is trustworthy:
+ *  - Only considers pool entries checked within BEST_RUN_FRESH_MS (10 min).
+ *    Recently-refreshed entries come from this page load's prescan or from
+ *    a recent user spin — they reflect the current state of the bazaar.
+ *  - Re-fetches the market price at verification time so the savings math
+ *    doesn't rely on a stale sell_prices row.
+ *  - Skips deals with savings% > 90 (locked/troll listings).
+ *
+ * @param {number} playerId
+ * @returns {Promise<object|null>} verified deal or null
+ *   { itemId, itemName, bazaarPrice, bazaarQty, bazaarOwnerId,
+ *     marketPrice, savings, savingsPct, verifiedAt }
+ */
+export async function findBestBazaarRun(playerId) {
+  try {
+    const freshSince = new Date(Date.now() - BEST_RUN_FRESH_MS).toISOString();
+
+    // Read only fresh, priced pool entries. No point considering stale
+    // entries for a "right now" recommendation.
+    const { data: poolRows, error: poolErr } = await supabase
+      .from('bazaar_prices')
+      .select('item_id, bazaar_owner_id, price, quantity, checked_at')
+      .not('price', 'is', null)
+      .gte('checked_at', freshSince);
+
+    if (poolErr || !poolRows || poolRows.length === 0) return null;
+
+    // Pull market prices for the same items from sell_prices cache.
+    const itemIds = [...new Set(poolRows.map(r => r.item_id))];
+    const { data: marketRows } = await supabase
+      .from('sell_prices')
+      .select('item_id, price')
+      .in('item_id', itemIds)
+      .not('price', 'is', null);
+
+    if (!marketRows || marketRows.length === 0) return null;
+
+    const marketPrices = new Map();
+    for (const row of marketRows) marketPrices.set(row.item_id, row.price);
+
+    // Resolve item IDs back to names for display.
+    const cached = localStorage.getItem('valigia_item_id_map');
+    const idToName = {};
+    if (cached) {
+      try {
+        const nameToId = JSON.parse(cached);
+        for (const [name, id] of Object.entries(nameToId)) idToName[id] = name;
+      } catch { /* fall through */ }
+    }
+
+    // Keep the cheapest listing per item (one best deal per item is enough).
+    const bestPerItem = new Map();
+    for (const row of poolRows) {
+      const existing = bestPerItem.get(row.item_id);
+      if (!existing || row.price < existing.price) {
+        bestPerItem.set(row.item_id, row);
+      }
+    }
+
+    // Compute savings for each item and sort by absolute savings desc.
+    const candidates = [];
+    for (const [itemId, row] of bestPerItem) {
+      const marketPrice = marketPrices.get(itemId);
+      if (!marketPrice) continue;
+      const netSell = marketPrice * 0.95; // 5% item market fee
+      const savingsPerUnit = netSell - row.price;
+      if (savingsPerUnit <= 0) continue;
+      const savingsPct = (savingsPerUnit / marketPrice) * 100;
+      if (savingsPct > BEST_RUN_MAX_SAVINGS_PCT) continue;
+      const absoluteSavings = savingsPerUnit * (row.quantity || 1);
+      if (absoluteSavings < BEST_RUN_MIN_SAVINGS) continue;
+
+      candidates.push({
+        itemId,
+        itemName: idToName[itemId] || `Item ${itemId}`,
+        bazaarPrice: row.price,
+        bazaarQty: row.quantity || 1,
+        bazaarOwnerId: row.bazaar_owner_id,
+        marketPrice, // cached — will be replaced by fresh value on verify
+        savingsPerUnit,
+        absoluteSavings,
+      });
+    }
+
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => b.absoluteSavings - a.absoluteSavings);
+
+    // Verify top candidates with a fresh market-price fetch. First one that
+    // still holds up wins. Budget is capped so a bad pool doesn't burn many
+    // API calls.
+    const batch = candidates.slice(0, BEST_RUN_MAX_VERIFY);
+    for (const c of batch) {
+      const freshMarket = await callTornApi({
+        section: 'market',
+        id: c.itemId,
+        selections: 'itemmarket',
+        player_id: playerId,
+        v2: true,
+      });
+      if (!freshMarket?.itemmarket) continue;
+
+      const listings = freshMarket.itemmarket?.listings || freshMarket.itemmarket;
+      const freshPrice = Array.isArray(listings) && listings.length > 0
+        ? (listings[0].cost || listings[0].price)
+        : null;
+      if (!freshPrice) continue;
+
+      // Write fresh price back — benefits the travel table too.
+      try {
+        await supabase.from('sell_prices').upsert(
+          { item_id: c.itemId, price: freshPrice, updated_at: new Date().toISOString() },
+          { onConflict: 'item_id' }
+        );
+      } catch { /* non-fatal */ }
+
+      const netSell = freshPrice * 0.95;
+      const savings = netSell - c.bazaarPrice;
+      const savingsPct = freshPrice > 0 ? (savings / freshPrice) * 100 : 0;
+      if (savings <= 0) continue;
+      if (savingsPct > BEST_RUN_MAX_SAVINGS_PCT) continue;
+
+      return {
+        itemId: c.itemId,
+        itemName: c.itemName,
+        bazaarPrice: c.bazaarPrice,
+        bazaarQty: c.bazaarQty,
+        bazaarOwnerId: c.bazaarOwnerId,
+        marketPrice: freshPrice,
+        savings,       // per-unit savings AFTER 5% market fee
+        savingsPct,
+        verifiedAt: Date.now(),
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }

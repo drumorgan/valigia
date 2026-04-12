@@ -603,6 +603,35 @@ tr.row--negative td {
   filter: brightness(1.1);
 }
 
+/* Bazaar variant — distinct accent to signal "verified live listing, act fast" */
+.best-run-card--bazaar {
+  border-color: var(--positive);
+  background: linear-gradient(135deg, var(--surface) 0%, rgba(74, 232, 160, 0.1) 100%);
+}
+
+.best-run-card--bazaar .best-run-label {
+  color: var(--positive);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.best-run-badge {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  background: var(--positive);
+  color: var(--bg);
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.best-run-cta--bazaar {
+  background: var(--positive);
+}
+
 /* ── Shimmer ─────────────────────────────────────────────────── */
 
 .shimmer-cell {
