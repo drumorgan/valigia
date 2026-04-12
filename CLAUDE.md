@@ -1,6 +1,11 @@
 # Valigia — Torn City Travel Arbitrage Tool
 
-## Claude Code Kickoff Document
+## Claude Code Working Document
+
+This doc reflects the app as it actually exists today (April 2026), not the
+original kickoff spec. For the pre-rewrite scaffolding history, see the
+`archive/pre-rewrite-scaffold` branch on GitHub (do not merge — it predates
+the current app entirely).
 
 -----
 
@@ -11,14 +16,18 @@
   Do not leave changes sitting on a feature branch or ask the user to
   manually create/merge PRs.
 - **Use MCP tools** (`mcp__github__create_pull_request` and
-  `mcp__github__merge_pull_request`) if available. Fall back to the GitHub
-  REST API via `curl` against
+  `mcp__github__merge_pull_request`) — these are loaded in current sessions.
+  Fall back to the GitHub REST API via `curl` against
   `https://api.github.com/repos/drumorgan/valigia` with `GITHUB_TOKEN`
-  only if MCP tools are not loaded in the current session.
+  only if MCP tools are not available.
 - **Never forget the PR step**: Every task that changes code MUST end with:
   commit → push → create PR → merge PR. This is not optional.
 - Merging to `main` triggers GitHub Actions → FTP deploy. Skipping the
   merge step means changes never reach the live site.
+- **Exception — archive branches.** Any branch matching `archive/*` is
+  historical-only and MUST NOT be PR'd or merged to `main`. The
+  PostToolUse push-reminder hook applies to feature branches only —
+  ignore it for archive pushes and note why in your response.
 - **Supabase migrations**: After merging SQL migration files, remind the
   user to run the SQL manually in the Supabase Dashboard SQL Editor, since
   migrations are not auto-applied.
@@ -27,50 +36,31 @@
 
 ## What This App Does
 
-Valigia is a travel arbitrage calculator for Torn City. Players enter their
-Torn API key, and the app:
+Valigia is a travel arbitrage calculator for Torn City. Players log in with
+their Torn API key (encrypted server-side, never in the browser after
+login), and the app:
 
-1. Silently reads their recent abroad purchase log to crowd-source real buy
-   prices into Supabase
-1. Fetches live item market sell prices from the Torn API
+1. Pulls live abroad buy prices from the **YATA community API** (no key
+   needed, community-sourced)
+1. Uses a **shared Supabase cache** of item market sell prices, topped off
+   on each visit from the Torn API
 1. Ranks every abroad item by profit margin and profit/hour
-1. Shows a clean, up-to-the-minute leaderboard of best runs
-
-No manual input required. The crowd-sourced price table self-updates every
-time any user opens the app after a trip.
-
------
-
-## Supabase Setup — New Project
-
-Create a brand new Supabase project for this app. Do not reuse Happy Jump
-or Tornder credentials.
-
-After creating the project, add to `.env`:
-
-```
-VITE_SUPABASE_URL=https://[new-project].supabase.co
-VITE_SUPABASE_ANON_KEY=[new-anon-key]
-```
-
-The Edge Function needs its own secrets set in the Supabase dashboard under
-Project Settings → Edge Functions → Secrets:
-
-```
-SUPABASE_URL=https://[new-project].supabase.co
-SUPABASE_SERVICE_ROLE_KEY=[service-role-key]
-```
-
-Run the `abroad_prices` table SQL (below) in the new project’s SQL editor
-before first deploy.
+1. Maintains a **crowd-sourced bazaar pool** in Supabase so every user's
+   scans contribute to discovering underpriced bazaar listings for everyone
+1. Surfaces the single best current action ("Best Run Right Now") —
+   travel run OR verified bazaar deal, whichever has higher profit/hr
 
 -----
 
 ## Tech Stack
 
 - **Vanilla JS ES modules + Vite** — no React, no Vue
-- **Supabase** — crowd-sourced abroad prices table + RLS
-- **Supabase Edge Function** — Torn API proxy
+- **Supabase** — encrypted API keys, shared sell-price cache, bazaar pool,
+  community stats
+- **Supabase Edge Functions** — `torn-proxy` (API proxy), `set-api-key`
+  (encrypt + store), `auto-login` (decrypt for session)
+- **YATA API** (`yata.yt`) — abroad buy prices, fetched directly from the
+  browser (no CORS issues)
 - **GitHub Actions → FTP → InMotion cPanel** — same deploy pipeline as all
   GiroVagabondo apps
 - **Hosted at:** `valigia.girovagabondo.com`
@@ -82,23 +72,45 @@ before first deploy.
 - **iPad only — no browser DevTools.** All errors must surface via
   `showToast()` or visible `<details>` elements. Never `console.log` only.
 - **No React.** Vanilla JS only.
-- **All Torn API calls go through the Edge Function.** CORS blocks direct
-  browser fetch to the Torn API.
-- **API key stored in `localStorage`.** Never sent to Supabase, never logged,
-  never stored anywhere server-side.
+- **All Torn API calls go through the `torn-proxy` Edge Function.** CORS
+  blocks direct browser fetch to the Torn API.
+- **API key never in `localStorage` after login.** The raw key flows:
+  `user enters key` → `set-api-key` edge function encrypts (AES-256-GCM)
+  and stores in `player_secrets` → browser keeps only `player_id`. On
+  subsequent calls, `auto-login` decrypts server-side for the session.
+
+-----
+
+## Supabase Schema — Current
+
+All migrations live in `supabase/migrations/` (run manually in the SQL
+editor; Supabase does not auto-apply them).
+
+| Table | Purpose |
+|---|---|
+| `player_secrets` | AES-256-GCM encrypted API keys. Service-role-only. |
+| `sell_prices` | Shared cache of item market sell prices (item_id PK). |
+| `bazaar_prices` | Crowd-sourced bazaar pool (item_id + bazaar_owner_id composite key, with `miss_count` for pool hygiene). |
+| `community_stats` | Single-row spin counter. |
+
+**RPC functions** (granted to anon + authenticated):
+- `record_scan(found_deal boolean)` — atomic increment after each scan
+- `get_player_count()` — live player count from `player_secrets`
+
+**Dropped (do not recreate):**
+- `abroad_prices` — replaced by YATA community API
+- `secret_audit_log` — was write-only, never read
 
 -----
 
 ## Torn API — Key Details
 
 **Base URL:** `https://api.torn.com`
-**CORS:** Blocked for direct browser fetch. All calls must go through the
-`torn-proxy` Edge Function.
+**CORS:** Blocked for direct browser fetch — route everything through
+`torn-proxy`.
 **Rate limit:** 100 req/min per key.
 
-**Error handling:** Always check `data.error` on every response. Key codes
-to handle explicitly:
-
+**Error handling:** Always check `data.error`. Key codes to handle:
 - `2` — Invalid key
 - `5` — Too many requests
 - `10` — Owner in federal jail
@@ -107,224 +119,22 @@ to handle explicitly:
 
 ### Calls This App Makes
 
-**1. User identity (on key entry)**
+1. **User identity** — `user/?selections=basic` — validates key, returns
+   `player_id`, `name`, `level`.
+1. **User perks** — `user/?selections=perks` — auto-detects travel slot
+   count and airstrip. Silently no-ops if the key lacks perks permission.
+1. **Item catalog** — `torn/?selections=items` — one-time resolution of
+   item names → IDs via `item-resolver.js`. Cached in `localStorage`.
+1. **Item market sell price** — `market/{itemId}?selections=itemmarket` —
+   parallel fetches for stale items in `sell_prices`, stale-first ordering.
+1. **Bazaar discovery** — `market/{itemId}?selections=bazaar` (v2) — finds
+   new bazaar owners stocking a given item.
+1. **Bazaar check** — `user/{bazaarId}?selections=bazaar` (v1) — reads an
+   actual bazaar's listings + prices.
 
-```
-user/?selections=basic&key={userKey}
-```
-
-Returns `player_id`, `name`, `level`. Confirms key is valid and shows the
-player their identity before the app proceeds.
-
-**2. Abroad purchase log (log type 6501)**
-
-```
-user/?selections=log&log=6501&from={unix24hrsAgo}&key={userKey}
-```
-
-Returns abroad purchase entries for the last 24 hours. Used to silently
-upsert crowd-sourced buy prices into Supabase. `from=` is Unix timestamp
-in seconds.
-
-Log entry shape:
-
-```json
-{
-  "123456": {
-    "log": 6501,
-    "title": "Bought a African Violet from South Africa",
-    "timestamp": 1743200000,
-    "category": "Travel",
-    "data": {
-      "item": "African Violet",
-      "quantity": 29,
-      "cost": 2000
-    }
-  }
-}
-```
-
-- `data.item` is the item **name string**, not an ID
-- `data.cost` is the **unit price**, not total
-- Country is extracted from `title` via: `/from (.+)$/i`
-
-**3. Live item market sell price (one call per item)**
-
-```
-market/{itemId}?selections=itemmarket&key={userKey}
-```
-
-Returns current listings. Use `listings[0].cost` as the current lowest ask.
-Run all ~25-30 of these in parallel with `Promise.allSettled()`. Handle
-rejected/empty cases gracefully — show “no listings” in the UI rather than
-crashing.
-
------
-
-## Edge Function: `torn-proxy`
-
-```typescript
-// supabase/functions/torn-proxy/index.ts
-import { serve } from 'https://deno.land/std/http/server.ts'
-
-serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, content-type',
-      }
-    });
-  }
-
-  const { section, id, selections, key, log, from } = await req.json();
-  const idSegment = id ? `/${id}` : '';
-  let url = `https://api.torn.com/${section}${idSegment}?selections=${selections}&key=${key}`;
-  if (log) url += `&log=${log}`;
-  if (from) url += `&from=${from}`;
-
-  const tornRes = await fetch(url);
-  const data = await tornRes.json();
-
-  return new Response(JSON.stringify(data), {
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    }
-  });
-});
-```
-
-Client calls it like:
-
-```js
-const res = await fetch(`${SUPABASE_URL}/functions/v1/torn-proxy`, {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
-  },
-  body: JSON.stringify({
-    section: 'user',
-    selections: 'log',
-    key: userApiKey,
-    log: 6501,
-    from: Math.floor((Date.now() - 86400000) / 1000)
-  })
-});
-const data = await res.json();
-if (data.error) { showToast(`Torn API error ${data.error.code}`); return; }
-```
-
------
-
-## Supabase Schema
-
-Run this in the new project’s SQL editor before first deploy:
-
-```sql
-create table abroad_prices (
-  id           uuid primary key default gen_random_uuid(),
-  item_name    text not null,
-  item_id      integer not null,
-  destination  text not null,
-  buy_price    integer not null,
-  reported_at  timestamptz not null,
-  torn_id      integer,
-  unique (item_id, destination)
-);
-
--- Public read
-create policy "Anyone can read abroad prices"
-  on abroad_prices for select
-  using (true);
-
--- Public insert/upsert
-create policy "Anyone can upsert abroad prices"
-  on abroad_prices for insert
-  with check (true);
-
-create policy "Anyone can update abroad prices"
-  on abroad_prices for update
-  using (true);
-
-alter table abroad_prices enable row level security;
-```
-
-Upsert target is `(item_id, destination)`. On conflict, update `buy_price`
-and `reported_at`.
-
------
-
-## Static Data: `src/data/abroad-items.js`
-
-**Before first meaningful test run, fill in all `null` item IDs.**
-Call `torn/?selections=items&key=YOUR_KEY`, dump the result, and map item
-names to IDs. Confirmed IDs: Xanax = 206, LSD = 197.
-
-African Violet appears in both UAE and South Africa — same item, different
-destination. The title regex is the source of truth for country on log parse.
-
-Xanax appears in both Japan and South Africa — same item ID (206). The
-`abroad_prices` table distinguishes by `destination` column.
-
-```js
-export const ABROAD_ITEMS = [
-  // ── SOUTH AFRICA (5h 11m / 3h 37m with airstrip) ──
-  { itemId: 206,  name: "Xanax",          destination: "South Africa", buyPriceFallback: 750000, flightMins: 311, type: "drug"    },
-  { itemId: 197,  name: "LSD",            destination: "South Africa", buyPriceFallback: 35000,  flightMins: 311, type: "drug"    },
-  { itemId: null, name: "Smoke Grenade",  destination: "South Africa", buyPriceFallback: 20000,  flightMins: 311, type: "drug"    },
-  { itemId: null, name: "Elephant",       destination: "South Africa", buyPriceFallback: 500,    flightMins: 311, type: "plushie" },
-  { itemId: null, name: "African Violet", destination: "South Africa", buyPriceFallback: 2000,   flightMins: 311, type: "flower"  },
-
-  // ── UAE (4h 19m / 3h 1m with airstrip) ──
-  { itemId: null, name: "Camel",          destination: "UAE",          buyPriceFallback: 3000,   flightMins: 259, type: "plushie" },
-  { itemId: null, name: "Lion",           destination: "UAE",          buyPriceFallback: 4000,   flightMins: 259, type: "plushie" },
-  { itemId: null, name: "African Violet", destination: "UAE",          buyPriceFallback: 2000,   flightMins: 259, type: "flower"  },
-
-  // ── CHINA (3h 39m / 2h 33m with airstrip) ──
-  { itemId: null, name: "Panda",          destination: "China",        buyPriceFallback: 2500,   flightMins: 219, type: "plushie" },
-  { itemId: null, name: "Peony",          destination: "China",        buyPriceFallback: 1000,   flightMins: 219, type: "flower"  },
-  { itemId: null, name: "Ecstasy",        destination: "China",        buyPriceFallback: 45000,  flightMins: 219, type: "drug"    },
-
-  // ── JAPAN (3h 23m / 2h 22m with airstrip) ──
-  { itemId: null, name: "Koi Carp",       destination: "Japan",        buyPriceFallback: 3500,   flightMins: 203, type: "plushie" },
-  { itemId: null, name: "Cherry Blossom", destination: "Japan",        buyPriceFallback: 800,    flightMins: 203, type: "flower"  },
-  { itemId: 206,  name: "Xanax",          destination: "Japan",        buyPriceFallback: 750000, flightMins: 203, type: "drug"    },
-
-  // ── ARGENTINA (3h 9m / 2h 13m with airstrip) ──
-  { itemId: null, name: "Monkey",         destination: "Argentina",    buyPriceFallback: 400,    flightMins: 189, type: "plushie" },
-  { itemId: null, name: "Ceibo Flower",   destination: "Argentina",    buyPriceFallback: 600,    flightMins: 189, type: "flower"  },
-  { itemId: null, name: "Tear Gas",       destination: "Argentina",    buyPriceFallback: 15000,  flightMins: 189, type: "temp"    },
-
-  // ── SWITZERLAND (2h 49m / 1h 58m with airstrip) ──
-  { itemId: null, name: "Flash Grenade",  destination: "Switzerland",  buyPriceFallback: 12000,  flightMins: 169, type: "temp"    },
-
-  // ── UK (2h 32m / 1h 47m with airstrip) ──
-  { itemId: null, name: "Nessie",         destination: "UK",           buyPriceFallback: 3000,   flightMins: 152, type: "plushie" },
-  { itemId: null, name: "Peony",          destination: "UK",           buyPriceFallback: 1000,   flightMins: 152, type: "flower"  },
-
-  // ── HAWAII (2h 1m / 1h 25m with airstrip) ──
-  { itemId: null, name: "Orchid",         destination: "Hawaii",       buyPriceFallback: 800,    flightMins: 121, type: "flower"  },
-
-  // ── CAYMAN ISLANDS (57m / 40m with airstrip) ──
-  { itemId: null, name: "Stingray",       destination: "Caymans",      buyPriceFallback: 2000,   flightMins: 57,  type: "plushie" },
-  { itemId: null, name: "Orchid",         destination: "Caymans",      buyPriceFallback: 800,    flightMins: 57,  type: "flower"  },
-
-  // ── CANADA (37m / 26m with airstrip) ──
-  { itemId: null, name: "Wolverine",      destination: "Canada",       buyPriceFallback: 1500,   flightMins: 37,  type: "plushie" },
-  { itemId: null, name: "Trillium",       destination: "Canada",       buyPriceFallback: 600,    flightMins: 37,  type: "flower"  },
-
-  // ── MEXICO (20m / 14m with airstrip) ──
-  { itemId: null, name: "Jaguar",         destination: "Mexico",       buyPriceFallback: 1200,   flightMins: 20,  type: "plushie" },
-  { itemId: null, name: "Dahlia",         destination: "Mexico",       buyPriceFallback: 500,    flightMins: 20,  type: "flower"  },
-];
-
-// Lookup by lowercase name — used when parsing log entries (data.item is a name string)
-export const ABROAD_ITEM_BY_NAME = Object.fromEntries(
-  ABROAD_ITEMS.map(item => [item.name.toLowerCase(), item])
-);
-```
+YATA abroad prices are fetched directly from `yata.yt/api/v1/travel/export/`
+in `src/log-sync.js` (filename is legacy — it's the YATA fetcher now, not
+Torn log sync).
 
 -----
 
@@ -332,54 +142,74 @@ export const ABROAD_ITEM_BY_NAME = Object.fromEntries(
 
 ### On Load
 
-1. Check `localStorage` for `valigia_api_key`
-1. If found: call `user/?selections=basic` to verify — show player name
-   in header on success, show key entry screen on error
-1. If not found: show key entry screen
+1. `auto-login` edge function attempts key decrypt from `player_secrets`
+   using stored `player_id`.
+1. If success: show dashboard. If fail: show login screen for key entry.
 
-### After Key Confirmed
+### After Login (dashboard)
 
-Run both of these concurrently with `Promise.all`:
+1. **Resolve item IDs** — `item-resolver.js` ensures every `ABROAD_ITEMS`
+   entry has a real ID (cached in `localStorage`, one Torn API call per
+   browser).
+1. **In parallel:** fetch YATA abroad prices AND detect player travel
+   perks from Torn API.
+1. **Render shimmer → table** — once YATA prices arrive, render the full
+   table with fallback sell prices; rows fill in as live prices resolve.
+1. **Top off `sell_prices` cache** — `market.js` picks stale items
+   (cached price desc, ~15/visit), fetches fresh market prices in
+   parallel via `Promise.allSettled`, writes back to Supabase for
+   everyone. Each row updates individually as prices resolve.
+1. **Bazaar pre-scan (background)** — `prescanBazaarPool(playerId)` runs
+   a small refresh of the bazaar pool (~8 API calls), then
+   `findBestBazaarRun(playerId)` picks the best verified deal.
+1. **"Best Run Right Now" card** — compares the top travel run against
+   the verified bazaar deal by profit/hr and displays whichever wins
+   (green accent for bazaar, gold for travel).
 
-**Background (silent — no UI feedback unless error):**
+### Bazaar Scan (on-demand via scan button)
 
-- Fetch log type 6501 for last 24h
-- For each entry: extract item name, unit cost, country from title regex
-- Look up item in `ABROAD_ITEM_BY_NAME` — skip if not found
-- Upsert to Supabase `abroad_prices`
+See `src/bazaar-scanner.js` for the full flow. Four phases:
 
-**Foreground:**
+1. **FREE** — read `sell_prices` and known bazaar sources from Supabase.
+1. **DISCOVER** (~8 API calls) — rank items by `(marketPrice / (sourceCount + 1))`
+   with jitter, call v2 `market/{id}/bazaar` to find new bazaar owners.
+1. **CHECK** (~25 API calls) — check bazaars (least-recently-checked
+   first), v1 `user/{id}/bazaar` for actual prices.
+1. **WRITE BACK** — upsert hits (resets `miss_count`), increment
+   `miss_count` on misses, prune at `MAX_MISS_COUNT = 3`.
 
-- Read `abroad_prices` from Supabase for all known items
-- Fetch live sell price from `market/{itemId}?selections=itemmarket` for
-  all items in parallel via `Promise.allSettled()`
-- As each sell price resolves, render/update that row immediately — do not
-  wait for all to finish before showing anything
+Dynamic watchlist extension: any item in `sell_prices` with price ≥
+`$50K` auto-joins the watchlist (capped at 150). Deal selection uses
+weighted random on `savings × savingsPct`.
 
-### Price Selection Logic (per item)
+### Price Selection Logic
 
-```
-if (supabase price exists AND reported_at within 4h)             → use it, show "reported X min ago"
-if (supabase price exists AND reported_at within 2h, drug/contraband) → use it, show "reported X min ago"
-else                                                              → use buyPriceFallback, show "⚠ est." badge
-```
-
-Drugs and contraband get the tighter 2-hour staleness window because their
-abroad prices fluctuate faster than plushies/flowers.
+- **Buy prices** — live from YATA on every page load. No staleness logic
+  because YATA updates frequently and we re-fetch every visit.
+- **Sell prices** — use Supabase cache. Price is considered "fresh" if
+  `updated_at` is recent; stale items go to the top of the refresh
+  queue each visit.
+- **Bazaar pool** — only pool entries with `checked_at` within the last
+  10 minutes are eligible for "Best Run Right Now" candidacy, and the
+  winner is re-verified with a fresh market fetch before claiming the
+  card.
 
 ### Margin Calculations
 
 ```
-net_sell        = sell_price * 0.95          // 5% item market fee
-margin_per_item = net_sell - buy_price
-margin_pct      = (margin_per_item / buy_price) * 100
-profit_per_run  = margin_per_item * slot_count
-round_trip_mins = flightMins * 2             // halve flightMins if airstrip checked
-profit_per_hour = (profit_per_run / round_trip_mins) * 60
+net_sell         = sell_price * 0.95           // 5% item market fee
+margin_per_item  = net_sell - buy_price
+margin_pct       = (margin_per_item / buy_price) * 100
+effective_slots  = min(slot_count, yata_stock) // stock-limited flag if clamped
+run_cost         = buy_price * effective_slots
+profit_per_run   = margin_per_item * effective_slots
+round_trip_mins  = flightMins * 2              // halve flightMins if airstrip
+profit_per_hour  = (profit_per_run / round_trip_mins) * 60
 ```
 
-Skip rendering items where `itemId` is still null. Show items where
-`margin_per_item <= 0` greyed-out at the bottom rather than hiding them.
+Bazaar profit/hr uses a nominal 5-minute transaction time, letting
+time-limited bazaar deals correctly dominate multi-hour travel runs
+when the savings warrant it.
 
 -----
 
@@ -387,13 +217,19 @@ Skip rendering items where `itemId` is still null. Show items where
 
 All persisted in `localStorage`:
 
-- **Slot count** — number input, default 29, min 5, max 44
-- **Has airstrip** — checkbox, default false. When checked, halves all
-  `flightMins` values before calculation
-- **Sort** — select: Profit/Hour (default) | Profit/Run | Margin %
+- **Slot count** — number input, default 29, min 5, max 44. Auto-detect
+  from perks misses faction perks, so the user can override manually.
+- **Flight type** — dropdown: Standard (default) | Airstrip. Auto-detected
+  from perks, manually overridable.
+- **Destination filter** — dropdown: All | one specific country.
+- **Category filter** — chip buttons: All | Drugs | Plushies | Flowers.
+  Uses the static `type` field from `abroad-items.js`. Items not in the
+  list are hidden by category filters.
+- **Sort** — click any column header. Default: Profit/hr desc. Negative
+  margins always sink to bottom, "no listings" separated beneath.
 
-Controls sit above the table. Any change immediately re-sorts and re-renders
-without re-fetching.
+Controls sit above the table. Any change immediately re-sorts and
+re-renders without re-fetching.
 
 -----
 
@@ -408,8 +244,8 @@ board. Not a bright dashboard.
 --bg:       #0d0f14;
 --surface:  #161a22;
 --border:   #252a35;
---accent:   #e8c84a;   /* cargo gold */
---positive: #4ae8a0;   /* profit green */
+--accent:   #e8c84a;   /* cargo gold — travel winner */
+--positive: #4ae8a0;   /* profit green — bazaar winner */
 --warning:  #e8824a;   /* stale amber */
 --text:     #c8cdd8;
 --muted:    #5a6070;
@@ -419,24 +255,22 @@ board. Not a bright dashboard.
 names. `Syne` for headers and labels. Load both via Google Fonts CDN.
 
 **Table columns:**
-`Rank | Item | Destination | Buy Price | Sell Price | Margin $ | Margin % | Profit/Run | Profit/hr | Flight`
+`Rank | Item | Destination | Stock | Buy Price | Sell Price | Margin $ | Margin % | Run Cost | Profit/Run | Profit/hr | Flight`
 
-- Buy price column: if stale, show amber `⚠ est.` badge inline with a
-  tap/hover tooltip: “No recent report — using community average. Open
-  the app after your next trip to update.”
 - Profit/hr column: primary sort column — accent color, slightly larger
-- Flight column: show round-trip e.g. “3h 9m RT”
+- Flight column: round-trip e.g. "3h 9m RT"
+- Stock column: YATA stock quantity; stock-limited runs show a badge
 - Negative margin rows: greyed out, sorted to bottom regardless of sort
 
+**Best Run Right Now card:**
+- Travel variant: gold `--accent` styling
+- Bazaar variant: green `--positive` styling with "VERIFIED DEAL" badge
+  and a direct CTA to the bazaar owner
+
 **Loading behaviour:**
-
-- While sell prices are fetching, show a shimmer placeholder per row
-- Rows populate individually as each `Promise.allSettled` item resolves
+- Shimmer placeholders while sell prices refresh
+- Rows populate individually as each `Promise.allSettled` resolves
 - Never block the full table on a single slow or failed item
-
-**Stale price tooltip:**
-On the `⚠ est.` badge, show on hover/tap: “No recent report — using community
-average. Open the app after your next trip to update.”
 
 -----
 
@@ -446,20 +280,37 @@ average. Open the app after your next trip to update.”
 valigia.girovagabondo.com/
 ├── index.html
 ├── src/
-│   ├── main.js              — entry, orchestrates load flow
-│   ├── auth.js              — key entry, validation, localStorage
-│   ├── torn-api.js          — proxy fetch helper
-│   ├── market.js            — parallel sell price fetcher
-│   ├── log-sync.js          — log 6501 fetch + Supabase upsert
+│   ├── main.js              — entry, orchestrates dashboard load flow
+│   ├── auth.js              — login/logout, calls set-api-key + auto-login
+│   ├── torn-api.js          — torn-proxy fetch helper
+│   ├── market.js            — parallel sell-price fetcher, stale-first
+│   ├── log-sync.js          — YATA abroad-price fetcher (legacy filename)
+│   ├── item-resolver.js     — one-time Torn items catalog → id map
 │   ├── supabase.js          — Supabase client init
-│   ├── calculator.js        — margin math functions
-│   ├── ui.js                — table render, controls, shimmer
+│   ├── calculator.js        — margin math, stock-limited effective slots
+│   ├── ui.js                — table, controls, shimmer, Best Run card
+│   ├── bazaar-scanner.js    — pool maintenance + findBestBazaarRun
+│   ├── bazaar-ui.js         — scan button, runners-up, community stats
+│   ├── styles.css
 │   └── data/
-│       └── abroad-items.js  — static item data (fill nulls first)
+│       ├── abroad-items.js      — static destination/type metadata
+│       ├── bazaar-watchlist.js  — curated high-value item IDs
+│       └── destinations.js      — destination list + flight times
 ├── supabase/
-│   └── functions/
-│       └── torn-proxy/
-│           └── index.ts
+│   ├── functions/
+│   │   ├── torn-proxy/      — Torn API CORS proxy
+│   │   ├── set-api-key/     — encrypt + store API key
+│   │   ├── auto-login/      — decrypt key for session
+│   │   └── _shared/         — cors + crypto helpers
+│   └── migrations/
+│       ├── 001_initial_schema.sql
+│       ├── 002_sell_prices.sql
+│       ├── 003_drop_unused_tables.sql
+│       ├── 004_bazaar_prices.sql
+│       ├── 005_community_stats.sql
+│       ├── 006_simplify_stats.sql
+│       ├── 007_grant_rpc_functions.sql
+│       └── 008_bazaar_miss_count.sql
 ├── .env
 ├── vite.config.js
 └── .github/
@@ -471,65 +322,60 @@ valigia.girovagabondo.com/
 
 ## Known Gotchas
 
-1. **Fill null item IDs before meaningful testing.** Call
-   `torn/?selections=items&key=YOUR_KEY`, dump the JSON, map all item
-   names from `abroad-items.js` to their IDs. Without this, the market
-   price fetch calls have nothing to call.
 1. **African Violet in UAE and South Africa.** Same item ID, two rows in
-   the static data. Log title regex determines country — do not infer
-   from item name alone.
+   `abroad-items.js`. YATA's per-country prices are the source of truth.
 1. **Xanax in Japan and South Africa.** Same item ID (206), two rows.
-   Same rule — country from title.
-1. **Log 6501 may return nothing** if the user hasn’t bought abroad in
-   the last 24h. The upsert runs zero times. Fallback prices handle a
-   cold Supabase table — no error, no toast.
 1. **`Promise.allSettled` for market calls** — some items will have no
-   listings. Treat rejected or empty responses as “no listings” and
+   listings. Treat rejected or empty responses as "no listings" and
    display accordingly rather than erroring.
 1. **Plushies/flowers post-Aug 2024** are traded for Points, not direct
    cash. The item market price still reflects real trade value — use it
-   as-is for v1. Do not attempt Points conversion.
-1. **Drug/contraband buy prices fluctuate.** The 2-hour staleness window
-   for drugs is intentional and tighter than flowers/plushies.
+   as-is. Do not attempt Points conversion.
+1. **Bazaar "too good to be true" listings** — anything with >90%
+   savings vs. market is likely a locked/troll listing. Filtered out
+   before claiming the Best Run card.
 1. **FTP deploy:** Do NOT exclude `assets/` from FTP sync. Silent failure
    if omitted — confirmed gotcha from Yoink Adventures.
-1. **Supabase anon key in client:** Intentional and safe. The
-   `abroad_prices` table is public community data with no PII.
+1. **Supabase anon key in client:** Intentional and safe. `sell_prices`,
+   `bazaar_prices`, and `community_stats` are public community data with
+   no PII. `player_secrets` is RLS-locked to service role only.
+1. **`log-sync.js` is a legacy name.** It fetches YATA abroad prices,
+   not Torn logs. Kept for stability; don't rename without a migration.
 
 -----
 
 ## Current State (April 2026)
 
 ### What's Working
-- **Buy prices** — Live from YATA community API, no API key needed
-- **Sell prices** — Supabase-backed cache (~200 items), refreshes 15/visit,
-  shared across all users
-- **Profit calculations** — Margin $, Margin %, Run Cost, Profit/Run,
-  Profit/hr all working
-- **Sorting** — By any column, negative margins dimmed at bottom,
-  "no listings" separated
-- **Filters** — Destination dropdown and category chips
-  (Drugs/Plushies/Flowers)
-- **Stock quantities** — From YATA data, displayed in table
+- **Auth** — AES-256-GCM encrypted API keys, auto-login across sessions
+- **Buy prices** — Live from YATA, no key needed
+- **Sell prices** — Supabase-backed cache (~200 items), ~15 refreshes
+  per visit, shared across all users
+- **Profit calculations** — Margin $/%, Run Cost, Profit/Run, Profit/hr,
+  stock-limited effective slots
+- **Sorting + filters** — Column sort, destination dropdown, category
+  chips, negative margins dimmed, "no listings" separated
 - **Travel perks** — Auto-detects slots + airstrip (faction perks need
   manual override)
-- **Secure auth** — API key encrypted server-side (AES-256), only
-  player_id in browser
-- **Auto-login** — Remembers player across sessions
+- **Bazaar scanner** — Crowd-sourced pool, discover/check/prune cycle,
+  dynamic watchlist extension, weighted-random deal selection, runners-up
+  list under top pick
+- **Best Run Right Now** — Unified card that compares the top travel run
+  against a verified bazaar deal and displays whichever has higher
+  profit/hr
 
 ### Known Limitations
-- **Slots** — Auto-detect misses faction perks (user sets manually,
-  persists in localStorage)
-- **"no listings" items** — Genuinely untradeable collector items,
-  re-checked hourly
-- **Category mapping** — Uses static lookup from `abroad-items.js`.
-  Items not in the list show as "other" and are hidden by category filters.
+- **Slots** — Auto-detect misses faction perks; user overrides manually.
+- **"No listings" items** — Genuinely untradeable collector items;
+  re-checked hourly.
+- **Category mapping** — Static lookup from `abroad-items.js`. Items not
+  in the list show as "other" and are hidden by category filters.
 
-### Supabase Tables
-- `player_secrets` — Encrypted API keys (active, essential)
-- `sell_prices` — Cached sell prices (active, essential)
-- `abroad_prices` — **DROPPED** (replaced by YATA API)
-- `secret_audit_log` — **DROPPED** (was write-only, never read)
+### Supabase Tables (Active)
+- `player_secrets` — Encrypted API keys
+- `sell_prices` — Cached item market sell prices
+- `bazaar_prices` — Crowd-sourced bazaar pool with miss-count hygiene
+- `community_stats` — Single-row spin counter
 
 -----
 
@@ -537,22 +383,21 @@ valigia.girovagabondo.com/
 
 DroqsDB (droqsdb.com) is a similar Torn travel arbitrage tool with a
 Tampermonkey userscript that scrapes live shop data from Torn's travel
-pages. Key features worth learning from:
+pages.
 
 ### Features Valigia Has Adopted
-- **Destination filter** — dropdown to focus on one country
-- **Category filter** — Drugs / Plushies / Flowers toggle chips
-- **Stock quantity display** — YATA provides quantities
-- **Run Cost column** — buy price × capacity
-- **Flight type dropdown** — replaces binary airstrip checkbox
+- Destination filter dropdown
+- Category filter chips (Drugs / Plushies / Flowers)
+- Stock quantity display (from YATA)
+- Run Cost column (buy price × effective slots)
+- Flight type dropdown (Standard / Airstrip)
+- **"Best Run Right Now" summary card** — now unified across travel
+  AND verified bazaar deals
 
 ### Features to Consider Next (Medium Effort)
-- **"Best Run Right Now" summary card** — single recommended action
-  above the table, showing item + country + profit/hr. High value —
-  instant answer vs scanning a table.
-- **Bazaar/TCS sell options** — DroqsDB supports Item Market, Bazaar,
-  and Torn City Shops as sell venues. Different venues = different
-  profit math.
+- **TCS (Torn City Shops) sell venue** — DroqsDB supports Item Market,
+  Bazaar, and TCS. We have Item Market + Bazaar-as-buy; TCS-as-sell
+  would be a third profit math path.
 - **More flight types** — WLT and Business class. Need confirmed
   multipliers before implementing.
 
@@ -560,35 +405,12 @@ pages. Key features worth learning from:
 - **Stock-aware recommendations** — Filter out items likely to be out
   of stock on arrival. Requires restock timing data.
 - **Historical price trends** — Track sell price changes over time.
-  DroqsDB has 30-day charts with Latest/High/Low/Average/Change.
-- **DroqsDB public API as data source** — They expose
-  `/api/public/v1` with stock levels and restock estimates. Could
-  supplement YATA data.
+  DroqsDB has 30-day charts.
+- **DroqsDB public API** — Their `/api/public/v1` exposes stock levels
+  and restock estimates. Could supplement YATA.
 
 ### What NOT to Copy
-- Their userscript architecture (DOM scraping on torn.com) — our
-  standalone app is simpler for users.
-- Restock timing predictions — requires significant data
-  infrastructure.
+- Userscript architecture (DOM scraping on torn.com) — our standalone
+  app is simpler for users.
+- Restock timing predictions — requires significant data infrastructure.
 - Draggable floating panel UX — overcomplicated for a standalone app.
-
------
-
-## User Controls
-
-All persisted in `localStorage`:
-
-- **Slot count** — number input, default 29, min 5, max 44
-- **Flight type** — dropdown: Standard (default) | Airstrip. When
-  Airstrip is selected, halves all `flightMins` values before
-  calculation
-- **Destination filter** — dropdown: All (default) | one specific
-  country. Filters the table to show only items from that destination
-- **Category filter** — chip buttons: All (default) | Drugs | Plushies
-  | Flowers. Filters by item type using the static category lookup
-  from `abroad-items.js`
-- **Sort** — click any column header to sort. Default: Profit/hr desc.
-  Negative margins always sink to bottom regardless of sort.
-
-Controls sit above the table. Any change immediately re-sorts and
-re-renders without re-fetching.
