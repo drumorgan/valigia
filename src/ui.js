@@ -4,6 +4,7 @@ import { getFlightMins } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById } from './item-resolver.js';
 import { calculateMargins, formatFlightTime, formatMoney } from './calculator.js';
+import { forecastStock } from './stock-forecast.js';
 
 // ── Flight type definitions ───────────────────────────────────
 const FLIGHT_TYPES = [
@@ -262,6 +263,44 @@ function formatQuantity(qty) {
   return Number(qty).toLocaleString('en-US');
 }
 
+/**
+ * Render the Stock cell. Shows YATA's live quantity on top, and an
+ * arrival-time estimate below when we have enough history to project one.
+ * For short flights or when history has only a single sample the ETA is
+ * usually the same as now — we still show it, with a muted tone, so the
+ * math downstream is visible and not "hidden".
+ */
+function renderStockCell(row) {
+  const now = row.quantity;
+  if (now == null) return '<span class="muted">—</span>';
+
+  const f = row.forecast;
+  // No history loaded yet (first visit, or cache still coming in) — just
+  // show the live number. Avoids a flash of "ETA —" on initial render.
+  if (!f || !f.hasHistory) return formatQuantity(now);
+
+  const eta = f.etaQty;
+  if (eta == null) return formatQuantity(now);
+
+  // When ETA materially differs from now, flag it. "Likely empty" replaces
+  // the number entirely so the user reads the verdict, not a hopeful "1".
+  let etaLine;
+  if (eta === 0 && now > 0) {
+    etaLine = `<span class="stock-eta stock-eta--empty" title="Recent depletion rate projects the shelf to be empty when you land">likely empty</span>`;
+  } else {
+    const confClass = f.confidence === 'ok' ? 'stock-eta--ok' : 'stock-eta--low';
+    const confTitle = f.confidence === 'ok'
+      ? 'Projected from recent depletion rate'
+      : 'Limited history — rough estimate';
+    etaLine = `<span class="stock-eta ${confClass}" title="${confTitle}">ETA ~${Number(eta).toLocaleString('en-US')}</span>`;
+  }
+
+  return `
+    <span class="stock-now">Now ${Number(now).toLocaleString('en-US')}</span>
+    ${etaLine}
+  `;
+}
+
 function getBuyPriceInfo(row) {
   if (!row.reported_at) {
     return { price: row.buy_price, freshness: 'empty', reportedAgo: null };
@@ -290,7 +329,7 @@ function getSortValue(row, col) {
   switch (col) {
     case 'name':          return row.name || '';
     case 'destination':   return row.destination || '';
-    case 'quantity':      return row.quantity ?? -1;
+    case 'quantity':      return row.forecast?.etaQty ?? row.quantity ?? -1;
     case 'buyPrice':      return row.buyPrice || 0;
     case 'sellPrice':     return (row.sellPrice || 0) * 0.95;
     case 'marginPerItem': return row.metrics?.marginPerItem || 0;
@@ -366,6 +405,17 @@ function buildRows() {
       continue;
     }
 
+    // Project stock to arrival time. One-way flight duration accounts for
+    // the flight-type multiplier (airstrip/WLT shorten the time). Fall
+    // back to YATA's live quantity when we have no history for this row.
+    const arrivalMins = flightMins * getFlightMultiplier();
+    const forecast = forecastStock(
+      item.item_id,
+      item.destination,
+      arrivalMins,
+      item.quantity ?? null,
+    );
+
     let metrics = null;
     if (hasSellPrice && flightMins > 0) {
       metrics = calculateMargins({
@@ -374,7 +424,10 @@ function buildRows() {
         slotCount,
         flightMins,
         flightMultiplier: getFlightMultiplier(),
-        stockQty: item.quantity ?? null,
+        // Use the arrival-time estimate so effective_slots reflects what
+        // the shelf will actually hold when the plane lands, not what's
+        // there now. forecastStock falls back to nowQty when no history.
+        stockQty: forecast.etaQty,
       });
     }
 
@@ -383,6 +436,7 @@ function buildRows() {
       destination: item.destination,
       itemId: item.item_id,
       quantity: item.quantity ?? null,
+      forecast,
       category,
       buyPrice,
       freshness,
@@ -602,8 +656,8 @@ export function renderTable() {
     }
     const buyCell = `${formatMoney(r.buyPrice)} ${freshnessBadge}`;
 
-    // Stock cell
-    const stockCell = formatQuantity(r.quantity);
+    // Stock cell: "Now X" + projected "ETA ~Y" when we have history.
+    const stockCell = renderStockCell(r);
 
     // Sell price cell — show net price (after 5% item market fee) so math is visible
     const noListings = r.isChecked && !r.hasSellPrice;

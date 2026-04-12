@@ -7,6 +7,7 @@ import { fetchAllSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
 import { prescanBazaarPool, findBestBazaarRun } from './bazaar-scanner.js';
+import { recordSnapshots, loadForecastData } from './stock-forecast.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
@@ -129,6 +130,17 @@ async function startDashboard(playerId) {
   setKnownItems(items);
   renderControls(controlsBar, () => renderTable());
   renderTable();
+
+  // Kick off the stock-history pipeline in parallel with everything else.
+  // recordSnapshots writes this visit's YATA reading into Supabase so future
+  // visits can fit a depletion slope; loadForecastData pulls the last 4 h
+  // of samples for the items on screen. Re-render once history is in so
+  // Stock cells can flip from "Now N" to "Now N / ETA M" and the margin
+  // math picks up the arrival-time quantity.
+  Promise.all([
+    recordSnapshots(items),
+    loadForecastData(items),
+  ]).then(() => renderTable()).catch(() => {});
 
   // Fetch live sell prices for all known items
   const itemIds = getItemIdsForPriceFetch();

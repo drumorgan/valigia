@@ -505,6 +505,42 @@ tr.row--negative td {
   white-space: nowrap;
 }
 
+/* ── Stock Now / ETA forecast ─────────────────────────────────── */
+/* The Stock cell shows the YATA-live quantity ("Now N") on top and a
+   projected arrival-time quantity ("ETA ~M" or "likely empty") below.
+   The ETA is what the margin math actually uses. */
+
+.stock-now {
+  display: block;
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.15;
+}
+
+.stock-eta {
+  display: block;
+  font-size: 0.65rem;
+  line-height: 1.15;
+  margin-top: 2px;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.stock-eta--ok {
+  color: var(--muted);
+}
+
+.stock-eta--low {
+  color: var(--muted);
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.stock-eta--empty {
+  color: var(--warning);
+  font-weight: 600;
+}
+
 /* ── Best Run Right Now summary card ───────────────────────────── */
 
 .best-run-card {
