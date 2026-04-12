@@ -1,6 +1,6 @@
 // UI module — table rendering, controls, shimmer loading, toast notifications.
 
-import { getFlightMins } from './data/destinations.js';
+import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById } from './item-resolver.js';
 import { calculateMargins, formatFlightTime, formatMoney } from './calculator.js';
@@ -303,6 +303,18 @@ function formatQuantity(qty) {
  * usually the same as now — we still show it, with a muted tone, so the
  * math downstream is visible and not "hidden".
  */
+/**
+ * Compact destination cell: airplane link (unchanged) + flag + 3-letter
+ * code. Full country name lives in the title attribute for tooltip lookup.
+ * Falls back to the raw destination name if we don't have badge data.
+ */
+function renderDestCell(destination) {
+  const travelLink = `<a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener" class="dest-link" title="Travel to ${destination}">✈️</a>`;
+  const { flag, code } = getDestinationBadge(destination);
+  if (!flag) return `${travelLink} ${destination}`;
+  return `${travelLink} <span class="dest-flag" title="${destination}">${flag}</span> <span class="dest-code">${code}</span>`;
+}
+
 function renderStockCell(row) {
   const now = row.quantity;
   if (now == null) return '<span class="muted">—</span>';
@@ -754,7 +766,7 @@ export function renderTable() {
       <tr class="${rowClass}">
         <td class="col-rank">${i + 1}</td>
         <td class="col-item">${r.name}</td>
-        <td class="col-dest"><a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener" class="dest-link" title="Travel to ${r.destination}">✈️</a> ${r.destination}</td>
+        <td class="col-dest">${renderDestCell(r.destination)}</td>
         <td class="col-stock">${stockCell}</td>
         <td class="col-buy">${buyCell}</td>
         <td class="col-sell">${sellCell}</td>
