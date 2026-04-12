@@ -47,6 +47,7 @@ let realismMode = localStorage.getItem(STORAGE_REALISM) || 'realistic';
 
 // Live data — populated as prices arrive
 const sellPrices = new Map();   // itemId → sell price
+const marketDepth = new Map();  // itemId → { floorQty, listingCount }
 const checkedItems = new Set();  // itemIds where sell price has been looked up
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at, quantity }
 let bestBazaarRun = null;        // Optional verified bazaar deal, set by main.js
@@ -268,9 +269,16 @@ export function getItemIdsForPriceFetch() {
 
 /**
  * Called as each sell price resolves from the market fetcher.
+ * @param {number} itemId
+ * @param {number|null} price - Cheapest listing price, or null when no listings.
+ * @param {{floorQty: number|null, listingCount: number|null}|null} [depth]
+ *   Market depth snapshot at the time of the fetch. Optional for back-compat.
  */
-export function onSellPrice(itemId, price) {
+export function onSellPrice(itemId, price, depth) {
   if (price != null) sellPrices.set(itemId, price);
+  if (depth && (depth.floorQty != null || depth.listingCount != null)) {
+    marketDepth.set(itemId, depth);
+  }
   checkedItems.add(itemId);
   renderTable();
 }
@@ -296,6 +304,28 @@ function formatDaysAgo(ms) {
 function formatQuantity(qty) {
   if (qty == null) return '<span class="muted">—</span>';
   return Number(qty).toLocaleString('en-US');
+}
+
+/**
+ * Tooltip string describing market depth. Returns empty string when we
+ * have nothing useful to say. Attribute-safe (no quotes in output).
+ *
+ * listing_count of 0 means we've confirmed "no listings" — phrased
+ * differently from unknown so the user knows it's been checked.
+ */
+function formatDepthTooltip(depth) {
+  if (!depth) return '';
+  const { floorQty, listingCount } = depth;
+  if (listingCount === 0) return 'Item market: no active listings';
+  const parts = [];
+  if (listingCount != null) {
+    parts.push(`${listingCount} listing${listingCount === 1 ? '' : 's'}`);
+  }
+  if (floorQty != null) {
+    parts.push(`${floorQty} at floor`);
+  }
+  if (parts.length === 0) return '';
+  return `Market depth: ${parts.join(', ')}`;
 }
 
 /**
@@ -505,6 +535,7 @@ function buildRows() {
       isChecked,
       metrics,
       flightMins,
+      depth: marketDepth.get(item.item_id) || null,
     });
   }
 
@@ -746,14 +777,21 @@ export function renderTable() {
     // Stock cell: "Now X" + projected "ETA ~Y" when we have history.
     const stockCell = renderStockCell(r);
 
-    // Sell price cell — show net price (after 5% item market fee) so math is visible
+    // Sell price cell — show net price (after 5% item market fee) so math is visible.
+    // Tooltip carries market-depth context (floor qty / listing count) when we
+    // have it, so players can sanity-check whether the floor price is fragile
+    // (1 unit listed) or well-supported (dozens of listings at this price).
     const noListings = r.isChecked && !r.hasSellPrice;
     const netSell = r.hasSellPrice ? r.sellPrice * 0.95 : null;
-    const sellCell = netSell != null
+    const depthTitle = formatDepthTooltip(r.depth);
+    const sellInner = netSell != null
       ? formatMoney(netSell)
       : noListings
         ? '<span class="muted">no listings</span>'
         : '<span class="shimmer-cell"></span>';
+    const sellCell = depthTitle
+      ? `<span title="${depthTitle}">${sellInner}</span>`
+      : sellInner;
 
     // Metric cells
     const dash = '<span class="muted">—</span>';
