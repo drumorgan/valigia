@@ -478,6 +478,31 @@ function getBuyPriceInfo(row) {
   return { price: row.buy_price, freshness: 'stale', reportedAgo: formatDaysAgo(ageMs) };
 }
 
+// Sell-price freshness tiers — tuned to the on-demand refresh threshold.
+// Under 5 min = just fetched (or cache is still fresh), matches the
+// CATEGORY_REFRESH_AGE_MS gate in main.js. 5-60 min still usable, >60 min
+// likely drifting. No text label — just a dot, intentionally tight.
+function getSellPriceFreshnessClass(itemId) {
+  const fetchedAt = sellPriceFetchedAt.get(itemId);
+  if (fetchedAt == null) return null;
+  const ageMins = (Date.now() - fetchedAt) / 60000;
+  if (ageMins <= 5) return 'fresh';
+  if (ageMins <= 60) return 'medium';
+  return 'stale';
+}
+
+function formatSellAgeTooltip(itemId) {
+  const fetchedAt = sellPriceFetchedAt.get(itemId);
+  if (fetchedAt == null) return '';
+  const ageMs = Date.now() - fetchedAt;
+  const mins = Math.floor(ageMs / 60000);
+  if (mins < 1) return 'Sell price refreshed just now';
+  if (mins < 60) return `Sell price refreshed ${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return `Sell price refreshed ${hrs}h ${rem}m ago`;
+}
+
 // ── Sorting ───────────────────────────────────────────────────
 
 function getSortValue(row, col) {
@@ -862,9 +887,17 @@ export function renderTable() {
       : noListings
         ? '<span class="muted">no listings</span>'
         : '<span class="shimmer-cell"></span>';
-    const sellCell = depthTitle
+    const sellBase = depthTitle
       ? `<span title="${depthTitle}">${sellInner}</span>`
       : sellInner;
+    // Dot-only freshness indicator for the sell price — keeps the column
+    // narrow. Only rendered when we actually have a price (not for "no
+    // listings" or shimmering rows).
+    const sellFreshClass = r.hasSellPrice ? getSellPriceFreshnessClass(r.itemId) : null;
+    const sellFreshDot = sellFreshClass
+      ? ` <span class="freshness freshness--${sellFreshClass} freshness--dot" title="${formatSellAgeTooltip(r.itemId)}">&#9679;</span>`
+      : '';
+    const sellCell = `${sellBase}${sellFreshDot}`;
 
     // Metric cells
     const dash = '<span class="muted">—</span>';
