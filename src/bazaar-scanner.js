@@ -399,9 +399,16 @@ export async function scanBazaarDeals(playerId, onProgress) {
   // Discovered pairs are written to pool immediately with null prices
   // so they persist across spins even if not checked this time.
   const discovered = await discoverBazaars(items, pool, playerId);
-  let totalDiscovered = 0;
-  for (const ids of discovered.values()) totalDiscovered += ids.length;
-  stats.discovered = totalDiscovered;
+  // Count unique NEW bazaar owners (not already in pool)
+  const newBazaarOwners = new Set();
+  for (const ids of discovered.values()) {
+    for (const id of ids) newBazaarOwners.add(id);
+  }
+  // Subtract already-known owners
+  for (const id of newBazaarOwners) {
+    if (uniqueBazaars.has(id)) newBazaarOwners.delete(id);
+  }
+  stats.discovered = newBazaarOwners.size;
   stats.apiCalls += Math.min(DISCOVER_BUDGET, items.filter(i => (pool.get(i.id) || []).length < MIN_SOURCES_FOR_SKIP).length);
 
   // Phase 3: Check bazaars (~25 API calls)
