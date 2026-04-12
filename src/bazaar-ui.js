@@ -162,9 +162,9 @@ async function runScan(playerId) {
   const diagLines = [
     `Watchlist: ${stats.resolved}/${stats.watchlistSize} resolved`,
     `Market prices (from cache): ${stats.marketHits}`,
-    `Known bazaar sources (pool): ${stats.poolHits} items`,
+    `Pool: ${stats.poolHits} items across ${stats.uniqueBazaars || '?'} unique bazaars`,
     `New bazaars discovered: ${stats.discovered}`,
-    `Bazaars checked: ${stats.bazaarsChecked}`,
+    `Bazaars checked this spin: ${stats.bazaarsChecked}`,
     `Prices found: ${stats.pricesFound}`,
     `Deals below market: ${stats.dealsFound || 0}`,
     `~${stats.apiCalls + stats.bazaarsChecked} API calls used`,

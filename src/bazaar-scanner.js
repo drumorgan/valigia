@@ -20,8 +20,8 @@ import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
-const DISCOVER_BUDGET = 5;    // API calls for discovering new bazaar sources
-const CHECK_BUDGET = 25;      // API calls for checking bazaar prices
+const DISCOVER_BUDGET = 8;    // API calls for discovering new bazaar sources
+const CHECK_BUDGET = 25;      // API calls for checking unique bazaar owners
 const MIN_SOURCES_FOR_SKIP = 15; // items with >= this many sources skip discovery
 const POOL_STALE_MS = 30 * 60 * 1000; // 30 min — re-check bazaars older than this
 
@@ -139,50 +139,48 @@ async function discoverBazaars(items, pool, playerId, onProgress) {
 }
 
 /**
- * Phase 3: Check bazaar prices. Prioritizes least-recently-checked.
+ * Phase 3: Check bazaar prices. Deduplicates by bazaar owner so each
+ * bazaar is checked at most once — one API call returns ALL items.
  * Returns array of { item_id, bazaar_owner_id, price, quantity }.
  */
 async function checkBazaars(items, pool, discovered, playerId, onProgress) {
   const now = Date.now();
   const results = [];
+  const watchlistIds = new Set(items.map(i => i.id));
 
-  // Build a unified list of (item_id, bazaar_owner_id, staleness) to check
-  const toCheck = [];
+  // Build a map of unique bazaar owners → best staleness score.
+  // Multiple items may point to the same bazaar — we only need to check it once.
+  const bazaarMap = new Map(); // bazaarOwnerId → { staleness, isNew }
 
   for (const item of items) {
     const knownSources = pool.get(item.id) || [];
     const discoveredIds = discovered.get(item.id) || [];
 
-    // Add known sources, prioritizing stale ones
     for (const src of knownSources) {
       const age = now - new Date(src.checked_at).getTime();
-      toCheck.push({
-        itemId: item.id,
-        bazaarOwnerId: src.bazaar_owner_id,
-        staleness: age,
-        isNew: false,
-      });
+      const existing = bazaarMap.get(src.bazaar_owner_id);
+      if (!existing || age > existing.staleness) {
+        bazaarMap.set(src.bazaar_owner_id, { staleness: age, isNew: false });
+      }
     }
 
-    // Add newly discovered sources (highest priority — never checked)
     for (const bazId of discoveredIds) {
-      // Skip if already in known sources
       const alreadyKnown = knownSources.some(s => s.bazaar_owner_id === bazId);
       if (!alreadyKnown) {
-        toCheck.push({
-          itemId: item.id,
-          bazaarOwnerId: bazId,
-          staleness: Infinity, // never checked = max priority
-          isNew: true,
-        });
+        const existing = bazaarMap.get(bazId);
+        if (!existing || !existing.isNew) {
+          bazaarMap.set(bazId, { staleness: Infinity, isNew: true });
+        }
       }
     }
   }
 
   // Sort: new discoveries first, then stalest first
-  toCheck.sort((a, b) => b.staleness - a.staleness);
+  const toCheck = [...bazaarMap.entries()]
+    .map(([bazaarOwnerId, info]) => ({ bazaarOwnerId, ...info }))
+    .sort((a, b) => b.staleness - a.staleness);
 
-  // Take top N within budget
+  // Take top N unique bazaars within budget
   const batch = toCheck.slice(0, CHECK_BUDGET);
   let checked = 0;
   const total = batch.length;
@@ -200,7 +198,7 @@ async function checkBazaars(items, pool, discovered, playerId, onProgress) {
 
     if (!data?.bazaar) return;
 
-    // Search for our item in this bazaar's inventory
+    // Harvest ALL watchlist items from this bazaar
     const bazaarItems = Array.isArray(data.bazaar)
       ? data.bazaar
       : Object.values(data.bazaar || {});
@@ -210,8 +208,6 @@ async function checkBazaars(items, pool, discovered, playerId, onProgress) {
       const price = item.cost || item.price || item.market_price;
       if (!itemId || !price) continue;
 
-      // Record this item if it's on our watchlist
-      const watchlistIds = new Set(items.map(i => i.id));
       if (watchlistIds.has(itemId)) {
         results.push({
           item_id: itemId,
@@ -359,6 +355,13 @@ export async function scanBazaarDeals(playerId, onProgress) {
 
   stats.marketHits = marketPrices.size;
   stats.poolHits = pool.size;
+
+  // Count unique bazaar owners across the entire pool
+  const uniqueBazaars = new Set();
+  for (const sources of pool.values()) {
+    for (const src of sources) uniqueBazaars.add(src.bazaar_owner_id);
+  }
+  stats.uniqueBazaars = uniqueBazaars.size;
 
   // Phase 2: Discover new bazaar sources (~5 API calls)
   const discovered = await discoverBazaars(items, pool, playerId);
