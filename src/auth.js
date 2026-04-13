@@ -1,35 +1,74 @@
 // Auth module — API key entry, validation, encrypted server-side storage.
-// Plaintext key NEVER stored in localStorage — only player_id.
+// Plaintext key NEVER stored in localStorage. After login, the browser
+// holds only { player_id, session_token }; the raw API key lives in
+// Supabase encrypted with AES-256-GCM and is only decrypted server-side.
 
 import { supabaseUrl, supabaseAnonKey } from './supabase.js';
 import { callTornApi } from './torn-api.js';
 import { showToast } from './ui.js';
 
-const STORAGE_KEY = 'valigia_player_id';
+// Session bundle (player_id + session_token) — both fields required for
+// auto-login. Legacy key kept only so we can actively clear it and force
+// re-login for users who last logged in before tokens existed.
+const SESSION_STORAGE_KEY = 'valigia_session';
+const LEGACY_PLAYER_ID_KEY = 'valigia_player_id';
 const SET_KEY_URL = `${supabaseUrl}/functions/v1/set-api-key`;
 const AUTO_LOGIN_URL = `${supabaseUrl}/functions/v1/auto-login`;
 
-/** Get stored player ID (or null). */
-export function getPlayerId() {
-  return localStorage.getItem(STORAGE_KEY);
-}
-
-/** Store or clear player ID. */
-export function setPlayerId(id) {
-  if (id) {
-    localStorage.setItem(STORAGE_KEY, String(id));
-  } else {
-    localStorage.removeItem(STORAGE_KEY);
+/** Read stored session bundle, or null. */
+function getSession() {
+  const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed?.player_id || !parsed?.session_token) return null;
+    return parsed;
+  } catch {
+    return null;
   }
 }
 
+/** Store or clear the session bundle. */
+function setSession(session) {
+  if (session && session.player_id && session.session_token) {
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        player_id: String(session.player_id),
+        session_token: session.session_token,
+      })
+    );
+  } else {
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+  }
+}
+
+/** Public: expose player ID for the rest of the app (market calls, etc.). */
+export function getPlayerId() {
+  const session = getSession();
+  return session ? session.player_id : null;
+}
+
 /**
- * Attempt auto-login using stored player ID.
- * Returns { success, player_id, name, level } or { success: false, error }.
+ * Attempt auto-login using stored player ID + session token. Returns
+ * { success, player_id, name, level } on success, or { success: false, error }
+ * on any failure (including missing session, expired token, revoked key).
  */
 export async function tryAutoLogin() {
-  const playerId = getPlayerId();
-  if (!playerId) return { success: false, error: 'no_stored_id' };
+  // Hard cutover for users who logged in before the session-token patch:
+  // their localStorage only has `valigia_player_id`, no token. Clear it
+  // and force them through the login screen once. Safer than carrying a
+  // dual-mode code path.
+  const legacyOnly =
+    localStorage.getItem(LEGACY_PLAYER_ID_KEY) &&
+    !localStorage.getItem(SESSION_STORAGE_KEY);
+  if (legacyOnly) {
+    localStorage.removeItem(LEGACY_PLAYER_ID_KEY);
+    return { success: false, error: 'session_upgrade_required' };
+  }
+
+  const session = getSession();
+  if (!session) return { success: false, error: 'no_stored_session' };
 
   try {
     const res = await fetch(AUTO_LOGIN_URL, {
@@ -38,13 +77,23 @@ export async function tryAutoLogin() {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${supabaseAnonKey}`,
       },
-      body: JSON.stringify({ player_id: Number(playerId) }),
+      body: JSON.stringify({
+        player_id: Number(session.player_id),
+        session_token: session.session_token,
+      }),
     });
+
+    // Any non-200 (including our 401 for bad/missing token) → clear and
+    // send the user back to the login screen silently.
+    if (!res.ok) {
+      setSession(null);
+      return { success: false, error: 'unauthorized' };
+    }
 
     const data = await res.json();
 
     if (!data.success) {
-      setPlayerId(null);
+      setSession(null);
       if (data.error === 'key_invalid') {
         showToast('Your API key expired or was revoked. Please log in again.');
       }
@@ -61,8 +110,8 @@ export async function tryAutoLogin() {
 /**
  * Full login flow:
  * 1. Validate key via torn-proxy (using raw key)
- * 2. Encrypt & store via set-api-key Edge Function
- * 3. Save player_id to localStorage
+ * 2. Encrypt & store via set-api-key Edge Function; receive session_token
+ * 3. Save { player_id, session_token } to localStorage
  * Returns { success, player_id, name, level } or null on failure.
  */
 export async function handleLogin(apiKey) {
@@ -84,7 +133,8 @@ export async function handleLogin(apiKey) {
 
   const playerId = userData.player_id;
 
-  // Step 2: encrypt and store key server-side
+  // Step 2: encrypt and store key server-side; server returns a session token.
+  let sessionToken = null;
   try {
     const res = await fetch(SET_KEY_URL, {
       method: 'POST',
@@ -99,17 +149,20 @@ export async function handleLogin(apiKey) {
     });
 
     const result = await res.json();
-    if (!result.success) {
+    if (!result.success || !result.session_token) {
       showToast('Failed to securely store your key. Try again.');
       return null;
     }
+    sessionToken = result.session_token;
   } catch (err) {
     showToast(`Key storage error: ${err.message}`);
     return null;
   }
 
-  // Step 3: save player ID locally
-  setPlayerId(playerId);
+  // Step 3: save session bundle locally. Also sweep the legacy key so a
+  // future deploy doesn't find stale ambiguous state.
+  setSession({ player_id: playerId, session_token: sessionToken });
+  localStorage.removeItem(LEGACY_PLAYER_ID_KEY);
 
   return {
     success: true,
@@ -119,9 +172,10 @@ export async function handleLogin(apiKey) {
   };
 }
 
-/** Clear session — remove stored player ID. */
+/** Clear session — remove stored session bundle. */
 export function logout() {
-  setPlayerId(null);
+  setSession(null);
+  localStorage.removeItem(LEGACY_PLAYER_ID_KEY);
 }
 
 /**

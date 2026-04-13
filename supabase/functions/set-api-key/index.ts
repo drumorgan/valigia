@@ -14,6 +14,9 @@ function base64ToBytes(b64: string): Uint8Array {
 function bytesToBase64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
 }
+function bytesToBase64Url(bytes: Uint8Array): string {
+  return bytesToBase64(bytes).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+}
 async function importKey(rawB64: string): Promise<CryptoKey> {
   return crypto.subtle.importKey('raw', base64ToBytes(rawB64), { name: 'AES-GCM' }, false, ['encrypt']);
 }
@@ -24,6 +27,17 @@ async function encryptApiKey(plaintext: string, keyVersion = 1) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
   return { ciphertext: bytesToBase64(new Uint8Array(encrypted)), iv: bytesToBase64(iv), keyVersion };
+}
+
+// ── Session token mint + hash ───────────────────────────────────
+// 32 random bytes, base64url for a URL-safe opaque token. The client stores
+// this alongside player_id; we only store its SHA-256 hash in the row.
+async function mintSessionToken(): Promise<{ token: string; hash: string }> {
+  const raw = crypto.getRandomValues(new Uint8Array(32));
+  const token = bytesToBase64Url(raw);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  const hash = bytesToBase64(new Uint8Array(digest));
+  return { token, hash };
 }
 
 // ── Handler ─────────────────────────────────────────────────────
@@ -49,7 +63,12 @@ serve(async (req) => {
     // Encrypt the API key
     const { ciphertext, iv, keyVersion } = await encryptApiKey(api_key);
 
-    // Store encrypted key in player_secrets
+    // Mint a fresh session token on every set-api-key call. Re-entering a key
+    // intentionally logs out any other device with the previous token — this
+    // is the rotation hook; a stolen player_id alone is no longer enough.
+    const { token: sessionToken, hash: sessionTokenHash } = await mintSessionToken();
+
+    // Store encrypted key + token hash in player_secrets
     const { error: secretErr } = await supabase
       .from('player_secrets')
       .upsert(
@@ -58,6 +77,8 @@ serve(async (req) => {
           api_key_enc: ciphertext,
           api_key_iv: iv,
           key_version: keyVersion,
+          session_token_hash: sessionTokenHash,
+          session_token_created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'torn_player_id' }
@@ -70,8 +91,11 @@ serve(async (req) => {
       );
     }
 
+    // Return the raw token ONCE. Client stores it in localStorage and sends
+    // it back on every auto-login. The token itself is never logged or
+    // persisted server-side (only its hash is).
     return new Response(
-      JSON.stringify({ success: true }),
+      JSON.stringify({ success: true, session_token: sessionToken }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (err) {
