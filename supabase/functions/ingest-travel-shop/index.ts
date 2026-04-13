@@ -7,25 +7,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// ── Inlined shared: AES-256-GCM encrypt (for silent enrollment) ─
-function base64ToBytes(b64: string): Uint8Array {
-  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-}
-function bytesToBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
-}
-async function importEncryptKey(rawB64: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey('raw', base64ToBytes(rawB64), { name: 'AES-GCM' }, false, ['encrypt']);
-}
-async function encryptApiKey(plaintext: string, keyVersion = 1) {
-  const rawKey = Deno.env.get('API_KEY_ENCRYPTION_KEY');
-  if (!rawKey) throw new Error('Missing API_KEY_ENCRYPTION_KEY env var');
-  const key = await importEncryptKey(rawKey);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
-  return { ciphertext: bytesToBase64(new Uint8Array(encrypted)), iv: bytesToBase64(iv), keyVersion };
-}
-
 // ── Types ───────────────────────────────────────────────────────
 interface ShopItem {
   item_id: number;
@@ -68,7 +49,7 @@ function validatePayload(body: unknown): { ok: true; data: IngestPayload } | { o
   return { ok: true, data: b as unknown as IngestPayload };
 }
 
-// Normalize / accept a single item row. Returns null to skip with reason.
+// Normalize / accept a single item row. Returns { skip } to skip with reason.
 function normalizeItem(item: unknown): ShopItem | { skip: string } {
   if (!item || typeof item !== 'object') return { skip: 'not an object' };
   const i = item as Record<string, unknown>;
@@ -113,6 +94,8 @@ serve(async (req) => {
 
     // Step 1 — validate the key and resolve player_id via user/basic.
     // Torn's own API tells us whether the key is real and whose it is.
+    // The key itself is never persisted by this function; we only stamp
+    // observer_player_id onto each row so the write is attributable.
     const tornRes = await fetch(
       `https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(api_key)}`,
     );
@@ -135,33 +118,7 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Step 2 — silent enrollment: if no row in player_secrets, create one.
-    // Never overwrite: explicit Valigia login via set-api-key always wins.
-    const { data: existingSecret } = await supabase
-      .from('player_secrets')
-      .select('torn_player_id')
-      .eq('torn_player_id', player_id)
-      .maybeSingle();
-
-    let enrolled = false;
-    if (!existingSecret) {
-      const { ciphertext, iv, keyVersion } = await encryptApiKey(api_key);
-      const { error: insertErr } = await supabase.from('player_secrets').insert({
-        torn_player_id: player_id,
-        api_key_enc: ciphertext,
-        api_key_iv: iv,
-        key_version: keyVersion,
-        updated_at: new Date().toISOString(),
-      });
-      // Ignore duplicate-key errors (race condition) — ingest proceeds either way.
-      if (insertErr && !insertErr.message.includes('duplicate key')) {
-        console.warn(`[ingest] silent enrollment failed: ${insertErr.message}`);
-      } else if (!insertErr) {
-        enrolled = true;
-      }
-    }
-
-    // Step 3 — flatten shops into rows, validating each item.
+    // Step 2 — flatten shops into rows, validating each item.
     const rows: Array<{
       item_id: number;
       destination: string;
@@ -202,7 +159,7 @@ serve(async (req) => {
       );
     }
 
-    // Step 4 — bulk upsert. Conflict on (item_id, destination) → fresh wins.
+    // Step 3 — bulk upsert. Conflict on (item_id, destination) → fresh wins.
     const { error: upsertErr } = await supabase
       .from('abroad_prices')
       .upsert(rows, { onConflict: 'item_id,destination' });
@@ -222,7 +179,6 @@ serve(async (req) => {
         stored: rows.length,
         skipped: skipped.length,
         skipped_reasons: skipped,
-        enrolled,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
