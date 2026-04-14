@@ -628,6 +628,10 @@ function buildRows() {
       buyPrice,
       freshness,
       reportedAgo,
+      // 'scrape' when the price came from a PDA userscript observation in
+      // abroad_prices; 'yata' otherwise. Used by the render layer to swap
+      // the freshness badge for a distinct "LIVE" indicator.
+      priceSource: item.source || 'yata',
       sellPrice,
       hasSellPrice,
       isChecked,
@@ -859,9 +863,13 @@ export function renderTable() {
     const isNeg = r.metrics && r.metrics.marginPerItem <= 0;
     const rowClass = isNeg ? 'row--negative' : '';
 
-    // Buy price cell with freshness indicator
+    // Buy price cell with freshness indicator. First-party scrapes (from a
+    // PDA userscript landing in a shop in the last ~10 min) always trump
+    // age-based freshness tiers — they're authoritative by origin, not age.
     let freshnessBadge;
-    if (r.freshness === 'fresh') {
+    if (r.priceSource === 'scrape') {
+      freshnessBadge = `<span class="freshness freshness--scrape" title="First-party scrape from Torn travel shop — ${r.reportedAgo}">&#9679; LIVE</span>`;
+    } else if (r.freshness === 'fresh') {
       freshnessBadge = `<span class="freshness freshness--fresh" title="Fresh price — reported ${r.reportedAgo}">&#9679; ${r.reportedAgo}</span>`;
     } else if (r.freshness === 'medium') {
       freshnessBadge = `<span class="freshness freshness--medium" title="Price is ${r.reportedAgo} — still usable but may have changed">&#9679; ${r.reportedAgo}</span>`;
