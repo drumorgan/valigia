@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia — Travel Shop Ingest
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.1.0
+// @version      0.1.1
 // @description  When you land abroad in Torn, scrape the travel shop and push fresh buy prices to Valigia's shared pool. Runs inside Torn PDA.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -19,6 +19,7 @@
   // ── Config ──────────────────────────────────────────────────────────────
   // PDA substitutes ###PDA-APIKEY### with the user's Torn key at runtime.
   // Outside PDA the placeholder stays literal, and the script aborts cleanly.
+  // v0.1.1 — no behaviour change; bumped @version to verify PDA auto-update.
   const TORN_API_KEY = '###PDA-APIKEY###';
 
   const INGEST_URL =
