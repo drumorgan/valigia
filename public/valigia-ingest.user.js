@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Valigia — Travel Shop Ingest
+// @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.1.1
+// @version      0.1.2
 // @description  When you land abroad in Torn, scrape the travel shop and push fresh buy prices to Valigia's shared pool. Runs inside Torn PDA.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -16,10 +16,9 @@
 (function () {
   'use strict';
 
-  // ── Config ──────────────────────────────────────────────────────────────
+  // -- Config --------------------------------------------------------------
   // PDA substitutes ###PDA-APIKEY### with the user's Torn key at runtime.
   // Outside PDA the placeholder stays literal, and the script aborts cleanly.
-  // v0.1.1 — no behaviour change; bumped @version to verify PDA auto-update.
   const TORN_API_KEY = '###PDA-APIKEY###';
 
   const INGEST_URL =
@@ -31,7 +30,7 @@
   // exactly what the parser found. Useful on iPad where DevTools is absent.
   const DEBUG = false;
 
-  // Known Torn travel shop category names. Used as section anchors — the
+  // Known Torn travel shop category names. Used as section anchors: the
   // parser looks for these in visible text to group items by shop.
   const SHOP_CATEGORIES = [
     'General Store',
@@ -51,17 +50,17 @@
     'Barber Shop',
   ];
 
-  // ── Utilities ───────────────────────────────────────────────────────────
+  // -- Utilities -----------------------------------------------------------
   function log(...args) {
     if (DEBUG) {
       try { console.log('[valigia]', ...args); } catch { /* ignore */ }
     }
   }
 
-  function toast(message, kind = 'info') {
+  function toast(message, kind) {
     const bg = kind === 'error' ? '#b33' : kind === 'success' ? '#2a7' : '#333';
     const el = document.createElement('div');
-    el.textContent = `Valigia: ${message}`;
+    el.textContent = 'Valigia: ' + message;
     Object.assign(el.style, {
       position: 'fixed',
       top: '10px',
@@ -77,7 +76,7 @@
       boxShadow: '0 4px 16px rgba(0,0,0,.5)',
     });
     document.body.appendChild(el);
-    setTimeout(() => el.remove(), 6000);
+    setTimeout(function () { el.remove(); }, 6000);
   }
 
   function debugPanel(lines) {
@@ -106,7 +105,7 @@
   }
 
   function parseMoney(text) {
-    // "$1,234" / "$1.234" / "1234" → 1234
+    // "$1,234" / "$1.234" / "1234" -> 1234
     const digits = String(text).replace(/[^\d]/g, '');
     return digits ? Number(digits) : NaN;
   }
@@ -116,15 +115,15 @@
     return digits ? Number(digits) : NaN;
   }
 
-  // ── Destination detection ───────────────────────────────────────────────
+  // -- Destination detection -----------------------------------------------
   // Torn's travel page reads: "You are in {Country} and have..."
   function detectDestination() {
-    const body = document.body?.innerText || '';
+    const body = document.body && document.body.innerText || '';
     const m = body.match(/You are in ([A-Z][A-Za-z ]+?) and have/);
     return m ? m[1].trim() : null;
   }
 
-  // ── Shop scraping ───────────────────────────────────────────────────────
+  // -- Shop scraping -------------------------------------------------------
   // Strategy: every shop item row on the travel page contains an <img> whose
   // src matches /images/items/{id}/. We locate each such image, walk up to
   // the nearest row-like ancestor, extract name/stock/price from that row's
@@ -152,13 +151,13 @@
 
   function rowContainer(img) {
     // Find the closest ancestor that behaves like a row. We try a few shapes
-    // Torn has used — tr, li, div with sibling cells.
+    // Torn has used: tr, li, div with sibling cells.
     return (
       img.closest('tr') ||
       img.closest('li') ||
       img.closest('[class*="row"]') ||
       img.closest('[class*="Row"]') ||
-      img.parentElement?.parentElement ||
+      (img.parentElement && img.parentElement.parentElement) ||
       img.parentElement
     );
   }
@@ -173,7 +172,7 @@
     if (!row) return null;
 
     // The name is usually the alt text on the item image, or the first bit
-    // of text in the row. Prefer alt — it's the most stable.
+    // of text in the row. Prefer alt: it's the most stable.
     const altName = (img.getAttribute('alt') || '').trim();
     const rowText = (row.innerText || '').trim();
 
@@ -192,7 +191,7 @@
 
     // For stock, strip out the price portion first so its digits don't leak.
     const textWithoutPrice = rowText.replace(/\$\s*[\d,\.]+/g, ' ');
-    // Find the largest bare-integer token — stock is almost always >= 1.
+    // Find the largest bare-integer token: stock is almost always >= 1.
     const intTokens = textWithoutPrice.match(/(?<![\w.])\d[\d,]*(?![\w.])/g) || [];
     let stock = NaN;
     for (const tok of intTokens) {
@@ -200,7 +199,7 @@
       if (Number.isFinite(n) && (Number.isNaN(stock) || n > stock)) stock = n;
     }
 
-    return { item_id, name, stock, buy_price };
+    return { item_id: item_id, name: name, stock: stock, buy_price: buy_price };
   }
 
   function scrapeShops() {
@@ -221,32 +220,31 @@
       shops.get(category).push(parsed);
     }
 
-    return Array.from(shops.entries()).map(([category, items]) => ({
-      category,
-      items,
-    }));
+    return Array.from(shops.entries()).map(function (entry) {
+      return { category: entry[0], items: entry[1] };
+    });
   }
 
-  // ── Network ─────────────────────────────────────────────────────────────
+  // -- Network -------------------------------------------------------------
   function gmRequest(opts) {
     // Support both GM_xmlhttpRequest (classic) and GM.xmlHttpRequest (promise-ish).
-    return new Promise((resolve, reject) => {
+    return new Promise(function (resolve, reject) {
       const base = {
         method: opts.method || 'POST',
         url: opts.url,
         headers: opts.headers || {},
         data: opts.data,
         timeout: 15000,
-        onload: (res) => resolve(res),
-        onerror: (err) => reject(err),
-        ontimeout: () => reject(new Error('timeout')),
+        onload: function (res) { resolve(res); },
+        onerror: function (err) { reject(err); },
+        ontimeout: function () { reject(new Error('timeout')); },
       };
       if (typeof GM_xmlhttpRequest === 'function') {
         GM_xmlhttpRequest(base);
       } else if (typeof GM !== 'undefined' && GM.xmlHttpRequest) {
         GM.xmlHttpRequest(base).then(resolve, reject);
       } else {
-        reject(new Error('No GM_xmlhttpRequest available — install as userscript in PDA'));
+        reject(new Error('No GM_xmlhttpRequest available - install as userscript in PDA'));
       }
     });
   }
@@ -258,27 +256,27 @@
       headers: {
         'Content-Type': 'application/json',
         'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
       },
       data: JSON.stringify(payload),
     });
     let parsed = null;
-    try { parsed = JSON.parse(res.responseText); } catch { /* ignore */ }
+    try { parsed = JSON.parse(res.responseText); } catch (e) { /* ignore */ }
     return { status: res.status, body: parsed, raw: res.responseText };
   }
 
-  // ── Main ────────────────────────────────────────────────────────────────
+  // -- Main ----------------------------------------------------------------
   async function run() {
     // The placeholder stays literal if this isn't running inside PDA. Bail
     // quietly rather than firing a bogus request with a broken key.
-    if (!TORN_API_KEY || TORN_API_KEY.includes('PDA-APIKEY')) {
-      log('Not running inside PDA — aborting.');
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) {
+      log('Not running inside PDA - aborting.');
       return;
     }
 
     const destination = detectDestination();
     if (!destination) {
-      log('No "You are in X" marker — probably not landed yet.');
+      log('No "You are in X" marker - probably not landed yet.');
       return;
     }
 
@@ -288,44 +286,46 @@
     let shops = [];
     while (Date.now() - start < 8000) {
       shops = scrapeShops();
-      const total = shops.reduce((s, sh) => s + sh.items.length, 0);
+      const total = shops.reduce(function (s, sh) { return s + sh.items.length; }, 0);
       if (total > 0) break;
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise(function (r) { setTimeout(r, 500); });
     }
 
-    const totalItems = shops.reduce((s, sh) => s + sh.items.length, 0);
+    const totalItems = shops.reduce(function (s, sh) { return s + sh.items.length; }, 0);
     if (totalItems === 0) {
-      log('No shop items found after 8s — aborting.');
-      if (DEBUG) debugPanel([`destination=${destination}`, 'No items found.']);
+      log('No shop items found after 8s - aborting.');
+      if (DEBUG) debugPanel(['destination=' + destination, 'No items found.']);
       return;
     }
 
     if (DEBUG) {
-      const lines = [`destination=${destination}`, `shops=${shops.length}`, `items=${totalItems}`, ''];
+      const lines = ['destination=' + destination, 'shops=' + shops.length, 'items=' + totalItems, ''];
       for (const sh of shops) {
-        lines.push(`  [${sh.category}] ${sh.items.length} items`);
+        lines.push('  [' + sh.category + '] ' + sh.items.length + ' items');
         for (const it of sh.items.slice(0, 3)) {
-          lines.push(`    • ${it.name} (id=${it.item_id}) stock=${it.stock} $${it.buy_price}`);
+          lines.push('    - ' + it.name + ' (id=' + it.item_id + ') stock=' + it.stock + ' $' + it.buy_price);
         }
-        if (sh.items.length > 3) lines.push(`    … +${sh.items.length - 3} more`);
+        if (sh.items.length > 3) lines.push('    ... +' + (sh.items.length - 3) + ' more');
       }
       debugPanel(lines);
     }
 
     try {
-      const { status, body } = await postIngest({
+      const result = await postIngest({
         api_key: TORN_API_KEY,
-        destination,
-        shops,
+        destination: destination,
+        shops: shops,
       });
-      if (status >= 200 && status < 300 && body?.ok) {
-        toast(`${destination}: stored ${body.stored} items`, 'success');
+      const status = result.status;
+      const body = result.body;
+      if (status >= 200 && status < 300 && body && body.ok) {
+        toast(destination + ': stored ' + body.stored + ' items', 'success');
       } else {
-        const msg = body?.error || `HTTP ${status}`;
-        toast(`ingest failed — ${msg}`, 'error');
+        const msg = (body && body.error) || ('HTTP ' + status);
+        toast('ingest failed - ' + msg, 'error');
       }
     } catch (err) {
-      toast(`network error — ${err.message || err}`, 'error');
+      toast('network error - ' + (err && err.message || err), 'error');
     }
   }
 
