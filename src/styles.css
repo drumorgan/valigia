@@ -566,6 +566,16 @@ tr.row--negative td {
   color: var(--positive);
 }
 
+/* First-party scrape from the PDA userscript — distinct from the age-based
+   tiers because origin beats age. Brighter, bolder, with a subtle glow so
+   it reads as "authoritative" at a glance. */
+.freshness--scrape {
+  color: var(--positive);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-shadow: 0 0 6px rgba(74, 232, 160, 0.5);
+}
+
 .freshness--medium {
   color: var(--accent);
 }
