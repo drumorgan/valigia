@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.1.2
-// @description  When you land abroad in Torn, scrape the travel shop and push fresh buy prices to Valigia's shared pool. Runs inside Torn PDA.
+// @version      0.2.0
+// @description  Inside Torn PDA, scrape the travel shop and push fresh buy prices to Valigia's shared pool, then overlay profit-per-hour math on each shop row so the best-buy item is visible in-game.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @run-at       document-end
@@ -29,6 +29,41 @@
   // Flip to true to draw an always-on debug panel on the Torn page showing
   // exactly what the parser found. Useful on iPad where DevTools is absent.
   const DEBUG = false;
+
+  // -- Overlay defaults (see CLAUDE.md: "Goal #2 user prefs, option A") ----
+  // Hardcoded for v1. If you want per-device overrides later, swap these for
+  // values read from a small in-overlay gear icon persisted to PDA local-
+  // storage (keyed on 'valigia_prefs'). The overlay stays directionally
+  // correct for most players at these defaults.
+  const DEFAULT_SLOT_COUNT = 29;
+  // 1.0 = Standard, 0.7 = Airstrip/WLT, 0.49 = both. We default to Standard
+  // because it applies to everyone; the user can still fly Airstrip and
+  // treat the displayed profit/hr as a conservative floor.
+  const DEFAULT_FLIGHT_MULTIPLIER = 1.0;
+
+  // Public Supabase PostgREST endpoint for reading the sell_prices cache.
+  // Same anon key we use for the edge function POST; RLS on sell_prices
+  // allows SELECT to everyone (see migration 002_sell_prices.sql).
+  const SELL_PRICES_URL =
+    'https://vtslzplzlxdptpvxtanz.supabase.co/rest/v1/sell_prices';
+
+  // One-way flight times in minutes. Mirrors src/data/destinations.js in the
+  // main app. Keyed on whatever detectDestination() returns from the page.
+  const FLIGHT_MINS = {
+    'Mexico': 20,
+    'Cayman Islands': 57,
+    'Caymans': 57,
+    'Canada': 37,
+    'Hawaii': 121,
+    'United Kingdom': 152,
+    'UK': 152,
+    'Argentina': 189,
+    'Switzerland': 169,
+    'Japan': 203,
+    'China': 219,
+    'UAE': 259,
+    'South Africa': 311,
+  };
 
   // Known Torn travel shop category names. Used as section anchors: the
   // parser looks for these in visible text to group items by shop.
@@ -265,6 +300,253 @@
     return { status: res.status, body: parsed, raw: res.responseText };
   }
 
+  // -- Sell prices from Supabase -------------------------------------------
+  // Single GET against PostgREST with an in.(...) filter pulls every item
+  // we see on the shop page in one round trip. sell_prices is anon-readable
+  // by design (shared community cache).
+  async function fetchSellPrices(itemIds) {
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return new Map();
+    const idList = itemIds.join(',');
+    const url = SELL_PRICES_URL +
+      '?select=item_id,price,updated_at' +
+      '&item_id=in.(' + idList + ')';
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: url,
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) return new Map();
+      const rows = JSON.parse(res.responseText || '[]');
+      const map = new Map();
+      for (const r of rows) {
+        if (r && typeof r.item_id === 'number' && typeof r.price === 'number') {
+          map.set(r.item_id, { price: r.price, updatedAt: r.updated_at || null });
+        }
+      }
+      return map;
+    } catch (e) {
+      return new Map();
+    }
+  }
+
+  // -- Profit math (mirrors src/calculator.js in the main app) -------------
+  // Returns the shape the overlay renderer expects. Null output means we
+  // can't compute for this row (missing sell price, non-positive flight).
+  function computeProfit(opts) {
+    const buyPrice = opts.buyPrice;
+    const sellPrice = opts.sellPrice;
+    const stock = opts.stock;
+    const flightMins = opts.flightMins;
+    const slotCount = opts.slotCount || DEFAULT_SLOT_COUNT;
+    const flightMult = opts.flightMultiplier || DEFAULT_FLIGHT_MULTIPLIER;
+
+    if (!(sellPrice > 0) || !(flightMins > 0) || !(buyPrice > 0)) return null;
+
+    const netSell = sellPrice * 0.95;                // 5% item-market fee
+    const marginPerItem = netSell - buyPrice;
+    const marginPct = (marginPerItem / buyPrice) * 100;
+
+    // Effective slots honours available stock.
+    const effectiveSlots = (stock != null && stock >= 0)
+      ? Math.min(slotCount, stock)
+      : slotCount;
+    const stockLimited = stock != null && stock < slotCount;
+
+    const runCost = buyPrice * effectiveSlots;
+    const profitPerRun = marginPerItem * effectiveSlots;
+    const roundTripMins = flightMins * flightMult * 2;
+    const profitPerHour = roundTripMins > 0
+      ? (profitPerRun / roundTripMins) * 60
+      : 0;
+
+    return {
+      netSell: netSell,
+      marginPerItem: marginPerItem,
+      marginPct: marginPct,
+      effectiveSlots: effectiveSlots,
+      stockLimited: stockLimited,
+      runCost: runCost,
+      profitPerRun: profitPerRun,
+      profitPerHour: profitPerHour,
+    };
+  }
+
+  // -- Formatters ----------------------------------------------------------
+  function formatMoney(n) {
+    if (n == null || !Number.isFinite(n)) return '-';
+    const sign = n < 0 ? '-' : '';
+    const abs = Math.abs(Math.round(n));
+    return sign + '$' + abs.toLocaleString('en-US');
+  }
+
+  function formatPct(n) {
+    if (n == null || !Number.isFinite(n)) return '-';
+    return (n >= 0 ? '+' : '') + n.toFixed(0) + '%';
+  }
+
+  // -- Style injection -----------------------------------------------------
+  // Single <style> tag per page load. Kept minimal in v1; polish later.
+  let stylesInjected = false;
+  function injectStyles() {
+    if (stylesInjected) return;
+    stylesInjected = true;
+    const css = [
+      '.valigia-cell {',
+      '  padding: 4px 8px;',
+      '  font: 600 11px/1.3 ui-monospace, monospace;',
+      '  color: #c8cdd8;',
+      '  background: rgba(22,26,34,0.55);',
+      '  border-left: 2px solid #252a35;',
+      '  white-space: nowrap;',
+      '  vertical-align: middle;',
+      '}',
+      '.valigia-cell .v-hr { color: #e8c84a; font-weight: 700; }',
+      '.valigia-cell .v-margin-pos { color: #4ae8a0; }',
+      '.valigia-cell .v-margin-neg { color: #b33; }',
+      '.valigia-cell .v-muted { color: #5a6070; font-weight: 400; }',
+      '.valigia-cell .v-sep { color: #3a4050; margin: 0 4px; }',
+      '.valigia-best .valigia-cell {',
+      '  background: rgba(74,232,160,0.14);',
+      '  border-left: 3px solid #4ae8a0;',
+      '}',
+      '.valigia-best-badge {',
+      '  display: inline-block;',
+      '  background: #4ae8a0;',
+      '  color: #0d0f14;',
+      '  font-weight: 800;',
+      '  letter-spacing: 0.05em;',
+      '  padding: 1px 5px;',
+      '  border-radius: 3px;',
+      '  margin-right: 6px;',
+      '  font-size: 10px;',
+      '}',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-overlay-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  // -- Overlay render ------------------------------------------------------
+  // For each row we scraped, compute profit and inject a cell at the end of
+  // the row showing margin + profit/hr. Mark the top profit/hr row with a
+  // BEST badge and a subtle green highlight.
+  function renderOverlay(shops, sellPriceMap, flightMins) {
+    injectStyles();
+
+    // Flatten every scraped item into a row descriptor with a reference to
+    // its DOM <tr> so we can inject directly. We re-walk the same images we
+    // scraped from to find the tr - keeps the injection index-safe even if
+    // the page reorders rows.
+    const allRows = [];
+    const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
+    for (const img of imgs) {
+      const src = img.getAttribute('src') || '';
+      const idMatch = src.match(/\/images\/items\/(\d+)\//);
+      if (!idMatch) continue;
+      const item_id = Number(idMatch[1]);
+
+      const tr = img.closest('tr');
+      if (!tr) continue;
+      // Skip rows we've already decorated (in case the script fires twice
+      // from tab switches inside the same page).
+      if (tr.classList.contains('valigia-decorated')) continue;
+
+      // Find the scraped record for this item_id so we don't re-parse the
+      // row ourselves (already done by scrapeShops).
+      let buyPrice = null;
+      let stock = null;
+      for (const sh of shops) {
+        for (const it of sh.items) {
+          if (it.item_id === item_id) {
+            buyPrice = it.buy_price;
+            stock = it.stock;
+            break;
+          }
+        }
+        if (buyPrice != null) break;
+      }
+      if (buyPrice == null) continue;
+
+      const sp = sellPriceMap.get(item_id);
+      const sellPrice = sp ? sp.price : null;
+      const metrics = sellPrice != null
+        ? computeProfit({
+            buyPrice: buyPrice,
+            sellPrice: sellPrice,
+            stock: stock,
+            flightMins: flightMins,
+          })
+        : null;
+
+      allRows.push({
+        tr: tr,
+        item_id: item_id,
+        buyPrice: buyPrice,
+        stock: stock,
+        sellPrice: sellPrice,
+        metrics: metrics,
+      });
+    }
+
+    // Rank by profit/hr - only rows with positive profit/hr and non-zero
+    // stock are eligible for the BEST badge.
+    let best = null;
+    for (const r of allRows) {
+      if (!r.metrics) continue;
+      if (r.metrics.profitPerHour <= 0) continue;
+      if (r.stock != null && r.stock <= 0) continue;
+      if (!best || r.metrics.profitPerHour > best.metrics.profitPerHour) best = r;
+    }
+
+    // Inject the cell into each row.
+    for (const r of allRows) {
+      const td = document.createElement('td');
+      td.className = 'valigia-cell';
+
+      if (!r.metrics) {
+        if (r.sellPrice == null) {
+          td.innerHTML = '<span class="v-muted">no sell data</span>';
+        } else {
+          td.innerHTML = '<span class="v-muted">-</span>';
+        }
+      } else {
+        const m = r.metrics;
+        const isBest = (r === best);
+        const marginClass = m.marginPerItem >= 0 ? 'v-margin-pos' : 'v-margin-neg';
+        const outOfStock = (r.stock != null && r.stock <= 0);
+
+        let html = '';
+        if (isBest) html += '<span class="valigia-best-badge">BEST</span>';
+        if (outOfStock) {
+          html += '<span class="v-muted">stock 0 &middot; skip</span>';
+        } else {
+          html += '<span class="' + marginClass + '">' + formatMoney(m.marginPerItem) + '/ea</span>';
+          html += '<span class="v-sep">&middot;</span>';
+          html += '<span class="' + marginClass + '">' + formatPct(m.marginPct) + '</span>';
+          html += '<span class="v-sep">&middot;</span>';
+          html += '<span class="v-hr">' + formatMoney(m.profitPerHour) + '/hr</span>';
+          if (m.stockLimited) {
+            html += '<span class="v-sep">&middot;</span>';
+            html += '<span class="v-muted" title="Only ' + m.effectiveSlots + ' of ' + DEFAULT_SLOT_COUNT + ' slots fillable">slots:' + m.effectiveSlots + '</span>';
+          }
+        }
+        td.innerHTML = html;
+        if (isBest) r.tr.classList.add('valigia-best');
+      }
+
+      r.tr.appendChild(td);
+      r.tr.classList.add('valigia-decorated');
+    }
+
+    return { total: allRows.length, withMetrics: allRows.filter(r => r.metrics).length, best: best };
+  }
+
   // -- Main ----------------------------------------------------------------
   async function run() {
     // The placeholder stays literal if this isn't running inside PDA. Bail
@@ -310,23 +592,64 @@
       debugPanel(lines);
     }
 
-    try {
-      const result = await postIngest({
-        api_key: TORN_API_KEY,
-        destination: destination,
-        shops: shops,
-      });
-      const status = result.status;
-      const body = result.body;
-      if (status >= 200 && status < 300 && body && body.ok) {
-        toast(destination + ': stored ' + body.stored + ' items', 'success');
-      } else {
-        const msg = (body && body.error) || ('HTTP ' + status);
-        toast('ingest failed - ' + msg, 'error');
+    // Collect the item_ids we need sell prices for (single Supabase GET).
+    const itemIds = [];
+    const seen = new Set();
+    for (const sh of shops) {
+      for (const it of sh.items) {
+        if (!seen.has(it.item_id)) {
+          seen.add(it.item_id);
+          itemIds.push(it.item_id);
+        }
       }
-    } catch (err) {
-      toast('network error - ' + (err && err.message || err), 'error');
     }
+
+    const flightMins = FLIGHT_MINS[destination] || 0;
+
+    // Fire ingest (POST) and sell-price fetch (GET) in parallel. Overlay
+    // render waits only on the sell-price fetch; ingest toast fires
+    // independently when its POST resolves.
+    const ingestPromise = (async function () {
+      try {
+        const result = await postIngest({
+          api_key: TORN_API_KEY,
+          destination: destination,
+          shops: shops,
+        });
+        const status = result.status;
+        const body = result.body;
+        if (status >= 200 && status < 300 && body && body.ok) {
+          toast(destination + ': stored ' + body.stored + ' items', 'success');
+        } else {
+          const msg = (body && body.error) || ('HTTP ' + status);
+          toast('ingest failed - ' + msg, 'error');
+        }
+      } catch (err) {
+        toast('network error - ' + (err && err.message || err), 'error');
+      }
+    })();
+
+    const overlayPromise = (async function () {
+      try {
+        const sellPriceMap = await fetchSellPrices(itemIds);
+        const stats = renderOverlay(shops, sellPriceMap, flightMins);
+        if (DEBUG) {
+          const bestLine = stats.best
+            ? ('best=' + stats.best.item_id + ' profit/hr=' + Math.round(stats.best.metrics.profitPerHour))
+            : 'best=(none eligible)';
+          debugPanel([
+            'destination=' + destination,
+            'flightMins=' + flightMins + ' (one-way)',
+            'overlay rows=' + stats.total + ' with-metrics=' + stats.withMetrics,
+            bestLine,
+          ]);
+        }
+      } catch (err) {
+        log('overlay error:', err);
+      }
+    })();
+
+    await Promise.all([ingestPromise, overlayPromise]);
   }
 
   // Run once after DOM is settled. Torn's SPA may re-render on in-page nav;
