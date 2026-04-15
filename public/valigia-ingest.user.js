@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.2.2
+// @version      0.2.3
 // @description  Inside Torn PDA, scrape the travel shop and push fresh buy prices to Valigia's shared pool, then overlay per-item sell-price and margin on each shop row so the best-buy item is visible in-game.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -31,8 +31,12 @@
   const DEBUG = false;
 
   // -- Overlay design note -------------------------------------------------
-  // The overlay shows PER-ITEM numbers only: net sell, absolute margin, and
-  // margin percent. It deliberately does NOT multiply by slot count. Doing
+  // The overlay shows PER-ITEM numbers only: Market Price (net of the 5%
+  // item-market fee), absolute margin, and margin percent. The value is
+  // explicitly labelled "Market Price" so it's unambiguous against Torn's
+  // existing "Cost" / "Buy" columns on the shop page — those are what you
+  // pay abroad; Market Price is what you'll get listing back home.
+  // It deliberately does NOT multiply by slot count. Doing
   // so would require either hardcoding a default (wrong for many players)
   // or syncing the web app's slot preference through Supabase (extra
   // plumbing for a value the player already knows in their head). Ranking
@@ -374,6 +378,13 @@
       '  border-left: 3px solid #252a35;',
       '  border-radius: 2px;',
       '}',
+      '.valigia-cell .v-label {',
+      '  color: #5a6070;',
+      '  font-weight: 500;',
+      '  text-transform: uppercase;',
+      '  letter-spacing: 0.04em;',
+      '  font-size: 10px;',
+      '}',
       '.valigia-cell .v-sell { color: #c8cdd8; }',
       '.valigia-cell .v-margin-pos { color: #4ae8a0; }',
       '.valigia-cell .v-margin-neg { color: #b33; }',
@@ -491,7 +502,7 @@
 
       if (!r.metrics) {
         if (r.sellPrice == null) {
-          cell.innerHTML = '<span class="v-muted">no sell data</span>';
+          cell.innerHTML = '<span class="v-muted">no market price data</span>';
         } else {
           cell.innerHTML = '<span class="v-muted">-</span>';
         }
@@ -506,9 +517,12 @@
         if (outOfStock) {
           html += '<span class="v-muted">stock 0 &middot; skip</span>';
         } else {
-          // "sell $X" is the net (after the 5% item-market fee), which is
-          // the number the player actually realises per unit.
-          html += '<span class="v-sell">sell ' + formatMoney(m.netSell) + '</span>';
+          // Label the number "Market Price" so it's clearly distinct from
+          // Torn's existing "Cost" / "Buy" columns on the shop page. The
+          // value shown is the net per-unit Item Market sell price (after
+          // the 5% market fee) — what the player actually realises per unit.
+          html += '<span class="v-label">Market Price</span> ';
+          html += '<span class="v-sell">' + formatMoney(m.netSell) + '</span>';
           html += '<span class="v-sep">&middot;</span>';
           html += '<span class="' + marginClass + '">' + formatMoney(m.marginPerItem) + '</span>';
           html += '<span class="v-sep">&middot;</span>';
