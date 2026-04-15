@@ -8,6 +8,11 @@
 
 const SCRIPT_URL = 'https://valigia.girovagabondo.com/valigia-ingest.user.js';
 
+// Once a user has opened (or dismissed) the install modal, flip this flag
+// so the button stops pulsing forever on subsequent visits. One-time nudge
+// only — not a nag.
+const SEEN_STORAGE_KEY = 'valigia-pda-button-seen';
+
 /**
  * Mount the install button into the given container (typically the
  * #player-badge). Safe to call multiple times - we remove any previous
@@ -24,13 +29,45 @@ export function mountPdaInstallButton(container) {
   btn.title = 'Install in-game overlay (Torn PDA)';
   btn.setAttribute('aria-label', 'Install in-game overlay');
   btn.innerHTML = '<span class="pda-install-icon" aria-hidden="true">📱</span><span class="pda-install-text">PDA overlay</span>';
-  btn.addEventListener('click', openModal);
+
+  // First-time nudge: pulse the button until the user either opens the
+  // modal or closes it. Once flagged, never pulse again across future
+  // visits — the localStorage key persists per browser profile.
+  if (!hasSeenButton()) {
+    btn.classList.add('pulsing');
+  }
+
+  btn.addEventListener('click', () => {
+    markButtonSeen();
+    btn.classList.remove('pulsing');
+    openModal();
+  });
 
   // Place it before the logout button if one exists, so the destructive
   // action stays rightmost. Otherwise append.
   const logout = container.querySelector('.logout-btn');
   if (logout) container.insertBefore(btn, logout);
   else container.appendChild(btn);
+}
+
+// ── First-time-seen flag ───────────────────────────────────────
+
+function hasSeenButton() {
+  try {
+    return localStorage.getItem(SEEN_STORAGE_KEY) === '1';
+  } catch {
+    // Private mode / storage disabled — don't pulse forever in that case,
+    // just skip the nudge.
+    return true;
+  }
+}
+
+function markButtonSeen() {
+  try {
+    localStorage.setItem(SEEN_STORAGE_KEY, '1');
+  } catch {
+    // ignore
+  }
 }
 
 // ── Modal ──────────────────────────────────────────────────────
