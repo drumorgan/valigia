@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.3.0
+// @version      0.3.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices straight into the community cache, (3) any bazaar — push fresh bazaar listings + owner so the bazaar scanner learns new sources for free.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -923,12 +923,34 @@
     }
   }
 
-  // Run once after DOM is settled. Torn's SPA may re-render on in-page nav;
-  // for now we only handle the initial landing on each of the three matched
-  // pages, which is the common case.
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', dispatch, { once: true });
-  } else {
-    setTimeout(dispatch, 500);
+  // Dispatch scheduler. Two entry points fire it: the initial DOM-ready
+  // landing, and any SPA hash change (the Item Market's #/market/view=... URL
+  // shape is hash-routed, so clicking between items never triggers
+  // DOMContentLoaded again). The `lastDispatchedUrl` guard skips redundant
+  // dispatches when the full URL hasn't actually changed, and a small
+  // debounce collapses bursts of rapid nav events into one run.
+  let lastDispatchedUrl = null;
+  let dispatchTimer = null;
+  function scheduleDispatch(reason) {
+    if (dispatchTimer) clearTimeout(dispatchTimer);
+    dispatchTimer = setTimeout(async function () {
+      dispatchTimer = null;
+      if (location.href === lastDispatchedUrl) {
+        log('dispatch skipped (same url) reason=' + reason);
+        return;
+      }
+      lastDispatchedUrl = location.href;
+      log('dispatch reason=' + reason);
+      try { await dispatch(); } catch (e) { log('dispatch error:', e); }
+    }, 400);
   }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded',
+      function () { scheduleDispatch('initial'); }, { once: true });
+  } else {
+    scheduleDispatch('initial');
+  }
+  window.addEventListener('hashchange',
+    function () { scheduleDispatch('hashchange'); });
 })();
