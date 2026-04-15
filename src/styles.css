@@ -1900,3 +1900,244 @@ tr.row--negative td {
 .yata-offline-text {
   color: var(--text);
 }
+
+/* ── PDA Install Button + Modal ────────────────────────────── */
+
+.pda-install-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.pda-install-btn:hover {
+  color: var(--accent);
+  border-color: var(--muted);
+}
+
+.pda-install-icon {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.pda-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.pda-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 520px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pda-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.pda-modal-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.1rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pda-modal-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+
+.pda-modal-close:hover {
+  color: var(--text);
+}
+
+.pda-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.pda-modal-intro {
+  color: var(--text);
+  margin-bottom: 1rem;
+}
+
+.pda-modal-intro em {
+  color: var(--accent);
+  font-style: normal;
+}
+
+.pda-section-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 1.1rem 0 0.5rem;
+}
+
+.pda-benefits {
+  margin: 0 0 0.5rem;
+  padding-left: 1.2rem;
+}
+
+.pda-benefits li {
+  margin-bottom: 0.4rem;
+}
+
+.pda-benefits strong {
+  color: var(--positive);
+  font-weight: 700;
+}
+
+.pda-requirement {
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: rgba(232, 130, 74, 0.08);
+  border-left: 2px solid var(--warning);
+  padding: 0.5rem 0.75rem;
+  border-radius: 3px;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.pda-requirement strong {
+  color: var(--warning);
+}
+
+.pda-steps {
+  margin: 0.25rem 0;
+  padding-left: 1.4rem;
+}
+
+.pda-steps li {
+  margin-bottom: 0.55rem;
+}
+
+.pda-steps strong {
+  color: var(--text);
+}
+
+.pda-icon-hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.pda-url-block {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.pda-url {
+  flex: 1;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--text);
+  word-break: break-all;
+  user-select: all;
+  line-height: 1.4;
+  align-self: center;
+}
+
+.pda-copy-btn {
+  flex-shrink: 0;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 4px;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+  transition: background 120ms linear;
+}
+
+.pda-copy-btn:hover {
+  background: #f2d45b;
+}
+
+.pda-copy-btn.copied {
+  background: var(--positive);
+}
+
+.pda-modal-footer {
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--border);
+  text-align: right;
+}
+
+.pda-modal-done {
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 5px;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.5rem 1.2rem;
+  cursor: pointer;
+}
+
+.pda-modal-done:hover {
+  background: #f2d45b;
+}
+
+/* Narrow screens — stack URL + copy button so the URL isn't squeezed */
+@media (max-width: 480px) {
+  .pda-url-block {
+    flex-direction: column;
+  }
+  .pda-copy-btn {
+    align-self: flex-end;
+  }
+  .pda-install-text {
+    display: none;
+  }
+  .pda-install-btn {
+    padding: 0.2rem 0.45rem;
+  }
+}
