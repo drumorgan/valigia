@@ -1924,6 +1924,34 @@ tr.row--negative td {
   border-color: var(--muted);
 }
 
+/* One-time nudge for players who haven't opened the install modal yet.
+   The pulse uses the cargo-gold accent so it reads as a friendly hint
+   rather than an alert. Removed the moment the button is clicked (and
+   persisted in localStorage so it never pulses again on future visits). */
+.pda-install-btn.pulsing {
+  animation: pda-pulse 2s ease-in-out infinite;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+@keyframes pda-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(232, 200, 74, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(232, 200, 74, 0);
+  }
+}
+
+/* Respect reduced-motion preferences — drop the animation but keep
+   the accent colour as a static hint for users who'd rather not have
+   motion at all. */
+@media (prefers-reduced-motion: reduce) {
+  .pda-install-btn.pulsing {
+    animation: none;
+  }
+}
+
 .pda-install-icon {
   font-size: 0.85rem;
   line-height: 1;
