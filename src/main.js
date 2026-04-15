@@ -1,6 +1,7 @@
 // Valigia — entry point & orchestrator
 
 import { callTornApi } from './torn-api.js';
+import { supabase } from './supabase.js';
 import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
 import { fetchAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices, refreshSellPrices } from './market.js';
@@ -30,6 +31,10 @@ let yataFetchedAt = 0;
 
 // ── Boot ───────────────────────────────────────────────────────
 async function boot() {
+  // Header-level PDA-scouts counter is independent of login state — fire it
+  // in parallel so it shows up on the login screen too.
+  loadPdaScoutCount();
+
   const result = await tryAutoLogin();
 
   if (result.success) {
@@ -38,6 +43,33 @@ async function boot() {
     startDashboard(result.player_id);
   } else {
     showLoginScreen();
+  }
+}
+
+// ── PDA scouts counter ────────────────────────────────────────
+/**
+ * Fetch the count of distinct PDA userscript contributors in the last 24h
+ * and reveal the header banner. Silently hides itself on any failure — the
+ * counter is a nice-to-have vanity metric, not load-blocking.
+ *
+ * Only travel-runner users are counted. The Item Market + Bazaar runners
+ * write via anon PostgREST without attribution, so they're intentionally
+ * excluded. See migration 015_pda_scout_count.sql for the trust rationale.
+ */
+async function loadPdaScoutCount() {
+  const banner = document.getElementById('pda-scouts-banner');
+  const countEl = document.getElementById('pda-scouts-count');
+  if (!banner || !countEl) return;
+
+  try {
+    const { data, error } = await supabase.rpc('get_pda_scouts_24h');
+    if (error || data == null) return;
+    const n = Number(data);
+    if (!Number.isFinite(n) || n <= 0) return;
+    countEl.textContent = n.toLocaleString();
+    banner.hidden = false;
+  } catch {
+    // Counter is vanity — silent fail keeps it invisible rather than broken.
   }
 }
 
