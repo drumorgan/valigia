@@ -89,16 +89,17 @@ editor; Supabase does not auto-apply them).
 | Table | Purpose |
 |---|---|
 | `player_secrets` | AES-256-GCM encrypted API keys. Service-role-only. |
-| `sell_prices` | Shared cache of item market sell prices (item_id PK). |
-| `bazaar_prices` | Crowd-sourced bazaar pool (item_id + bazaar_owner_id composite key, with `miss_count` for pool hygiene). |
+| `sell_prices` | Shared cache of item market sell prices (item_id PK). Written by both the web app and the PDA userscript's Item Market runner. |
+| `bazaar_prices` | Crowd-sourced bazaar pool (item_id + bazaar_owner_id composite key, with `miss_count` for pool hygiene). Written by the web-app scanner and the PDA userscript's Bazaar runner. |
+| `abroad_prices` | First-party travel-shop observations (item_id + destination composite key). Written ONLY by the `ingest-travel-shop` edge function, which validates the submitting key's `player_id` before upserting. Publicly readable. Resurrected in migration 013 to carry live PDA scrapes. |
 | `community_stats` | Single-row spin counter. |
+| `yata_snapshots` | YATA abroad-price history (fallback data source behind first-party scrapes). |
 
 **RPC functions** (granted to anon + authenticated):
 - `record_scan(found_deal boolean)` — atomic increment after each scan
 - `get_player_count()` — live player count from `player_secrets`
 
 **Dropped (do not recreate):**
-- `abroad_prices` — replaced by YATA community API
 - `secret_audit_log` — was write-only, never read
 
 -----
@@ -296,12 +297,15 @@ valigia.girovagabondo.com/
 │       ├── abroad-items.js      — static destination/type metadata
 │       ├── bazaar-watchlist.js  — curated high-value item IDs
 │       └── destinations.js      — destination list + flight times
+├── public/
+│   └── valigia-ingest.user.js  — Torn PDA userscript (see "PDA Userscript" below)
 ├── supabase/
 │   ├── functions/
-│   │   ├── torn-proxy/      — Torn API CORS proxy
-│   │   ├── set-api-key/     — encrypt + store API key
-│   │   ├── auto-login/      — decrypt key for session
-│   │   └── _shared/         — cors + crypto helpers
+│   │   ├── torn-proxy/           — Torn API CORS proxy
+│   │   ├── set-api-key/          — encrypt + store API key
+│   │   ├── auto-login/           — decrypt key for session
+│   │   ├── ingest-travel-shop/   — validates PDA userscript travel scrapes, upserts abroad_prices
+│   │   └── _shared/              — cors + crypto helpers
 │   └── migrations/
 │       ├── 001_initial_schema.sql
 │       ├── 002_sell_prices.sql
@@ -310,13 +314,73 @@ valigia.girovagabondo.com/
 │       ├── 005_community_stats.sql
 │       ├── 006_simplify_stats.sql
 │       ├── 007_grant_rpc_functions.sql
-│       └── 008_bazaar_miss_count.sql
+│       ├── 008_bazaar_miss_count.sql
+│       ├── 009_yata_snapshots.sql
+│       ├── 010_yata_snapshots_bigint.sql
+│       ├── 011_sell_price_depth.sql
+│       ├── 012_dedup_yata_snapshots.sql
+│       ├── 013_abroad_prices.sql
+│       └── 014_session_token.sql
 ├── .env
 ├── vite.config.js
 └── .github/
     └── workflows/
         └── deploy.yml
 ```
+
+-----
+
+## PDA Userscript (`public/valigia-ingest.user.js`)
+
+A single userscript that runs inside Torn PDA across three page types. PDA
+substitutes `###PDA-APIKEY###` with the installed user's Torn key at
+runtime; the script refuses to run if that placeholder is still literal
+(i.e. outside PDA).
+
+The script serves the same file both as the install source and as its own
+auto-update source (`@updateURL`/`@downloadURL` point at
+`valigia.girovagabondo.com/valigia-ingest.user.js`), so bumping the
+`@version` header and deploying is enough to push updates to every
+installed PDA.
+
+### Runners (`dispatch()` routes by URL)
+
+| Page match | Runner | Writes to | Via |
+|---|---|---|---|
+| `page.php?sid=travel*` | `runTravel()` | `abroad_prices` + overlay | `ingest-travel-shop` edge fn (key-validated upsert) |
+| `page.php?sid=ItemMarket*` | `runItemMarket()` | `sell_prices` | Direct PostgREST anon upsert |
+| `bazaar.php*` | `runBazaar()` | `bazaar_prices` | Direct PostgREST anon upsert |
+
+The travel runner also paints a per-row overlay (`Market Price · $margin ·
+margin%`) with a green BEST badge on the highest-margin in-stock row.
+The Item Market and Bazaar runners are write-only (no in-page UI beyond
+the toast). All three use a single shared `rowContainer()` heuristic
+that tolerates Torn's migration from `<table>` to div-based layouts.
+
+### Why direct anon upserts for sell / bazaar, but an edge function for travel?
+
+- `sell_prices` and `bazaar_prices` already have anon `INSERT`/`UPDATE`
+  RLS policies — the web app writes to them the same way. The userscript
+  reuses that existing trust surface, avoiding a Torn API key-validation
+  round-trip per page load.
+- `abroad_prices` has no anon-write policy by design: it's the only
+  table where the row carries `observer_player_id`, and that attribution
+  is only meaningful if the edge function validates the submitting key
+  against `user/?selections=basic` before writing. Service-role writes
+  only, via `ingest-travel-shop`.
+
+### Known limitations
+
+- One-shot per page load. Torn's SPA navigation inside a sid=X page
+  won't re-trigger the scraper. The overwhelmingly common case —
+  landing on the URL, letting the page hydrate — is handled via the
+  hydration-poll loop in each runner.
+- The Item Market and Bazaar scrapers don't yet compute miss-count
+  deltas for items that *used* to be in the scraped view but aren't
+  anymore. The web-app scanner's next live check handles those.
+- DOM scraping is inherently fragile. Every runner supports a `DEBUG`
+  flag that draws an on-page debug panel — essential on iPad where
+  DevTools aren't available.
 
 -----
 
@@ -363,6 +427,11 @@ valigia.girovagabondo.com/
 - **Best Run Right Now** — Unified card that compares the top travel run
   against a verified bazaar deal and displays whichever has higher
   profit/hr
+- **PDA userscript** — Three-runner ingest pipeline: travel shop scrapes
+  (first-party `abroad_prices`), Item Market listings scrapes (direct
+  `sell_prices` refresh), and bazaar page scrapes (direct
+  `bazaar_prices` pool contribution). Travel page also gets an in-game
+  per-row profit overlay.
 
 ### Known Limitations
 - **Slots** — Auto-detect misses faction perks; user overrides manually.
@@ -373,8 +442,10 @@ valigia.girovagabondo.com/
 
 ### Supabase Tables (Active)
 - `player_secrets` — Encrypted API keys
-- `sell_prices` — Cached item market sell prices
-- `bazaar_prices` — Crowd-sourced bazaar pool with miss-count hygiene
+- `sell_prices` — Cached item market sell prices (web app + PDA Item Market runner)
+- `bazaar_prices` — Crowd-sourced bazaar pool with miss-count hygiene (web app + PDA Bazaar runner)
+- `abroad_prices` — First-party travel-shop scrapes from PDA (service-role writes via ingest-travel-shop)
+- `yata_snapshots` — YATA abroad-price history (fallback data source)
 - `community_stats` — Single-row spin counter
 
 -----
@@ -410,7 +481,10 @@ pages.
   and restock estimates. Could supplement YATA.
 
 ### What NOT to Copy
-- Userscript architecture (DOM scraping on torn.com) — our standalone
-  app is simpler for users.
 - Restock timing predictions — requires significant data infrastructure.
 - Draggable floating panel UX — overcomplicated for a standalone app.
+
+*(Historical note: "userscript architecture" used to be on this list. It's
+not anymore — we ship `public/valigia-ingest.user.js`, a Torn PDA userscript
+that scrapes three page types and pushes to the same Supabase tables the
+web app uses. Web app + userscript both benefit from the shared pool.)*

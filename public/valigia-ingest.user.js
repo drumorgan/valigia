@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.2.3
-// @description  Inside Torn PDA, scrape the travel shop and push fresh buy prices to Valigia's shared pool, then overlay per-item sell-price and margin on each shop row so the best-buy item is visible in-game.
+// @version      0.3.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices straight into the community cache, (3) any bazaar — push fresh bazaar listings + owner so the bazaar scanner learns new sources for free.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
+// @match        https://www.torn.com/page.php?sid=ItemMarket*
+// @match        https://www.torn.com/bazaar.php*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
@@ -44,11 +46,16 @@
   // we sort by margin-per-item or profit/hr, so the BEST badge is still
   // accurate without any slot-count input.
 
-  // Public Supabase PostgREST endpoint for reading the sell_prices cache.
-  // Same anon key we use for the edge function POST; RLS on sell_prices
-  // allows SELECT to everyone (see migration 002_sell_prices.sql).
-  const SELL_PRICES_URL =
-    'https://vtslzplzlxdptpvxtanz.supabase.co/rest/v1/sell_prices';
+  // Public Supabase PostgREST base. The sell_prices cache is read by the
+  // travel-page overlay (anon SELECT, see migration 002_sell_prices.sql) and
+  // written by the Item Market / Bazaar ingest runners (anon INSERT+UPDATE,
+  // same migration + 004_bazaar_prices.sql). Going direct to PostgREST keeps
+  // those two new runners edge-function-free: no Torn API key-validation
+  // round-trip on every scrape, matching how the web app already writes to
+  // these community-data tables.
+  const SUPABASE_REST_URL = 'https://vtslzplzlxdptpvxtanz.supabase.co/rest/v1';
+  const SELL_PRICES_URL = SUPABASE_REST_URL + '/sell_prices';
+  const BAZAAR_PRICES_URL = SUPABASE_REST_URL + '/bazaar_prices';
 
   // Known Torn travel shop category names. Used as section anchors: the
   // parser looks for these in visible text to group items by shop.
@@ -319,6 +326,43 @@
     }
   }
 
+  // -- Supabase direct upsert ----------------------------------------------
+  // PostgREST upsert with conflict resolution on the table's primary key.
+  // Used by the Item Market + Bazaar runners to write straight into the
+  // community pool without routing through an edge function.
+  //
+  // Trust model: the data the userscript scrapes is item_id → price/qty.
+  // There's no player secret involved, and the sell_prices / bazaar_prices
+  // tables already allow anon writes for the same reason the web app does.
+  // If spam ever becomes an issue we can add edge-function gating later
+  // without changing the scraper shape.
+  async function supabaseUpsert(tableUrl, rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { ok: true, count: 0 };
+    }
+    try {
+      const res = await gmRequest({
+        method: 'POST',
+        url: tableUrl,
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          // merge-duplicates: upsert on primary key, update non-PK columns.
+          // return=minimal: don't echo the rows back - we don't need them.
+          'Prefer': 'resolution=merge-duplicates,return=minimal',
+        },
+        data: JSON.stringify(rows),
+      });
+      if (res.status >= 200 && res.status < 300) {
+        return { ok: true, count: rows.length };
+      }
+      return { ok: false, error: 'HTTP ' + res.status, raw: res.responseText };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
+  }
+
   // -- Per-item profit math ------------------------------------------------
   // The overlay only displays per-item values, so we only compute them.
   // Net sell is after Torn's 5% item-market fee. Returns null when inputs
@@ -550,15 +594,214 @@
     return { total: allRows.length, withMetrics: allRows.filter(r => r.metrics).length, best: best };
   }
 
-  // -- Main ----------------------------------------------------------------
-  async function run() {
-    // The placeholder stays literal if this isn't running inside PDA. Bail
-    // quietly rather than firing a bogus request with a broken key.
-    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) {
-      log('Not running inside PDA - aborting.');
+  // -- Item Market scraper -------------------------------------------------
+  // Every listing card on the modern Item Market has an <img> with the item
+  // id in its src and a $-prefixed price somewhere in the same row/card. We
+  // group all rows by item_id, pick the lowest price as the floor, count the
+  // rows as the listing depth, and upsert that straight into sell_prices.
+  //
+  // One catch: the same item image appears in navigation / sidebar / search
+  // chrome. We skip any row that doesn't contain a $-price so chrome rows
+  // don't pollute the listing count.
+  function scrapeItemMarket() {
+    const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
+    const byItem = new Map(); // item_id -> [{price, qty}]
+    const seenRows = new Set();
+
+    for (const img of imgs) {
+      const src = img.getAttribute('src') || '';
+      const idMatch = src.match(/\/images\/items\/(\d+)\//);
+      if (!idMatch) continue;
+      const item_id = Number(idMatch[1]);
+
+      const row = rowContainer(img);
+      if (!row || seenRows.has(row)) continue;
+      seenRows.add(row);
+
+      const text = (row.innerText || '').trim();
+      const priceMatch = text.match(/\$\s*([\d,\.]+)/);
+      if (!priceMatch) continue; // no price in this row => chrome, skip
+      const price = parseMoney(priceMatch[1]);
+      if (!Number.isFinite(price) || price <= 0) continue;
+
+      // Quantity: first bare integer after removing the price token.
+      // Defaults to 1 because a listing implicitly has at least one unit.
+      const withoutPrice = text.replace(/\$\s*[\d,\.]+/g, ' ');
+      const intTokens = withoutPrice.match(/(?<![\w.])\d[\d,]*(?![\w.])/g) || [];
+      let qty = 1;
+      for (const tok of intTokens) {
+        const n = parseInt10(tok);
+        if (Number.isFinite(n) && n > 0) { qty = n; break; }
+      }
+
+      if (!byItem.has(item_id)) byItem.set(item_id, []);
+      byItem.get(item_id).push({ price: price, qty: qty });
+    }
+
+    const now = new Date().toISOString();
+    const rows = [];
+    for (const [item_id, listings] of byItem) {
+      if (listings.length === 0) continue;
+      listings.sort(function (a, b) { return a.price - b.price; });
+      const floor = listings[0];
+      rows.push({
+        item_id: item_id,
+        price: floor.price,
+        floor_qty: floor.qty,
+        listing_count: listings.length,
+        updated_at: now,
+      });
+    }
+    return rows;
+  }
+
+  async function runItemMarket() {
+    // Poll briefly for listings to hydrate - the Item Market page is SPA-ish.
+    const start = Date.now();
+    let rows = [];
+    while (Date.now() - start < 8000) {
+      rows = scrapeItemMarket();
+      if (rows.length > 0) break;
+      await new Promise(function (r) { setTimeout(r, 500); });
+    }
+
+    if (DEBUG) {
+      const lines = ['page=itemmarket', 'items=' + rows.length];
+      for (const r of rows.slice(0, 10)) {
+        lines.push('  id=' + r.item_id + ' $' + r.price + ' x' + r.floor_qty +
+                   ' (' + r.listing_count + ' listings)');
+      }
+      debugPanel(lines);
+    }
+
+    if (rows.length === 0) {
+      log('Item Market: no listings found, skipping upsert.');
       return;
     }
 
+    const result = await supabaseUpsert(SELL_PRICES_URL, rows);
+    if (result.ok) {
+      toast('market: refreshed ' + result.count + ' prices', 'success');
+    } else {
+      toast('market upsert failed - ' + (result.error || 'unknown'), 'error');
+    }
+  }
+
+  // -- Bazaar scraper ------------------------------------------------------
+  // Bazaar URLs look like bazaar.php?userId=123 (legacy) or with step= query
+  // strings in the modern layout. We pull the owner id from either the
+  // query string or the hash; if neither carries one, we're looking at the
+  // player's own bazaar - nothing useful to push to the shared pool there,
+  // so bail.
+  function detectBazaarOwnerId() {
+    try {
+      const url = new URL(location.href);
+      const qs = url.searchParams;
+      const fromQuery = qs.get('userID') || qs.get('userId') || qs.get('user_id');
+      if (fromQuery && /^\d+$/.test(fromQuery)) return Number(fromQuery);
+    } catch (e) { /* ignore */ }
+    // Hash-routed forms: "#/p=bazaar&userId=123" or similar.
+    const hash = location.hash || '';
+    const hashMatch = hash.match(/user(?:ID|Id|_id)=(\d+)/i);
+    if (hashMatch) return Number(hashMatch[1]);
+    return null;
+  }
+
+  function scrapeBazaarItems() {
+    const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
+    const byItem = new Map(); // item_id -> {price, qty} (cheapest only)
+    const seenRows = new Set();
+
+    for (const img of imgs) {
+      const src = img.getAttribute('src') || '';
+      const idMatch = src.match(/\/images\/items\/(\d+)\//);
+      if (!idMatch) continue;
+      const item_id = Number(idMatch[1]);
+
+      const row = rowContainer(img);
+      if (!row || seenRows.has(row)) continue;
+      seenRows.add(row);
+
+      const text = (row.innerText || '').trim();
+      const priceMatch = text.match(/\$\s*([\d,\.]+)/);
+      if (!priceMatch) continue;
+      const price = parseMoney(priceMatch[1]);
+      if (!Number.isFinite(price) || price <= 0) continue;
+
+      const withoutPrice = text.replace(/\$\s*[\d,\.]+/g, ' ');
+      const intTokens = withoutPrice.match(/(?<![\w.])\d[\d,]*(?![\w.])/g) || [];
+      let qty = 1;
+      for (const tok of intTokens) {
+        const n = parseInt10(tok);
+        if (Number.isFinite(n) && n > 0) { qty = n; break; }
+      }
+
+      const existing = byItem.get(item_id);
+      if (!existing || price < existing.price) {
+        byItem.set(item_id, { price: price, qty: qty });
+      }
+    }
+
+    return Array.from(byItem.entries()).map(function (entry) {
+      return { item_id: entry[0], price: entry[1].price, quantity: entry[1].qty };
+    });
+  }
+
+  async function runBazaar() {
+    const ownerId = detectBazaarOwnerId();
+    if (!ownerId) {
+      log('Bazaar: no userId in URL (own bazaar?) - skipping.');
+      return;
+    }
+
+    // Same hydration poll used on travel + item market.
+    const start = Date.now();
+    let items = [];
+    while (Date.now() - start < 8000) {
+      items = scrapeBazaarItems();
+      if (items.length > 0) break;
+      await new Promise(function (r) { setTimeout(r, 500); });
+    }
+
+    if (DEBUG) {
+      const lines = ['page=bazaar', 'owner=' + ownerId, 'items=' + items.length];
+      for (const it of items.slice(0, 10)) {
+        lines.push('  id=' + it.item_id + ' $' + it.price + ' x' + it.quantity);
+      }
+      debugPanel(lines);
+    }
+
+    if (items.length === 0) {
+      log('Bazaar: no items visible, skipping upsert.');
+      return;
+    }
+
+    // Scraping a bazaar page is a definitive hit: we see the listing right
+    // now, so miss_count resets to 0. Items that USED to be in this bazaar
+    // but aren't in our scrape are left alone - the web-app scanner's
+    // miss-count logic catches those on its next live check.
+    const now = new Date().toISOString();
+    const rows = items.map(function (it) {
+      return {
+        item_id: it.item_id,
+        bazaar_owner_id: ownerId,
+        price: it.price,
+        quantity: it.quantity,
+        checked_at: now,
+        miss_count: 0,
+      };
+    });
+
+    const result = await supabaseUpsert(BAZAAR_PRICES_URL, rows);
+    if (result.ok) {
+      toast('bazaar ' + ownerId + ': logged ' + result.count + ' items', 'success');
+    } else {
+      toast('bazaar upsert failed - ' + (result.error || 'unknown'), 'error');
+    }
+  }
+
+  // -- Main ----------------------------------------------------------------
+  async function runTravel() {
     const destination = detectDestination();
     if (!destination) {
       log('No "You are in X" marker - probably not landed yet.');
@@ -652,11 +895,40 @@
     await Promise.all([ingestPromise, overlayPromise]);
   }
 
+  // -- Dispatch ------------------------------------------------------------
+  // Route the current page to the right runner. The PDA-APIKEY placeholder
+  // check stays as the single gate: only run inside Torn PDA. Outside PDA
+  // the script goes fully quiet rather than writing to the community pool
+  // from an environment we didn't design around.
+  function detectPage() {
+    const url = location.href;
+    if (/\/page\.php\?.*sid=travel\b/i.test(url)) return 'travel';
+    if (/\/page\.php\?.*sid=ItemMarket\b/i.test(url)) return 'itemmarket';
+    if (/\/bazaar\.php/i.test(url)) return 'bazaar';
+    return null;
+  }
+
+  async function dispatch() {
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) {
+      log('Not running inside PDA - aborting.');
+      return;
+    }
+    const page = detectPage();
+    switch (page) {
+      case 'travel':     return runTravel();
+      case 'itemmarket': return runItemMarket();
+      case 'bazaar':     return runBazaar();
+      default:
+        log('Unmatched page - skipping. url=' + location.href);
+    }
+  }
+
   // Run once after DOM is settled. Torn's SPA may re-render on in-page nav;
-  // for v0.1 we only handle the initial landing, which is the common case.
+  // for now we only handle the initial landing on each of the three matched
+  // pages, which is the common case.
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', run, { once: true });
+    document.addEventListener('DOMContentLoaded', dispatch, { once: true });
   } else {
-    setTimeout(run, 500);
+    setTimeout(dispatch, 500);
   }
 })();
