@@ -35,10 +35,19 @@ async function fetchOneSellPrice(playerId, itemId) {
   // V2 itemmarket returns { itemmarket: [...] } or { itemmarket: { listings: [...] } }
   const listings = data.itemmarket?.listings || data.itemmarket;
   if (Array.isArray(listings) && listings.length > 0) {
-    lowestPrice = listings[0].cost || listings[0].price;
-    // Torn v2 uses `amount`; older shapes occasionally used `quantity`.
-    // Fall back to 1 so a listing with no qty field at least counts itself.
-    floorQty = listings[0].amount ?? listings[0].quantity ?? 1;
+    // Effective floor = first listing with qty >= 2. Single-unit loss-leaders
+    // (e.g. 1 cannabis @ $10,500 beneath 19 cannabis @ $12,900) massively
+    // overstate profit for a multi-unit travel run. Skip them unless every
+    // listing is single-unit (rare / collector items). Torn v2 uses
+    // `amount`; older shapes used `quantity`. Fall back to 1 when absent.
+    let floor = null;
+    for (const l of listings) {
+      const amt = l.amount ?? l.quantity ?? 1;
+      if (amt >= 2) { floor = l; break; }
+    }
+    if (!floor) floor = listings[0];
+    lowestPrice = floor.cost || floor.price;
+    floorQty = floor.amount ?? floor.quantity ?? 1;
     listingCount = listings.length;
   } else if (Array.isArray(listings)) {
     // Empty listings array — record a zero so the cell explicitly shows

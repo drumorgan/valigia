@@ -371,10 +371,14 @@ that tolerates Torn's migration from `<table>` to div-based layouts.
 
 ### Known limitations
 
-- One-shot per page load. Torn's SPA navigation inside a sid=X page
-  won't re-trigger the scraper. The overwhelmingly common case —
-  landing on the URL, letting the page hydrate — is handled via the
-  hydration-poll loop in each runner.
+- DOMContentLoaded runs `dispatch()` once on landing. A `hashchange`
+  listener re-fires it when the user navigates between items in the
+  Item Market's hash-routed SPA (`#/market/view=category&itemID=…`).
+  A `lastDispatchedUrl` guard + 400ms debounce collapse rapid nav
+  bursts into one scrape. History-API nav (`pushState`/`replaceState`)
+  without a hash change is not covered — Torn doesn't currently use
+  it on these pages, so it's a hypothetical gap rather than an
+  observed one.
 - The Item Market and Bazaar scrapers don't yet compute miss-count
   deltas for items that *used* to be in the scraped view but aren't
   anymore. The web-app scanner's next live check handles those.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.3.0
+// @version      0.3.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices straight into the community cache, (3) any bazaar — push fresh bazaar listings + owner so the bazaar scanner learns new sources for free.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -603,9 +603,16 @@
   // One catch: the same item image appears in navigation / sidebar / search
   // chrome. We skip any row that doesn't contain a $-price so chrome rows
   // don't pollute the listing count.
+  // Listings above this qty are almost certainly category-card contamination
+  // (the item-browse card shows "$price (circulation)" where circulation is
+  // a five/six-figure total-in-game count — NOT a listing size). Popular
+  // drugs sit at 60k-240k circulation, so a 10k cap cleanly separates real
+  // listings (largest observed ~5k amount) from that noise.
+  const MAX_LISTING_QTY = 10000;
+
   function scrapeItemMarket() {
     const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
-    const byItem = new Map(); // item_id -> [{price, qty}]
+    const byItem = new Map(); // item_id -> { name, listings: [{price, qty}] }
     const seenRows = new Set();
 
     for (const img of imgs) {
@@ -634,22 +641,52 @@
         if (Number.isFinite(n) && n > 0) { qty = n; break; }
       }
 
-      if (!byItem.has(item_id)) byItem.set(item_id, []);
-      byItem.get(item_id).push({ price: price, qty: qty });
+      // Reject category-card contamination: "$10,500 (60,007)" would otherwise
+      // post a $10,500 listing with qty=60,007 (circulation), which then skews
+      // floor selection and every downstream profit calc. We lose the
+      // category card's price signal but gain a clean pool.
+      if (qty > MAX_LISTING_QTY) continue;
+
+      // Item name: prefer the image alt (stable across Torn's UI shuffles);
+      // fall back to the first line of the row text.
+      const altName = (img.getAttribute('alt') || '').trim();
+      const firstLine = (text.split('\n')[0] || '').trim();
+      const name = altName || firstLine || '';
+
+      if (!byItem.has(item_id)) byItem.set(item_id, { name: name, listings: [] });
+      const entry = byItem.get(item_id);
+      if (!entry.name && name) entry.name = name;
+      entry.listings.push({ price: price, qty: qty });
     }
 
     const now = new Date().toISOString();
     const rows = [];
-    for (const [item_id, listings] of byItem) {
+    for (const [item_id, entry] of byItem) {
+      const listings = entry.listings;
       if (listings.length === 0) continue;
       listings.sort(function (a, b) { return a.price - b.price; });
-      const floor = listings[0];
+
+      // Effective floor = first listing with qty >= 2. A single-unit listing
+      // at a much lower price is almost always a loss-leader or misclick
+      // (see Cannabis case: 1 unit at $10,500 sitting atop 19-unit stacks at
+      // $12,900+). Storing the $10,500 as THE sell price overstates profit
+      // for any realistic multi-unit travel run. Fall back to the absolute
+      // floor when every listing is single-unit (rare items / collector bins).
+      let floor = null;
+      for (const l of listings) {
+        if (l.qty >= 2) { floor = l; break; }
+      }
+      if (!floor) floor = listings[0];
+
       rows.push({
         item_id: item_id,
         price: floor.price,
         floor_qty: floor.qty,
         listing_count: listings.length,
         updated_at: now,
+        // Keep name out of the upsert payload (sell_prices doesn't have a
+        // name column), but carry it on the row for the toast to read.
+        _name: entry.name,
       });
     }
     return rows;
@@ -668,8 +705,8 @@
     if (DEBUG) {
       const lines = ['page=itemmarket', 'items=' + rows.length];
       for (const r of rows.slice(0, 10)) {
-        lines.push('  id=' + r.item_id + ' $' + r.price + ' x' + r.floor_qty +
-                   ' (' + r.listing_count + ' listings)');
+        lines.push('  id=' + r.item_id + ' (' + (r._name || '?') + ') $' + r.price +
+                   ' x' + r.floor_qty + ' (' + r.listing_count + ' listings)');
       }
       debugPanel(lines);
     }
@@ -679,9 +716,20 @@
       return;
     }
 
-    const result = await supabaseUpsert(SELL_PRICES_URL, rows);
+    // Capture the first row's name + floor for the toast BEFORE stripping
+    // _name (which isn't a real sell_prices column).
+    const first = rows[0];
+    const firstName = first._name || ('#' + first.item_id);
+    const firstPrice = '$' + Math.round(first.price).toLocaleString('en-US');
+    const upsertRows = rows.map(function (r) {
+      const { _name, ...rest } = r;
+      return rest;
+    });
+
+    const result = await supabaseUpsert(SELL_PRICES_URL, upsertRows);
     if (result.ok) {
-      toast('market: refreshed ' + result.count + ' prices', 'success');
+      toast('market: refreshed ' + result.count +
+            ' · ' + firstName + ' ' + firstPrice, 'success');
     } else {
       toast('market upsert failed - ' + (result.error || 'unknown'), 'error');
     }
@@ -923,12 +971,34 @@
     }
   }
 
-  // Run once after DOM is settled. Torn's SPA may re-render on in-page nav;
-  // for now we only handle the initial landing on each of the three matched
-  // pages, which is the common case.
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', dispatch, { once: true });
-  } else {
-    setTimeout(dispatch, 500);
+  // Dispatch scheduler. Two entry points fire it: the initial DOM-ready
+  // landing, and any SPA hash change (the Item Market's #/market/view=... URL
+  // shape is hash-routed, so clicking between items never triggers
+  // DOMContentLoaded again). The `lastDispatchedUrl` guard skips redundant
+  // dispatches when the full URL hasn't actually changed, and a small
+  // debounce collapses bursts of rapid nav events into one run.
+  let lastDispatchedUrl = null;
+  let dispatchTimer = null;
+  function scheduleDispatch(reason) {
+    if (dispatchTimer) clearTimeout(dispatchTimer);
+    dispatchTimer = setTimeout(async function () {
+      dispatchTimer = null;
+      if (location.href === lastDispatchedUrl) {
+        log('dispatch skipped (same url) reason=' + reason);
+        return;
+      }
+      lastDispatchedUrl = location.href;
+      log('dispatch reason=' + reason);
+      try { await dispatch(); } catch (e) { log('dispatch error:', e); }
+    }, 400);
   }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded',
+      function () { scheduleDispatch('initial'); }, { once: true });
+  } else {
+    scheduleDispatch('initial');
+  }
+  window.addEventListener('hashchange',
+    function () { scheduleDispatch('hashchange'); });
 })();
