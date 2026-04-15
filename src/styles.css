@@ -73,6 +73,33 @@ body {
   text-decoration: underline;
 }
 
+.pda-scouts-banner {
+  margin-top: 0.85rem;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(74, 232, 160, 0.06);
+  font-family: 'Syne Mono', monospace;
+}
+
+.pda-scouts-count {
+  color: var(--positive);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.pda-scouts-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 #player-badge {
   margin-top: 0.75rem;
   display: flex;
