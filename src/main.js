@@ -8,6 +8,7 @@ import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
 import { prescanBazaarPool, findBestBazaarRun } from './bazaar-scanner.js';
 import { recordSnapshots, loadForecastData } from './stock-forecast.js';
+import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
@@ -252,6 +253,9 @@ function showPlayerHeader(name, level) {
     showLoginScreen();
     showToast('Logged out', 'success');
   });
+  // Discreet PDA-overlay install button sits left of Logout. Opens a
+  // modal walkthrough - never auto-opens.
+  mountPdaInstallButton(badge);
 }
 
 function clearPlayerHeader() {
