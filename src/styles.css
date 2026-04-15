@@ -2087,8 +2087,8 @@ tr.row--negative td {
 .pda-key-hint {
   color: var(--muted);
   font-size: 0.8rem;
-  margin-top: 0.35rem;
-  padding: 0.4rem 0.6rem;
+  margin-top: 0.5rem;
+  padding: 0.55rem 0.65rem 0.65rem;
   background: rgba(232, 200, 74, 0.07);
   border-left: 2px solid var(--accent);
   border-radius: 3px;
@@ -2098,6 +2098,48 @@ tr.row--negative td {
 .pda-key-hint strong {
   color: var(--accent);
   font-weight: 700;
+}
+
+.pda-key-hint-intro {
+  margin-bottom: 0.5rem;
+}
+
+.pda-key-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pda-key-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  text-decoration: none;
+  transition: border-color 120ms linear, background 120ms linear;
+}
+
+.pda-key-link:hover {
+  border-color: var(--accent);
+  background: rgba(232, 200, 74, 0.06);
+}
+
+.pda-key-link-hint {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pda-key-link-action {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent);
 }
 
 .pda-url-block {
