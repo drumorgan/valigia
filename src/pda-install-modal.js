@@ -8,6 +8,15 @@
 
 const SCRIPT_URL = 'https://valigia.girovagabondo.com/valigia-ingest.user.js';
 
+// Two helper links we drop into the API-key step of the install walkthrough.
+// CREATE_KEY_URL is the same pre-configured Torn URL the login screen uses
+// (basic+perks+bazaar+items+market pre-selected, title=Valigia) so a new
+// user gets a Valigia-ready key in one tap. FIND_KEY_URL just drops the
+// user on their existing API key list so they can copy a key they already
+// made. Both open in a new tab so PDA's script editor keeps its progress.
+const CREATE_KEY_URL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&user=basic,perks,bazaar&torn=items&market=bazaar,itemmarket&title=Valigia';
+const FIND_KEY_URL = 'https://www.torn.com/preferences.php#tab=api';
+
 // Once a user has opened (or dismissed) the install modal, flip this flag
 // so the button stops pulsing forever on subsequent visits. One-time nudge
 // only — not a nag.
@@ -120,11 +129,21 @@ function openModal() {
         <ol class="pda-steps" start="6">
           <li>Tap <strong>Fetch</strong></li>
           <li>
-            <strong>Insert your Torn API key</strong> where the script asks for it.
+            <strong>Insert your API key</strong> where the script asks for it.
             <div class="pda-key-hint">
-              No key yet? Log out and use the <strong>Create a Custom Key on Torn</strong>
-              button on Valigia's login screen — it opens Torn with the right
-              permissions pre-selected.
+              <div class="pda-key-hint-intro">
+                Both links open in a new tab, so you won't lose your place in PDA:
+              </div>
+              <div class="pda-key-links">
+                <a class="pda-key-link" href="${CREATE_KEY_URL}" target="_blank" rel="noopener">
+                  <span class="pda-key-link-hint">No key yet?</span>
+                  <span class="pda-key-link-action">Create a Valigia API key →</span>
+                </a>
+                <a class="pda-key-link" href="${FIND_KEY_URL}" target="_blank" rel="noopener">
+                  <span class="pda-key-link-hint">Already have one?</span>
+                  <span class="pda-key-link-action">Find your Torn API keys →</span>
+                </a>
+              </div>
             </div>
           </li>
           <li>Tap <strong>Load</strong></li>
