@@ -81,7 +81,16 @@ function openModal() {
         </div>
 
         <ol class="pda-steps" start="6">
-          <li>Tap <strong>Fetch</strong>, then <strong>Load</strong></li>
+          <li>Tap <strong>Fetch</strong></li>
+          <li>
+            <strong>Insert your Torn API key</strong> where the script asks for it.
+            <div class="pda-key-hint">
+              No key yet? Log out and use the <strong>Create a Custom Key on Torn</strong>
+              button on Valigia's login screen — it opens Torn with the right
+              permissions pre-selected.
+            </div>
+          </li>
+          <li>Tap <strong>Load</strong></li>
           <li>Fly to any destination — the overlay appears automatically on the shop page</li>
         </ol>
       </div>
