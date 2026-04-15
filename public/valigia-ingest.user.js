@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.2.0
-// @description  Inside Torn PDA, scrape the travel shop and push fresh buy prices to Valigia's shared pool, then overlay profit-per-hour math on each shop row so the best-buy item is visible in-game.
+// @version      0.2.1
+// @description  Inside Torn PDA, scrape the travel shop and push fresh buy prices to Valigia's shared pool, then overlay per-item sell-price and margin on each shop row so the best-buy item is visible in-game.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @run-at       document-end
@@ -30,40 +30,21 @@
   // exactly what the parser found. Useful on iPad where DevTools is absent.
   const DEBUG = false;
 
-  // -- Overlay defaults (see CLAUDE.md: "Goal #2 user prefs, option A") ----
-  // Hardcoded for v1. If you want per-device overrides later, swap these for
-  // values read from a small in-overlay gear icon persisted to PDA local-
-  // storage (keyed on 'valigia_prefs'). The overlay stays directionally
-  // correct for most players at these defaults.
-  const DEFAULT_SLOT_COUNT = 29;
-  // 1.0 = Standard, 0.7 = Airstrip/WLT, 0.49 = both. We default to Standard
-  // because it applies to everyone; the user can still fly Airstrip and
-  // treat the displayed profit/hr as a conservative floor.
-  const DEFAULT_FLIGHT_MULTIPLIER = 1.0;
+  // -- Overlay design note -------------------------------------------------
+  // The overlay shows PER-ITEM numbers only: net sell, absolute margin, and
+  // margin percent. It deliberately does NOT multiply by slot count. Doing
+  // so would require either hardcoding a default (wrong for many players)
+  // or syncing the web app's slot preference through Supabase (extra
+  // plumbing for a value the player already knows in their head). Ranking
+  // within a single shop is identical under a constant flight time whether
+  // we sort by margin-per-item or profit/hr, so the BEST badge is still
+  // accurate without any slot-count input.
 
   // Public Supabase PostgREST endpoint for reading the sell_prices cache.
   // Same anon key we use for the edge function POST; RLS on sell_prices
   // allows SELECT to everyone (see migration 002_sell_prices.sql).
   const SELL_PRICES_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/rest/v1/sell_prices';
-
-  // One-way flight times in minutes. Mirrors src/data/destinations.js in the
-  // main app. Keyed on whatever detectDestination() returns from the page.
-  const FLIGHT_MINS = {
-    'Mexico': 20,
-    'Cayman Islands': 57,
-    'Caymans': 57,
-    'Canada': 37,
-    'Hawaii': 121,
-    'United Kingdom': 152,
-    'UK': 152,
-    'Argentina': 189,
-    'Switzerland': 169,
-    'Japan': 203,
-    'China': 219,
-    'UAE': 259,
-    'South Africa': 311,
-  };
 
   // Known Torn travel shop category names. Used as section anchors: the
   // parser looks for these in visible text to group items by shop.
@@ -334,45 +315,24 @@
     }
   }
 
-  // -- Profit math (mirrors src/calculator.js in the main app) -------------
-  // Returns the shape the overlay renderer expects. Null output means we
-  // can't compute for this row (missing sell price, non-positive flight).
+  // -- Per-item profit math ------------------------------------------------
+  // The overlay only displays per-item values, so we only compute them.
+  // Net sell is after Torn's 5% item-market fee. Returns null when inputs
+  // are missing or non-positive so the renderer can show "no sell data".
   function computeProfit(opts) {
     const buyPrice = opts.buyPrice;
     const sellPrice = opts.sellPrice;
-    const stock = opts.stock;
-    const flightMins = opts.flightMins;
-    const slotCount = opts.slotCount || DEFAULT_SLOT_COUNT;
-    const flightMult = opts.flightMultiplier || DEFAULT_FLIGHT_MULTIPLIER;
 
-    if (!(sellPrice > 0) || !(flightMins > 0) || !(buyPrice > 0)) return null;
+    if (!(sellPrice > 0) || !(buyPrice > 0)) return null;
 
-    const netSell = sellPrice * 0.95;                // 5% item-market fee
+    const netSell = sellPrice * 0.95;              // 5% item-market fee
     const marginPerItem = netSell - buyPrice;
     const marginPct = (marginPerItem / buyPrice) * 100;
-
-    // Effective slots honours available stock.
-    const effectiveSlots = (stock != null && stock >= 0)
-      ? Math.min(slotCount, stock)
-      : slotCount;
-    const stockLimited = stock != null && stock < slotCount;
-
-    const runCost = buyPrice * effectiveSlots;
-    const profitPerRun = marginPerItem * effectiveSlots;
-    const roundTripMins = flightMins * flightMult * 2;
-    const profitPerHour = roundTripMins > 0
-      ? (profitPerRun / roundTripMins) * 60
-      : 0;
 
     return {
       netSell: netSell,
       marginPerItem: marginPerItem,
       marginPct: marginPct,
-      effectiveSlots: effectiveSlots,
-      stockLimited: stockLimited,
-      runCost: runCost,
-      profitPerRun: profitPerRun,
-      profitPerHour: profitPerHour,
     };
   }
 
@@ -405,7 +365,7 @@
       '  white-space: nowrap;',
       '  vertical-align: middle;',
       '}',
-      '.valigia-cell .v-hr { color: #e8c84a; font-weight: 700; }',
+      '.valigia-cell .v-sell { color: #c8cdd8; }',
       '.valigia-cell .v-margin-pos { color: #4ae8a0; }',
       '.valigia-cell .v-margin-neg { color: #b33; }',
       '.valigia-cell .v-muted { color: #5a6070; font-weight: 400; }',
@@ -436,7 +396,7 @@
   // For each row we scraped, compute profit and inject a cell at the end of
   // the row showing margin + profit/hr. Mark the top profit/hr row with a
   // BEST badge and a subtle green highlight.
-  function renderOverlay(shops, sellPriceMap, flightMins) {
+  function renderOverlay(shops, sellPriceMap) {
     injectStyles();
 
     // Flatten every scraped item into a row descriptor with a reference to
@@ -479,8 +439,6 @@
         ? computeProfit({
             buyPrice: buyPrice,
             sellPrice: sellPrice,
-            stock: stock,
-            flightMins: flightMins,
           })
         : null;
 
@@ -494,17 +452,22 @@
       });
     }
 
-    // Rank by profit/hr - only rows with positive profit/hr and non-zero
-    // stock are eligible for the BEST badge.
+    // Rank by per-item margin - within a single shop page the flight time
+    // and slot count are constants, so ranking by margin-per-item is
+    // equivalent to ranking by profit/hr. No slot count needed here.
+    // Only rows with positive margin and non-zero stock are eligible.
     let best = null;
     for (const r of allRows) {
       if (!r.metrics) continue;
-      if (r.metrics.profitPerHour <= 0) continue;
+      if (r.metrics.marginPerItem <= 0) continue;
       if (r.stock != null && r.stock <= 0) continue;
-      if (!best || r.metrics.profitPerHour > best.metrics.profitPerHour) best = r;
+      if (!best || r.metrics.marginPerItem > best.metrics.marginPerItem) best = r;
     }
 
-    // Inject the cell into each row.
+    // Inject the cell into each row. We show per-item values only:
+    // net sell price, absolute margin, margin %. The player does the
+    // "times my actual slot count" math in their head, which avoids us
+    // needing to know (or sync) their slot preference.
     for (const r of allRows) {
       const td = document.createElement('td');
       td.className = 'valigia-cell';
@@ -526,15 +489,13 @@
         if (outOfStock) {
           html += '<span class="v-muted">stock 0 &middot; skip</span>';
         } else {
-          html += '<span class="' + marginClass + '">' + formatMoney(m.marginPerItem) + '/ea</span>';
+          // "sell $X" is the net (after the 5% item-market fee), which is
+          // the number the player actually realises per unit.
+          html += '<span class="v-sell">sell ' + formatMoney(m.netSell) + '</span>';
+          html += '<span class="v-sep">&middot;</span>';
+          html += '<span class="' + marginClass + '">' + formatMoney(m.marginPerItem) + '</span>';
           html += '<span class="v-sep">&middot;</span>';
           html += '<span class="' + marginClass + '">' + formatPct(m.marginPct) + '</span>';
-          html += '<span class="v-sep">&middot;</span>';
-          html += '<span class="v-hr">' + formatMoney(m.profitPerHour) + '/hr</span>';
-          if (m.stockLimited) {
-            html += '<span class="v-sep">&middot;</span>';
-            html += '<span class="v-muted" title="Only ' + m.effectiveSlots + ' of ' + DEFAULT_SLOT_COUNT + ' slots fillable">slots:' + m.effectiveSlots + '</span>';
-          }
         }
         td.innerHTML = html;
         if (isBest) r.tr.classList.add('valigia-best');
@@ -604,8 +565,6 @@
       }
     }
 
-    const flightMins = FLIGHT_MINS[destination] || 0;
-
     // Fire ingest (POST) and sell-price fetch (GET) in parallel. Overlay
     // render waits only on the sell-price fetch; ingest toast fires
     // independently when its POST resolves.
@@ -632,14 +591,13 @@
     const overlayPromise = (async function () {
       try {
         const sellPriceMap = await fetchSellPrices(itemIds);
-        const stats = renderOverlay(shops, sellPriceMap, flightMins);
+        const stats = renderOverlay(shops, sellPriceMap);
         if (DEBUG) {
           const bestLine = stats.best
-            ? ('best=' + stats.best.item_id + ' profit/hr=' + Math.round(stats.best.metrics.profitPerHour))
+            ? ('best=' + stats.best.item_id + ' margin=' + Math.round(stats.best.metrics.marginPerItem))
             : 'best=(none eligible)';
           debugPanel([
             'destination=' + destination,
-            'flightMins=' + flightMins + ' (one-way)',
             'overlay rows=' + stats.total + ' with-metrics=' + stats.withMetrics,
             bestLine,
           ]);
