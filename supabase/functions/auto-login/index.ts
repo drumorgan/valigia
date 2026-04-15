@@ -1,13 +1,13 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0';
 
-// ── Inlined shared: CORS ────────────────────────────────────────
+// ── Inlined shared: CORS ────────────────────────
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// ── Inlined shared: AES-256-GCM decrypt ─────────────────────────
+// ── Inlined shared: AES-256-GCM decrypt ─────────────────
 function base64ToBytes(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 }
@@ -29,7 +29,7 @@ async function decryptApiKey(ciphertextB64: string, ivB64: string, _keyVersion =
   return new TextDecoder().decode(decrypted);
 }
 
-// ── Session token verification ──────────────────────────────────
+// ── Session token verification ───────────────────────
 async function hashToken(token: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
   return bytesToBase64(new Uint8Array(digest));
@@ -56,7 +56,7 @@ function unauthorized() {
   );
 }
 
-// ── Handler ─────────────────────────────────────────────────────
+// ── Handler ──────────────────────────────────────
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -102,26 +102,61 @@ serve(async (req) => {
       secret.key_version
     );
 
-    // Validate against Torn API
-    const tornRes = await fetch(
-      `https://api.torn.com/user/?selections=basic&key=${apiKey}`
-    );
-    const tornData = await tornRes.json();
-
-    if (tornData.error) {
-      // Key is invalid — clear stored secret (and its token hash).
-      await supabase
-        .from('player_secrets')
-        .delete()
-        .eq('torn_player_id', player_id);
-
+    // Validate against Torn API. If the fetch itself fails (network / DNS /
+    // Torn side timeout) treat it as transient — the stored row is still
+    // good, just tell the client to retry on the next page load.
+    let tornData: any;
+    try {
+      const tornRes = await fetch(
+        `https://api.torn.com/user/?selections=basic&key=${apiKey}`
+      );
+      tornData = await tornRes.json();
+    } catch (err) {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'key_invalid',
-          torn_error: tornData.error.code,
+          error: 'torn_unavailable',
+          detail: (err as Error).message,
         }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (tornData.error) {
+      // Torn error codes that mean the key itself is permanently dead:
+      //   2  = Incorrect Key (revoked / deleted)
+      //   16 = Access level of this key is not high enough
+      // Everything else (5 rate limit, 8 IP block, 9 API disabled, 13 inactive,
+      // 14 daily cap, 17 backend error, 18 paused) is temporary — the key will
+      // work again once the condition clears, so we must NOT nuke the row.
+      const PERMANENT_TORN_ERRORS = [2, 16];
+      const code = tornData.error?.code;
+
+      if (PERMANENT_TORN_ERRORS.includes(code)) {
+        await supabase
+          .from('player_secrets')
+          .delete()
+          .eq('torn_player_id', player_id);
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'key_invalid',
+            torn_error: code,
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Transient Torn failure — leave the encrypted row in place. The
+      // client keeps its session and retries on the next page load.
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'torn_unavailable',
+          torn_error: code,
+        }),
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 

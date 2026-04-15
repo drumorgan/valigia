@@ -83,7 +83,17 @@ export async function tryAutoLogin() {
       }),
     });
 
-    // Any non-200 (including our 401 for bad/missing token) → clear and
+    // 503 = transient Torn outage (rate limit, 5xx, paused / inactive key).
+    // The stored session is still valid — DO NOT clear it. Let the user
+    // through the login screen once and retry on next page load.
+    if (res.status === 503) {
+      let body = {};
+      try { body = await res.json(); } catch {}
+      showToast('Torn API is busy — try again in a moment.');
+      return { success: false, error: 'torn_unavailable', ...body };
+    }
+
+    // Any other non-2xx (401 for bad/missing token, 500, etc.) → clear and
     // send the user back to the login screen silently.
     if (!res.ok) {
       setSession(null);
@@ -93,6 +103,11 @@ export async function tryAutoLogin() {
     const data = await res.json();
 
     if (!data.success) {
+      // Server explicitly told us this is transient — keep the session.
+      if (data.error === 'torn_unavailable') {
+        showToast('Torn API is busy — try again in a moment.');
+        return data;
+      }
       setSession(null);
       if (data.error === 'key_invalid') {
         showToast('Your API key expired or was revoked. Please log in again.');
@@ -102,6 +117,9 @@ export async function tryAutoLogin() {
 
     return data;
   } catch (err) {
+    // Network blip between the browser and our edge function. Leave the
+    // stored session alone — re-prompting for the API key over a flaky
+    // connection is the wrong answer.
     showToast(`Auto-login failed: ${err.message}`);
     return { success: false, error: err.message };
   }
