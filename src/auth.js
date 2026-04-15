@@ -196,6 +196,8 @@ export function renderLoginScreen(container, onSuccess) {
       <p class="login-hint login-hint--sub">
         Only shares your name, perks, bazaar listings, and item market prices. Nothing else.
       </p>
+      <a href="https://www.torn.com/preferences.php#tab=api"
+         target="_blank" rel="noopener" class="find-key-btn">Already have a Valigia key? Find it on Torn →</a>
       <div class="login-input-row">
         <input
           type="password"
