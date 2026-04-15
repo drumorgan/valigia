@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.2.1
+// @version      0.2.2
 // @description  Inside Torn PDA, scrape the travel shop and push fresh buy prices to Valigia's shared pool, then overlay per-item sell-price and margin on each shop row so the best-buy item is visible in-game.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -365,12 +365,23 @@
       '  white-space: nowrap;',
       '  vertical-align: middle;',
       '}',
+      // When the host row isn't a <tr>, we inject a block-level <div> below
+      // the row instead. Give it a touch of top margin so it reads as an
+      // annotation of the row above rather than a row of its own.
+      'div.valigia-cell {',
+      '  display: block;',
+      '  margin: 2px 0 6px 44px;',
+      '  border-left: 3px solid #252a35;',
+      '  border-radius: 2px;',
+      '}',
       '.valigia-cell .v-sell { color: #c8cdd8; }',
       '.valigia-cell .v-margin-pos { color: #4ae8a0; }',
       '.valigia-cell .v-margin-neg { color: #b33; }',
       '.valigia-cell .v-muted { color: #5a6070; font-weight: 400; }',
       '.valigia-cell .v-sep { color: #3a4050; margin: 0 4px; }',
-      '.valigia-best .valigia-cell {',
+      '.valigia-best .valigia-cell,',
+      '.valigia-best > .valigia-cell,',
+      '.valigia-best + div.valigia-cell {',
       '  background: rgba(74,232,160,0.14);',
       '  border-left: 3px solid #4ae8a0;',
       '}',
@@ -400,9 +411,10 @@
     injectStyles();
 
     // Flatten every scraped item into a row descriptor with a reference to
-    // its DOM <tr> so we can inject directly. We re-walk the same images we
-    // scraped from to find the tr - keeps the injection index-safe even if
-    // the page reorders rows.
+    // its DOM row container so we can inject directly. We re-walk the same
+    // images we scraped from to find the row — Torn has migrated many pages
+    // away from <table>/<tr>, so we use the same flexible rowContainer()
+    // helper the scraper uses.
     const allRows = [];
     const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
     for (const img of imgs) {
@@ -411,11 +423,11 @@
       if (!idMatch) continue;
       const item_id = Number(idMatch[1]);
 
-      const tr = img.closest('tr');
-      if (!tr) continue;
+      const row = rowContainer(img);
+      if (!row) continue;
       // Skip rows we've already decorated (in case the script fires twice
       // from tab switches inside the same page).
-      if (tr.classList.contains('valigia-decorated')) continue;
+      if (row.classList && row.classList.contains('valigia-decorated')) continue;
 
       // Find the scraped record for this item_id so we don't re-parse the
       // row ourselves (already done by scrapeShops).
@@ -443,7 +455,7 @@
         : null;
 
       allRows.push({
-        tr: tr,
+        row: row,
         item_id: item_id,
         buyPrice: buyPrice,
         stock: stock,
@@ -468,15 +480,20 @@
     // net sell price, absolute margin, margin %. The player does the
     // "times my actual slot count" math in their head, which avoids us
     // needing to know (or sync) their slot preference.
+    //
+    // If the row is a <tr> we append a matching <td>; otherwise (Torn's
+    // newer div-based shop grid) we insert a block <div> right after the
+    // row so it reads as an annotation immediately beneath.
     for (const r of allRows) {
-      const td = document.createElement('td');
-      td.className = 'valigia-cell';
+      const isTr = r.row.tagName === 'TR';
+      const cell = document.createElement(isTr ? 'td' : 'div');
+      cell.className = 'valigia-cell';
 
       if (!r.metrics) {
         if (r.sellPrice == null) {
-          td.innerHTML = '<span class="v-muted">no sell data</span>';
+          cell.innerHTML = '<span class="v-muted">no sell data</span>';
         } else {
-          td.innerHTML = '<span class="v-muted">-</span>';
+          cell.innerHTML = '<span class="v-muted">-</span>';
         }
       } else {
         const m = r.metrics;
@@ -497,12 +514,23 @@
           html += '<span class="v-sep">&middot;</span>';
           html += '<span class="' + marginClass + '">' + formatPct(m.marginPct) + '</span>';
         }
-        td.innerHTML = html;
-        if (isBest) r.tr.classList.add('valigia-best');
+        cell.innerHTML = html;
+        if (isBest) r.row.classList.add('valigia-best');
       }
 
-      r.tr.appendChild(td);
-      r.tr.classList.add('valigia-decorated');
+      if (isTr) {
+        r.row.appendChild(cell);
+      } else {
+        // For non-<tr> rows, insert directly after the row so it appears
+        // immediately beneath. If the row has no parent (detached), fall
+        // back to appending into the row itself.
+        if (r.row.parentNode) {
+          r.row.parentNode.insertBefore(cell, r.row.nextSibling);
+        } else {
+          r.row.appendChild(cell);
+        }
+      }
+      if (r.row.classList) r.row.classList.add('valigia-decorated');
     }
 
     return { total: allRows.length, withMetrics: allRows.filter(r => r.metrics).length, best: best };
