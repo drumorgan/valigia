@@ -775,6 +775,19 @@ tr.row--negative td {
   line-height: 1.1;
 }
 
+.stock-eta__learning {
+  /* Appended to empty/fallback cells where we have SOME restock
+     observations but not enough (or regular enough) to commit to a
+     prediction. Smaller, muted, italic — a trailing "we're watching"
+     marker rather than a primary signal. */
+  font-size: 0.9em;
+  color: var(--muted);
+  font-style: italic;
+  font-weight: 400;
+  opacity: 0.85;
+  margin-left: 0.15em;
+}
+
 /* ── Best Run Right Now summary card ───────────────────────────── */
 
 .best-run-card {

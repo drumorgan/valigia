@@ -408,6 +408,30 @@ function renderDestCell(destination) {
   return `${travelLink} <span class="dest-flag" title="${destination}">${flag}</span> <span class="dest-code">${code}</span>`;
 }
 
+// Trailing hint for rows where cadence data exists but isn't confident
+// enough to produce a committed prediction. Returns "· cadence forming
+// (N obs)" or "" depending on whether we have any observations. Meant
+// to be appended inside an existing stock-eta span so the hint inherits
+// the empty/muted color; span wrapping keeps it visually secondary.
+function cadenceLearningHint(forecast) {
+  const count = forecast?.restockEventCount ?? 0;
+  if (count === 0) return '';
+  // Skip the hint when we're already showing a committed restock or
+  // leave-in line — the caller controls which branch fires, but as a
+  // belt-and-suspenders guard: confidence 'ok'/'high' means the other
+  // branches should have claimed the row before this helper was called.
+  // Rendering the hint alongside a committed prediction would be redundant.
+  if (forecast.restockConfidence === 'ok' || forecast.restockConfidence === 'high') {
+    // If a committed prediction is possible for this shelf (based on
+    // confidence tier alone) but the caller still landed in the empty/
+    // fallback branch — most likely because uncertainty exceeded the 45m
+    // cap — the hint is still useful. Gate only on very-low samples.
+    if (count >= 5) return '';
+  }
+  const title = `${count} restock observation${count === 1 ? '' : 's'} in the last 30 days — more samples will tighten the prediction`;
+  return ` <span class="stock-eta__learning" title="${title}">· cadence forming (${count} obs)</span>`;
+}
+
 function renderStockCell(row) {
   const now = row.quantity;
   if (now == null) return '<span class="muted">—</span>';
@@ -516,7 +540,18 @@ function renderStockCell(row) {
     const label = f.timeToEmptyMins != null
       ? `empty ~${f.timeToEmptyMins}m`
       : 'likely empty';
-    etaLine = `<span class="stock-eta stock-eta--empty" title="Recent depletion rate projects the shelf to be empty when you land">${label}</span>`;
+    etaLine = `<span class="stock-eta stock-eta--empty" title="Recent depletion rate projects the shelf to be empty when you land">${label}${cadenceLearningHint(f)}</span>`;
+  } else if (eta === 0 && now === 0) {
+    // Both current and projected zero with no restock copy firing. If we
+    // have SOME observations, surface the learning hint so the row doesn't
+    // read as dead silence — it reads as "we're watching, just need more
+    // data". Without any obs, fall through to naked "ETA 0".
+    const count = f.restockEventCount ?? 0;
+    if (count > 0) {
+      etaLine = `<span class="stock-eta stock-eta--empty" title="No committed restock prediction yet — pipeline is watching">shelf empty${cadenceLearningHint(f)}</span>`;
+    } else {
+      etaLine = `<span class="stock-eta stock-eta--low" title="No restock observations yet — will fill in as scrapes accumulate">ETA 0</span>`;
+    }
   } else {
     const confClass = f.confidence === 'ok' ? 'stock-eta--ok' : 'stock-eta--low';
     const confTitle = f.confidence === 'ok'
