@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.3.2
+// @version      0.3.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices straight into the community cache, (3) any bazaar — push fresh bazaar listings + owner so the bazaar scanner learns new sources for free.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -729,7 +729,7 @@
     const result = await supabaseUpsert(SELL_PRICES_URL, upsertRows);
     if (result.ok) {
       toast('market: refreshed ' + result.count +
-            ' · ' + firstName + ' ' + firstPrice, 'success');
+            ' \u00B7 ' + firstName + ' ' + firstPrice, 'success');
     } else {
       toast('market upsert failed - ' + (result.error || 'unknown'), 'error');
     }
