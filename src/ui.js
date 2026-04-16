@@ -741,6 +741,128 @@ function buildBazaarRun(deal) {
  * summary card above the table. Both are normalized to profit/hr for
  * comparison; the winner is shown in its own visual variant.
  */
+// ── Upcoming Restock Window card ─────────────────────────────
+// Picks the single best "leave in X minutes" candidate across the current
+// row set. Different semantic from "Best Run Right Now" — that card answers
+// "what should I do NOW?", this card answers "when should I LEAVE so I
+// land right as a shelf refills?".
+//
+// Math: leaveInMins = nextRestockMins - (flightMins * flightMultiplier).
+// The user wants arrival to coincide with restock, so we subtract the one-
+// way flight time (already multiplied by airstrip/WLT factor) from the
+// predicted restock ETA. leaveInMins ≤ 0 is "leave now"; > 60m is "too
+// early to commit, come back later" — we skip it rather than show a stale
+// prediction.
+
+// Biggest future window we'll still surface. Beyond this the forecaster's
+// uncertainty (and any buy/sell price drift) outweighs the precision of
+// the "leave in" copy. 60 min matches the typical depletion horizon and
+// the rate at which a user's context (available slots, cash) changes.
+const LEAVE_SOON_MAX_MINS = 60;
+
+function buildUpcomingWindowCandidates(rows) {
+  const flightMultiplier = getFlightMultiplier();
+  const isIdeal = realismMode === 'ideal';
+
+  const candidates = [];
+  for (const row of rows) {
+    const f = row.forecast;
+    if (!f || f.nextRestockMins == null || f.restockQty == null) continue;
+    if (!row.hasSellPrice) continue;
+    // Gate on confidence. 'low' tiers include shelves with just two observed
+    // intervals — predicting a leave time off a single sample is theater, not
+    // signal. 'none' means no restock estimate exists at all.
+    if (f.restockConfidence === 'low' || f.restockConfidence === 'none') continue;
+
+    const arrivalMins = row.flightMins * flightMultiplier;
+    const leaveInMins = f.nextRestockMins - arrivalMins;
+
+    // Skip if the window already closed further ago than our uncertainty
+    // band — the restock has likely already happened and been drained.
+    const uncertainty = f.restockUncertaintyMins || 0;
+    if (leaveInMins < -uncertainty) continue;
+    // Skip if the window is further out than LEAVE_SOON_MAX_MINS — the
+    // prediction will be more useful next page load anyway.
+    if (leaveInMins > LEAVE_SOON_MAX_MINS) continue;
+
+    // Arrival coincides with the restock landing: the user sees the full
+    // typicalPostQty (ignoring any trickle leftover from pre-restock stock).
+    // We recompute metrics with restockQty as the effective stock rather
+    // than reusing row.metrics, which was computed against forecast.etaQty.
+    const metrics = calculateMargins({
+      buyPrice: row.buyPrice,
+      sellPrice: row.sellPrice,
+      slotCount,
+      flightMins: row.flightMins,
+      flightMultiplier,
+      stockQty: isIdeal ? null : f.restockQty,
+      sellTimeMins: isIdeal ? 0 : getSellTimeMins(row.category),
+    });
+
+    if (metrics.marginPerItem <= 0) continue;
+    if (metrics.effectiveSlots <= 0) continue;
+
+    candidates.push({ row, leaveInMins, metrics });
+  }
+
+  candidates.sort((a, b) => b.metrics.profitPerHour - a.metrics.profitPerHour);
+  return candidates;
+}
+
+function renderUpcomingWindowCard(rows) {
+  const container = document.getElementById('upcoming-window-container');
+  if (!container) return;
+
+  const candidates = buildUpcomingWindowCandidates(rows);
+  if (candidates.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const { row, leaveInMins, metrics } = candidates[0];
+  const f = row.forecast;
+
+  const leaveLabel = leaveInMins < 1
+    ? 'leave now'
+    : `leave in ~${Math.round(leaveInMins)}m`;
+  const uncertainty = f.restockUncertaintyMins != null && leaveInMins >= 1
+    ? ` <span class="upcoming-window-uncertainty">±${f.restockUncertaintyMins}m</span>`
+    : '';
+  const confClass = `upcoming-window-card--${f.restockConfidence}`;
+  const confTitle = f.restockConfidence === 'high'
+    ? 'High confidence — tight, well-observed cadence'
+    : 'Rough cadence estimate — timing may shift';
+
+  const othersNote = candidates.length > 1
+    ? `<span class="upcoming-window-sep">·</span><span class="upcoming-window-others">+${candidates.length - 1} more window${candidates.length === 2 ? '' : 's'}</span>`
+    : '';
+
+  container.innerHTML = `
+    <div class="upcoming-window-card ${confClass}" title="${confTitle}">
+      <div class="upcoming-window-label">Upcoming Restock Window</div>
+      <div class="upcoming-window-body">
+        <div class="upcoming-window-item">
+          <span class="upcoming-window-name">${row.name}</span>
+          <span class="upcoming-window-dest">&rarr; ${row.destination}</span>
+        </div>
+        <div class="upcoming-window-leave">
+          <span class="upcoming-window-leave-value">${leaveLabel}</span>${uncertainty}
+        </div>
+      </div>
+      <div class="upcoming-window-meta">
+        <span>${formatMoney(metrics.profitPerHour)}/hr projected</span>
+        <span class="upcoming-window-sep">&middot;</span>
+        <span>${metrics.effectiveSlots} units @ ${metrics.marginPct.toFixed(0)}%</span>
+        <span class="upcoming-window-sep">&middot;</span>
+        <span>${formatFlightTime(metrics.roundTripMins)} RT</span>
+        ${othersNote}
+      </div>
+      <a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener"
+         class="upcoming-window-cta">Travel &rarr;</a>
+    </div>
+  `;
+}
+
 function renderBestRunCard(rows) {
   const container = document.getElementById('best-run-container');
   if (!container) return;
@@ -870,6 +992,7 @@ export function renderTable() {
   updateHeaderSort();
 
   const rows = buildRows();
+  renderUpcomingWindowCard(rows);
   renderBestRunCard(rows);
 
   if (rows.length === 0) {

@@ -140,6 +140,7 @@ async function detectPlayerTravel(playerId) {
 async function startDashboard(playerId) {
   screenContainer.innerHTML = `
     <div id="controls-bar"></div>
+    <div id="upcoming-window-container"></div>
     <div id="best-run-container"></div>
     <div id="table-container"></div>
     <div id="bazaar-container"></div>
