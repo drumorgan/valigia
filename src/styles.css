@@ -86,6 +86,16 @@ body {
   font-family: 'Syne Mono', monospace;
 }
 
+/* Author `display: inline-flex` above wins over the UA stylesheet's
+   `[hidden] { display: none }`, so the native `hidden` attribute alone
+   would leave the banner + segments visible with "--" placeholders on
+   first load. These rules restore the intended semantics. */
+.pda-scouts-banner[hidden],
+.pda-scouts-segment[hidden],
+.pda-scouts-sep[hidden] {
+  display: none;
+}
+
 .pda-scouts-count {
   color: var(--positive);
   font-size: 1.05rem;
