@@ -481,7 +481,8 @@ function latestDepletionSegment(samples) {
  *   restockQty: number|null,                // typical post-restock qty, set whenever cadence exists
  *   restockUncertaintyMins: number|null,    // max(scaled MAD, in-sample MAE) — widened when model underclaims
  *   restockConfidence: 'none'|'low'|'ok'|'high',  // auto-capped when MAE exceeds scaledMAD × 2 or 0.75 × median
- *   cadenceMAE: number|null                 // leave-one-out in-sample MAE (minutes), null when <2 gaps
+ *   cadenceMAE: number|null,                // leave-one-out in-sample MAE (minutes), null when <2 gaps
+ *   restockEventCount: number               // raw count of observed restocks (30-day window) for "cadence forming (N obs)" hints
  * }}
  */
 export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty = null) {
@@ -516,6 +517,12 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // observability — a layer-2 accuracy log or a debug panel can read it
   // without re-running estimateNextRestock. null when <2 gaps.
   const cadenceMAE = restockEst ? restockEst.cadenceMAE : null;
+  // Raw count of observed restocks for this shelf over the 30-day window.
+  // Independent of whether they were enough to produce a prediction — the
+  // UI uses this to render "cadence forming (N obs)" hints on rows where
+  // we're watching but haven't accumulated enough (or regular enough) data
+  // to commit to a leave-in recommendation.
+  const restockEventCount = restockCache.get(key)?.length ?? 0;
 
   // No snapshot history at all — can't fit a depletion slope, so etaQty
   // falls back to Now. Still honor the restock prediction if Now is empty:
@@ -556,6 +563,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
       restockUncertaintyMins,
       restockConfidence,
       cadenceMAE,
+      restockEventCount,
     };
   }
 
@@ -578,7 +586,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
-      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE,
+      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
     };
   }
 
@@ -590,7 +598,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
-      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE,
+      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
     };
   }
 
@@ -633,6 +641,6 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   return {
     nowQty, etaQty, confidence, hasHistory: true,
     timeToEmptyMins,
-    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE,
+    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
   };
 }
