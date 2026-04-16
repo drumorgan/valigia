@@ -46,27 +46,40 @@ async function boot() {
   }
 }
 
-// ── PDA scouts counter ────────────────────────────────────────
+// ── PDA activity counter ──────────────────────────────────────
 /**
- * Fetch the count of distinct PDA userscript contributors in the last 24h
- * and reveal the header banner. Silently hides itself on any failure — the
- * counter is a nice-to-have vanity metric, not load-blocking.
+ * Fetch the "scouts · trips · last 24h" pair and reveal the header banner.
  *
- * Only travel-runner users are counted. The Item Market + Bazaar runners
- * write via anon PostgREST without attribution, so they're intentionally
- * excluded. See migration 015_pda_scout_count.sql for the trust rationale.
+ * Scouts  = distinct observer_player_id over the last 24h (community reach)
+ * Trips   = row count over the same window (activity flow)
+ *
+ * The pair together tells both dimensions honestly: one enthusiastic player
+ * shows as 1 scout with many trips; a broad community shows as many scouts.
+ *
+ * Only travel-runner contributors are counted. The Item Market + Bazaar
+ * runners write via anon PostgREST without attribution, so they're
+ * intentionally excluded. See migration 016_pda_activity.sql for details.
+ *
+ * Silently hides on any failure — vanity metric, not load-blocking.
  */
 async function loadPdaScoutCount() {
   const banner = document.getElementById('pda-scouts-banner');
-  const countEl = document.getElementById('pda-scouts-count');
-  if (!banner || !countEl) return;
+  const scoutsEl = document.getElementById('pda-scouts-count');
+  const tripsEl = document.getElementById('pda-trips-count');
+  if (!banner || !scoutsEl || !tripsEl) return;
 
   try {
-    const { data, error } = await supabase.rpc('get_pda_scouts_24h');
-    if (error || data == null) return;
-    const n = Number(data);
-    if (!Number.isFinite(n) || n <= 0) return;
-    countEl.textContent = n.toLocaleString();
+    const { data, error } = await supabase.rpc('get_pda_activity_24h');
+    if (error || !data) return;
+    // Supabase returns an array for table-returning RPCs.
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return;
+    const scouts = Number(row.scouts);
+    const trips = Number(row.trips);
+    if (!Number.isFinite(scouts) || !Number.isFinite(trips)) return;
+    if (scouts <= 0 && trips <= 0) return;
+    scoutsEl.textContent = scouts.toLocaleString();
+    tripsEl.textContent = trips.toLocaleString();
     banner.hidden = false;
   } catch {
     // Counter is vanity — silent fail keeps it invisible rather than broken.
