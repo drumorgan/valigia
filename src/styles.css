@@ -764,6 +764,17 @@ tr.row--negative td {
   line-height: 1.1;
 }
 
+.stock-eta--leave-in {
+  /* "leave in Xm → Q" — a different action than the other restock copy
+     ("just go, refill happens mid-flight"). Cyan to match the Upcoming
+     Window card so both surfaces use one visual vocabulary for
+     wait-then-go advice. Overrides the green from the --restock classes
+     that tier styling still attaches to this element. */
+  color: #4ab4e8;
+  white-space: normal;
+  line-height: 1.1;
+}
+
 /* ── Upcoming Restock Window card ──────────────────────────────── */
 /* Placed above Best Run Right Now. Answers "when should I LEAVE" rather
    than "what should I do NOW" — complementary, not competitive.
