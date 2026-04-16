@@ -731,12 +731,28 @@ tr.row--negative td {
   font-weight: 600;
 }
 
-.stock-eta--restock {
+.stock-eta--restock,
+.stock-eta--restock-high,
+.stock-eta--restock-low {
   /* Distinct from both "empty" (bad news) and "depletion ETA" (neutral).
      Positive green signals that the shelf will be refilled by the time
      you land, turning an apparent dead run into a live one. */
   color: var(--positive);
   font-weight: 600;
+}
+
+.stock-eta--restock-high {
+  /* ≥5 restock samples with tight cadence — let it read as the most
+     trustworthy state by leaning on raw positive green. No italic, no
+     opacity bleed. */
+}
+
+.stock-eta--restock-low {
+  /* 2-3 samples or irregular cadence — the number is still useful but the
+     reader should know the uncertainty band has real width. Italic +
+     slight desaturation mirrors the --low treatment used elsewhere. */
+  font-style: italic;
+  opacity: 0.85;
 }
 
 /* ── Best Run Right Now summary card ───────────────────────────── */
