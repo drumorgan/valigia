@@ -425,21 +425,21 @@ function renderStockCell(row) {
   const eta = f.etaQty;
   if (eta == null) return formatQuantity(now);
 
-  // Four possible states, in the order tested below:
-  //   1. Empty now + restock projected to land before arrival → show the
-  //      restock narrative with its uncertainty band ("restock ~52m ±8m → 12").
-  //      The "China at 0" scenario: long flight + regular cadence turns an
-  //      apparent dead run back into a live one.
+  // Six possible states, in the order tested below:
+  //   1. Empty now + restock projected to land DURING flight → compact
+  //      "restock ~52m ±8m → 12" (China-at-0 scenario).
   //   2. Shelf depletes during flight AND restock refills it before arrival
-  //      → two-phase narrative ("empty ~37m · restock ~52m → 894"). Detected
-  //      via `eta > now` — that's only possible because stock-forecast.js
-  //      already overrode etaQty from 0 → restockQty; the depletion clamp
-  //      otherwise enforces eta ≤ now. Without this branch the cell would
-  //      show a naked "ETA 894" with no explanation of the journey.
-  //   3. Shelf will deplete during the flight, no restock projected → swap
-  //      the vague "likely empty" for a concrete "empty ~37m" when the slope
-  //      gives us one; fall back to "likely empty" when it doesn't.
-  //   4. Shelf survives the flight (default) → the existing "ETA N" tile.
+  //      → "empty ~37m · restock ~52m → 894". Detected via `eta > now`
+  //      because stock-forecast.js has already overridden etaQty.
+  //   3. Empty now + restock is AFTER the current arrival time BUT within
+  //      the leave-in window → "leave in ~45m ±12m → 744". Tells the user
+  //      to wait so arrival coincides with the refill. Xanax-JPN case.
+  //   4. Shelf depletes during flight, no restock during flight but there
+  //      IS an actionable leave-in window → "empty ~37m · leave in ~45m → Q".
+  //      Combines the depletion honesty with the wait-for-refill action.
+  //   5. Shelf will deplete during the flight, no usable restock prediction
+  //      → "empty ~37m" (from slope) or "likely empty" as fallback.
+  //   6. Shelf survives the flight (default) → "ETA N".
   let etaLine;
   const restockBeforeArrival = f.restockEtaMins != null && f.restockQty != null;
   const restockConfClass = f.restockConfidence === 'high'
@@ -448,15 +448,33 @@ function renderStockCell(row) {
       ? 'stock-eta--restock'
       : 'stock-eta--restock-low';
 
+  // Leave-in-X inline signal. Same constants as the Upcoming Window card
+  // so both surfaces agree on what's actionable. Requires a confident
+  // cadence AND a future (not during-flight) restock within planning range
+  // AND a reasonably tight uncertainty band.
+  const flightMultiplier = getFlightMultiplier();
+  const arrivalMins = row.flightMins * flightMultiplier;
+  const leaveInMins = f.nextRestockMins != null
+    ? f.nextRestockMins - arrivalMins
+    : null;
+  const uncertainty = f.restockUncertaintyMins ?? 0;
+  const canShowLeaveIn =
+    leaveInMins != null
+    && leaveInMins >= MIN_LEAVE_LEAD_MINS
+    && leaveInMins <= LEAVE_SOON_MAX_MINS
+    && uncertainty <= MAX_UNCERTAINTY_MINS
+    && (f.restockConfidence === 'ok' || f.restockConfidence === 'high')
+    && f.restockQty != null;
+
   if (now === 0 && restockBeforeArrival) {
     const mins = f.restockEtaMins;
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const minsLabel = mins === 0 ? 'imminent' : `~${mins}m`;
-    const uncertainty = f.restockUncertaintyMins != null && mins > 0
+    const uncertLabel = f.restockUncertaintyMins != null && mins > 0
       ? ` ±${f.restockUncertaintyMins}m`
       : '';
     const title = `Based on ${f.restockConfidence}-confidence restock cadence (${f.restockConfidence === 'high' ? 'tight' : 'rough'} interval)`;
-    etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertainty} → ${qty}</span>`;
+    etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertLabel} → ${qty}</span>`;
   } else if (eta > now && restockBeforeArrival) {
     const restockMins = f.restockEtaMins;
     const qty = Number(f.restockQty).toLocaleString('en-US');
@@ -465,6 +483,18 @@ function renderStockCell(row) {
       : '';
     const title = `Slope depletes the shelf mid-flight; restock cadence (${f.restockConfidence} conf) refills it to ~${qty} before you land`;
     etaLine = `<span class="stock-eta stock-eta--refill ${restockConfClass}" title="${title}">${emptyClause}restock ~${restockMins}m → ${qty}</span>`;
+  } else if (now === 0 && canShowLeaveIn) {
+    const qty = Number(f.restockQty).toLocaleString('en-US');
+    const uncertLabel = uncertainty > 0 ? ` ±${uncertainty}m` : '';
+    const title = `Wait ~${Math.round(leaveInMins)}m before leaving so your arrival coincides with the expected restock (${f.restockConfidence} conf, ±${uncertainty}m)`;
+    etaLine = `<span class="stock-eta stock-eta--leave-in ${restockConfClass}" title="${title}">leave in ~${Math.round(leaveInMins)}m${uncertLabel} → ${qty}</span>`;
+  } else if (eta === 0 && now > 0 && canShowLeaveIn) {
+    const qty = Number(f.restockQty).toLocaleString('en-US');
+    const emptyClause = f.timeToEmptyMins != null
+      ? `empty ~${f.timeToEmptyMins}m · `
+      : '';
+    const title = `Depletion empties the shelf mid-flight; leaving ~${Math.round(leaveInMins)}m from now (±${uncertainty}m, ${f.restockConfidence} conf) lands you at the refill`;
+    etaLine = `<span class="stock-eta stock-eta--leave-in ${restockConfClass}" title="${title}">${emptyClause}leave in ~${Math.round(leaveInMins)}m → ${qty}</span>`;
   } else if (eta === 0 && now > 0) {
     const label = f.timeToEmptyMins != null
       ? `empty ~${f.timeToEmptyMins}m`

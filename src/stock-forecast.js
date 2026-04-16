@@ -456,12 +456,18 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   if (!samples || samples.length === 0) {
     const nowQty = fallbackNowQty;
     const restockCoversEmptyShelf = nowQty === 0 && restockEtaMins != null;
+    // hasHistory also trips when we have any actionable cadence signal —
+    // the UI needs to reach the stock-cell render logic so the leave-in-X
+    // branch can fire for fresh shelves with backfilled restock history
+    // but zero snapshots yet. Without this, those shelves render as a
+    // naked "Now N" and the user loses the wait-to-leave hint.
+    const hasActionableCadence = restockEst != null && restockQty != null;
     const eta = restockCoversEmptyShelf ? restockQty : nowQty;
     return {
       nowQty,
       etaQty: eta,
       confidence: nowQty != null ? 'low' : 'none',
-      hasHistory: restockCoversEmptyShelf,
+      hasHistory: restockCoversEmptyShelf || hasActionableCadence,
       timeToEmptyMins: null,
       nextRestockMins,
       restockEtaMins,
