@@ -425,23 +425,45 @@ function renderStockCell(row) {
   const eta = f.etaQty;
   if (eta == null) return formatQuantity(now);
 
-  // When ETA materially differs from now, flag it. "Likely empty" replaces
-  // the number entirely so the user reads the verdict, not a hopeful "1".
-  //
-  // Restock case: Now=0 plus we've seen enough restocks to project one that
-  // should land before arrival — override the empty-shelf verdict with the
-  // expected post-restock quantity. This is the "China at 0" scenario; on a
-  // long flight a restock cadence of <arrivalMins makes "likely empty"
-  // wrong more often than it's right.
+  // Four possible states, in the order tested below:
+  //   1. Empty now + restock projected to land before arrival → show the
+  //      restock narrative with its uncertainty band ("restock ~52m ±8m → 12").
+  //      The "China at 0" scenario: long flight + regular cadence turns an
+  //      apparent dead run back into a live one.
+  //   2. Shelf will deplete during the flight + restock projected after that
+  //      → honest two-phase copy ("empty ~37m · restock ~52m"). Drops the
+  //      ±U to keep the line short; the restockConfidence class still colors it.
+  //   3. Shelf will deplete during the flight, no restock projected → swap
+  //      the vague "likely empty" for a concrete "empty ~37m" when the slope
+  //      gives us one; fall back to "likely empty" when it doesn't.
+  //   4. Shelf survives the flight (default) → the existing "ETA N" tile.
   let etaLine;
   const restockBeforeArrival = f.restockEtaMins != null && f.restockQty != null;
+  const restockConfClass = f.restockConfidence === 'high'
+    ? 'stock-eta--restock-high'
+    : f.restockConfidence === 'ok'
+      ? 'stock-eta--restock'
+      : 'stock-eta--restock-low';
+
   if (now === 0 && restockBeforeArrival) {
     const mins = f.restockEtaMins;
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const minsLabel = mins === 0 ? 'imminent' : `~${mins}m`;
-    etaLine = `<span class="stock-eta stock-eta--restock" title="Based on observed restock cadence for this item">restock ${minsLabel} → ${qty}</span>`;
+    const uncertainty = f.restockUncertaintyMins != null && mins > 0
+      ? ` ±${f.restockUncertaintyMins}m`
+      : '';
+    const title = `Based on ${f.restockConfidence}-confidence restock cadence (${f.restockConfidence === 'high' ? 'tight' : 'rough'} interval)`;
+    etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertainty} → ${qty}</span>`;
+  } else if (eta === 0 && now > 0 && restockBeforeArrival && f.timeToEmptyMins != null) {
+    const emptyMins = f.timeToEmptyMins;
+    const restockMins = f.restockEtaMins;
+    const title = `Depletion rate exhausts the shelf mid-flight; restock cadence (${f.restockConfidence} conf) refills it before you land`;
+    etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">empty ~${emptyMins}m · restock ~${restockMins}m</span>`;
   } else if (eta === 0 && now > 0) {
-    etaLine = `<span class="stock-eta stock-eta--empty" title="Recent depletion rate projects the shelf to be empty when you land">likely empty</span>`;
+    const label = f.timeToEmptyMins != null
+      ? `empty ~${f.timeToEmptyMins}m`
+      : 'likely empty';
+    etaLine = `<span class="stock-eta stock-eta--empty" title="Recent depletion rate projects the shelf to be empty when you land">${label}</span>`;
   } else {
     const confClass = f.confidence === 'ok' ? 'stock-eta--ok' : 'stock-eta--low';
     const confTitle = f.confidence === 'ok'

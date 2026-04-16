@@ -281,19 +281,25 @@ export async function loadForecastData(items) {
 }
 
 /**
- * Estimate when the next restock is due and what quantity it will produce
- * given a chronologically-sorted array of `{ atTime, postQty }` events
- * pulled from restock_events.
+ * Estimate when the next restock is due and how confident we are, given a
+ * chronologically-sorted array of `{ atTime, postQty }` events pulled from
+ * restock_events.
  *
  * We use the MEDIAN of observed intervals (robust to the occasional missed
  * restock widening one gap to 2x normal) and the MEDIAN post-restock
- * quantity. Needs at least MIN_RESTOCK_EVENTS to yield one interval sample.
+ * quantity. Uncertainty is scaled Median Absolute Deviation: `1.4826 * MAD`
+ * approximates one standard deviation for a normal distribution, but MAD
+ * shrugs off outliers that a plain stddev would blow up on.
+ *
+ * Needs at least MIN_RESTOCK_EVENTS events (one interval sample) to
+ * produce anything.
  *
  * Returns {
  *   timeToNextMins: number (can be 0 if overdue),
  *   typicalPostQty: number,
- *   sampleCount: number of interval samples used,
- *   intervalSpread: interquartile-range ratio (1.0 = perfectly regular),
+ *   uncertaintyMins: number (≥1, scaled MAD — "±Nm" label in the UI),
+ *   sampleCount: number of interval samples,
+ *   confidence: 'low' | 'ok' | 'high',
  * } or null.
  */
 function estimateNextRestock(events, nowMs) {
@@ -304,33 +310,46 @@ function estimateNextRestock(events, nowMs) {
   for (let i = 1; i < events.length; i++) {
     gaps.push((events[i].atTime - events[i - 1].atTime) / 60_000);
   }
-  gaps.sort((a, b) => a - b);
-  const medianInterval = gaps[Math.floor(gaps.length / 2)];
+  const sortedGaps = gaps.slice().sort((a, b) => a - b);
+  const medianInterval = sortedGaps[Math.floor(sortedGaps.length / 2)];
   if (!(medianInterval > 0)) return null;
 
-  const postQtys = events.map(e => e.postQty).sort((a, b) => a - b);
+  const postQtys = events.map(e => e.postQty).slice().sort((a, b) => a - b);
   const typicalPostQty = postQtys[Math.floor(postQtys.length / 2)];
 
   const lastRestockAt = events[events.length - 1].atTime;
   const sinceLastMins = (nowMs - lastRestockAt) / 60_000;
   const timeToNextMins = Math.max(0, medianInterval - sinceLastMins);
 
-  // Interval spread: p75/p25 ratio, a cheap summary of cadence regularity
-  // that we carry for downstream confidence scoring. 1.0 = every interval
-  // identical; >2.0 = cadence is too irregular to trust. Guard against a
-  // 0-minute p25 by clamping the denominator to at least 1 minute.
-  let intervalSpread = 1;
-  if (gaps.length >= 4) {
-    const p25 = gaps[Math.floor(gaps.length * 0.25)];
-    const p75 = gaps[Math.floor(gaps.length * 0.75)];
-    intervalSpread = p75 / Math.max(1, p25);
+  // Scaled MAD: robust 1-stddev equivalent. Clamped to ≥1 min so the
+  // display ("±8m") never shows "±0m" on tiny sample counts.
+  const deviations = gaps
+    .map(g => Math.abs(g - medianInterval))
+    .sort((a, b) => a - b);
+  const mad = deviations[Math.floor(deviations.length / 2)];
+  const uncertaintyMins = Math.max(1, Math.round(mad * 1.4826));
+
+  // Confidence tiers are driven by BOTH sample depth and cadence tightness.
+  // Relative MAD (MAD / median) is the scale-free "how regular is this
+  // shelf" signal — a 5-min MAD on a 10-min cycle is chaos, the same 5m on
+  // a 4h cycle is basically perfect. Thresholds chosen conservatively so
+  // "high" is only shown when we genuinely trust the number.
+  const relativeMad = mad / medianInterval;
+  let confidence;
+  if (gaps.length >= 5 && relativeMad <= 0.3) {
+    confidence = 'high';
+  } else if (gaps.length >= 3 && relativeMad <= 0.5) {
+    confidence = 'ok';
+  } else {
+    confidence = 'low';
   }
 
   return {
     timeToNextMins,
     typicalPostQty,
+    uncertaintyMins,
     sampleCount: gaps.length,
-    intervalSpread,
+    confidence,
   };
 }
 
@@ -378,10 +397,13 @@ function latestDepletionSegment(samples) {
  * @returns {{
  *   nowQty: number|null,
  *   etaQty: number|null,
- *   confidence: 'none'|'low'|'ok',
+ *   confidence: 'none'|'low'|'ok',          // depletion-slope fit confidence
  *   hasHistory: boolean,
+ *   timeToEmptyMins: number|null,           // null if not depleting, > 24h, or no slope
  *   restockEtaMins: number|null,
- *   restockQty: number|null
+ *   restockQty: number|null,
+ *   restockUncertaintyMins: number|null,    // scaled MAD of interval samples
+ *   restockConfidence: 'none'|'low'|'ok'|'high'
  * }}
  */
 export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty = null) {
@@ -402,6 +424,13 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     ? Math.round(restockEst.timeToNextMins)
     : null;
   const restockQty = restockDuringFlight ? restockEst.typicalPostQty : null;
+  const restockUncertaintyMins = restockDuringFlight
+    ? restockEst.uncertaintyMins
+    : null;
+  // Surface the restock confidence tier even when the next restock isn't
+  // during this flight — the UI uses it for coloring the "empty" line in
+  // the no-restock-during-flight case, and future surfaces may want it too.
+  const restockConfidence = restockEst ? restockEst.confidence : 'none';
 
   // No snapshot history at all — can't fit a depletion slope, so etaQty
   // falls back to Now. Still honor the restock prediction if Now is empty:
@@ -422,8 +451,11 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
       etaQty: eta,
       confidence: nowQty != null ? 'low' : 'none',
       hasHistory: restockCoversEmptyShelf,
+      timeToEmptyMins: null,
       restockEtaMins,
       restockQty,
+      restockUncertaintyMins,
+      restockConfidence,
     };
   }
 
@@ -443,7 +475,11 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     // If the shelf is empty and a restock is due before we land, project the
     // refill; otherwise keep etaQty pinned to nowQty.
     const eta = (nowQty === 0 && restockQty != null) ? restockQty : nowQty;
-    return { nowQty, etaQty: eta, confidence: 'low', hasHistory: true, restockEtaMins, restockQty };
+    return {
+      nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
+      timeToEmptyMins: null,
+      restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+    };
   }
 
   const first = segment[0];
@@ -451,12 +487,26 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   const spanMins = (last.snappedAt - first.snappedAt) / 60_000;
   if (spanMins < 1) {
     const eta = (nowQty === 0 && restockQty != null) ? restockQty : nowQty;
-    return { nowQty, etaQty: eta, confidence: 'low', hasHistory: true, restockEtaMins, restockQty };
+    return {
+      nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
+      timeToEmptyMins: null,
+      restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+    };
   }
 
   // slope is quantity-per-minute; depleting shelves make it ≤ 0.
   const slope = (last.quantity - first.quantity) / spanMins;
   const projected = nowQty + slope * arrivalMins;
+
+  // Time-to-empty: how long until the shelf hits 0 at the current slope.
+  // Null unless the shelf is actually depleting (slope < 0) AND has stock
+  // to deplete. Capped at 24 h — beyond that the answer is "not emptying
+  // any time soon" and a precise number would be noise, not signal.
+  let timeToEmptyMins = null;
+  if (slope < 0 && nowQty > 0) {
+    const rawMins = nowQty / -slope;
+    if (rawMins <= 24 * 60) timeToEmptyMins = Math.round(rawMins);
+  }
   // Clamp within [0, nowQty]. A depletion run cannot grow — any positive
   // projection would indicate the segment picked up noise or a restock the
   // walker missed. Rather than show a misleading ETA higher than Now, pin
@@ -479,5 +529,9 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
       ? 'ok'
       : 'low';
 
-  return { nowQty, etaQty, confidence, hasHistory: true, restockEtaMins, restockQty };
+  return {
+    nowQty, etaQty, confidence, hasHistory: true,
+    timeToEmptyMins,
+    restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+  };
 }
