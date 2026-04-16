@@ -332,13 +332,25 @@ function estimateNextRestock(events, nowMs) {
   // Confidence tiers are driven by BOTH sample depth and cadence tightness.
   // Relative MAD (MAD / median) is the scale-free "how regular is this
   // shelf" signal — a 5-min MAD on a 10-min cycle is chaos, the same 5m on
-  // a 4h cycle is basically perfect. Thresholds chosen conservatively so
-  // "high" is only shown when we genuinely trust the number.
+  // a 4h cycle is basically perfect.
+  //
+  // Tiers are deliberately permissive at 'ok' because the downstream UI
+  // gates (stock-cell leave-in branch, caller filters) also enforce an
+  // absolute uncertainty cap — so letting more shelves into 'ok' doesn't
+  // let noise through, it just prevents us hiding real signal from
+  // shelves with short observation history. 'high' stays strict so the
+  // tier-high visual emphasis means something.
+  //
+  //   'high' — ≥5 intervals AND relativeMad ≤ 0.3 (tight, well-observed)
+  //   'ok'   — ≥2 intervals AND relativeMad ≤ 0.6 (2 consistent gaps
+  //            already tells a plausible cadence story when paired with
+  //            the 45m absolute uncertainty cap downstream)
+  //   'low'  — anything else
   const relativeMad = mad / medianInterval;
   let confidence;
   if (gaps.length >= 5 && relativeMad <= 0.3) {
     confidence = 'high';
-  } else if (gaps.length >= 3 && relativeMad <= 0.5) {
+  } else if (gaps.length >= 2 && relativeMad <= 0.6) {
     confidence = 'ok';
   } else {
     confidence = 'low';
