@@ -755,6 +755,15 @@ tr.row--negative td {
   opacity: 0.85;
 }
 
+.stock-eta--refill {
+  /* Two-phase narrative ("empty ~37m · restock ~52m → 894") is the longest
+     stock-eta string the UI produces. Allow it to wrap rather than clip
+     under the default white-space:nowrap — most Stock cells are narrow on
+     iPad. Line-height tightened so the wrap doesn't balloon the row. */
+  white-space: normal;
+  line-height: 1.1;
+}
+
 /* ── Upcoming Restock Window card ──────────────────────────────── */
 /* Placed above Best Run Right Now. Answers "when should I LEAVE" rather
    than "what should I do NOW" — complementary, not competitive.

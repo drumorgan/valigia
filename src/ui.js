@@ -430,9 +430,12 @@ function renderStockCell(row) {
   //      restock narrative with its uncertainty band ("restock ~52m ±8m → 12").
   //      The "China at 0" scenario: long flight + regular cadence turns an
   //      apparent dead run back into a live one.
-  //   2. Shelf will deplete during the flight + restock projected after that
-  //      → honest two-phase copy ("empty ~37m · restock ~52m"). Drops the
-  //      ±U to keep the line short; the restockConfidence class still colors it.
+  //   2. Shelf depletes during flight AND restock refills it before arrival
+  //      → two-phase narrative ("empty ~37m · restock ~52m → 894"). Detected
+  //      via `eta > now` — that's only possible because stock-forecast.js
+  //      already overrode etaQty from 0 → restockQty; the depletion clamp
+  //      otherwise enforces eta ≤ now. Without this branch the cell would
+  //      show a naked "ETA 894" with no explanation of the journey.
   //   3. Shelf will deplete during the flight, no restock projected → swap
   //      the vague "likely empty" for a concrete "empty ~37m" when the slope
   //      gives us one; fall back to "likely empty" when it doesn't.
@@ -454,11 +457,14 @@ function renderStockCell(row) {
       : '';
     const title = `Based on ${f.restockConfidence}-confidence restock cadence (${f.restockConfidence === 'high' ? 'tight' : 'rough'} interval)`;
     etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertainty} → ${qty}</span>`;
-  } else if (eta === 0 && now > 0 && restockBeforeArrival && f.timeToEmptyMins != null) {
-    const emptyMins = f.timeToEmptyMins;
+  } else if (eta > now && restockBeforeArrival) {
     const restockMins = f.restockEtaMins;
-    const title = `Depletion rate exhausts the shelf mid-flight; restock cadence (${f.restockConfidence} conf) refills it before you land`;
-    etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">empty ~${emptyMins}m · restock ~${restockMins}m</span>`;
+    const qty = Number(f.restockQty).toLocaleString('en-US');
+    const emptyClause = f.timeToEmptyMins != null
+      ? `empty ~${f.timeToEmptyMins}m · `
+      : '';
+    const title = `Slope depletes the shelf mid-flight; restock cadence (${f.restockConfidence} conf) refills it to ~${qty} before you land`;
+    etaLine = `<span class="stock-eta stock-eta--refill ${restockConfClass}" title="${title}">${emptyClause}restock ~${restockMins}m → ${qty}</span>`;
   } else if (eta === 0 && now > 0) {
     const label = f.timeToEmptyMins != null
       ? `empty ~${f.timeToEmptyMins}m`
