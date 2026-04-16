@@ -3,7 +3,7 @@
 import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById } from './item-resolver.js';
-import { calculateMargins, formatFlightTime, formatMoney } from './calculator.js';
+import { calculateMargins, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock } from './stock-forecast.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
 
@@ -749,22 +749,35 @@ function buildBazaarRun(deal) {
  */
 // ── Upcoming Restock Window card ─────────────────────────────
 // Picks the single best "leave in X minutes" candidate across the current
-// row set. Different semantic from "Best Run Right Now" — that card answers
-// "what should I do NOW?", this card answers "when should I LEAVE so I
-// land right as a shelf refills?".
+// row set. Complementary to "Best Run Right Now": Best Run answers
+// "what should I do NOW?", Upcoming Window answers "what should I wait
+// for because a refill is coming?".
 //
 // Math: leaveInMins = nextRestockMins - (flightMins * flightMultiplier).
 // The user wants arrival to coincide with restock, so we subtract the one-
 // way flight time (already multiplied by airstrip/WLT factor) from the
-// predicted restock ETA. leaveInMins ≤ 0 is "leave now"; > 60m is "too
-// early to commit, come back later" — we skip it rather than show a stale
-// prediction.
+// predicted restock ETA.
+//
+// Three filters keep the two cards from duplicating each other on the
+// same shelf:
+//   1. row.quantity < slotCount — only shelves that CAN'T fill a full run
+//      right now have anything to gain from waiting.
+//   2. leaveInMins >= MIN_LEAVE_LEAD_MINS — sub-3-min windows are "leave
+//      now" in practice; let Best Run own that copy.
+//   3. leaveInMins <= LEAVE_SOON_MAX_MINS — beyond an hour out, a fresh
+//      page load will produce a better prediction anyway.
 
 // Biggest future window we'll still surface. Beyond this the forecaster's
 // uncertainty (and any buy/sell price drift) outweighs the precision of
 // the "leave in" copy. 60 min matches the typical depletion horizon and
 // the rate at which a user's context (available slots, cash) changes.
 const LEAVE_SOON_MAX_MINS = 60;
+
+// Minimum lead time before the card fires. Below this the window is
+// effectively "leave now" — same advice Best Run Right Now gives from a
+// different angle. Surfacing both cards for the same shelf clutters the
+// view and muddles the two card identities ("wait to leave" vs. "go now").
+const MIN_LEAVE_LEAD_MINS = 3;
 
 function buildUpcomingWindowCandidates(rows) {
   const flightMultiplier = getFlightMultiplier();
@@ -780,6 +793,12 @@ function buildUpcomingWindowCandidates(rows) {
     // signal. 'none' means no restock estimate exists at all.
     if (f.restockConfidence === 'low' || f.restockConfidence === 'none') continue;
 
+    // The whole point of this card is "wait for refill to get a full run".
+    // If the shelf already has enough stock to fill your slots right now,
+    // there's nothing to wait for — Best Run Right Now is the right signal.
+    // row.quantity reflects YATA's live reading; compare to slot capacity.
+    if (row.quantity != null && row.quantity >= slotCount) continue;
+
     const arrivalMins = row.flightMins * flightMultiplier;
     const leaveInMins = f.nextRestockMins - arrivalMins;
 
@@ -787,6 +806,9 @@ function buildUpcomingWindowCandidates(rows) {
     // band — the restock has likely already happened and been drained.
     const uncertainty = f.restockUncertaintyMins || 0;
     if (leaveInMins < -uncertainty) continue;
+    // Skip sub-MIN_LEAVE_LEAD_MINS windows — those are "leave now" by any
+    // reasonable reading, and Best Run Right Now handles that case.
+    if (leaveInMins < MIN_LEAVE_LEAD_MINS) continue;
     // Skip if the window is further out than LEAVE_SOON_MAX_MINS — the
     // prediction will be more useful next page load anyway.
     if (leaveInMins > LEAVE_SOON_MAX_MINS) continue;
@@ -828,10 +850,11 @@ function renderUpcomingWindowCard(rows) {
   const { row, leaveInMins, metrics } = candidates[0];
   const f = row.forecast;
 
-  const leaveLabel = leaveInMins < 1
-    ? 'leave now'
-    : `leave in ~${Math.round(leaveInMins)}m`;
-  const uncertainty = f.restockUncertaintyMins != null && leaveInMins >= 1
+  // All survivors are >= MIN_LEAVE_LEAD_MINS so "leave now" isn't possible
+  // here — candidate filter gates it out. Keep the ±U beside the number
+  // since that's the whole honesty pitch of the card.
+  const leaveLabel = `leave in ~${Math.round(leaveInMins)}m`;
+  const uncertainty = f.restockUncertaintyMins != null
     ? ` <span class="upcoming-window-uncertainty">±${f.restockUncertaintyMins}m</span>`
     : '';
   const confClass = `upcoming-window-card--${f.restockConfidence}`;
@@ -858,7 +881,7 @@ function renderUpcomingWindowCard(rows) {
       <div class="upcoming-window-meta">
         <span>${formatMoney(metrics.profitPerHour)}/hr projected</span>
         <span class="upcoming-window-sep">&middot;</span>
-        <span>${metrics.effectiveSlots} units @ ${metrics.marginPct.toFixed(0)}%</span>
+        <span>${metrics.effectiveSlots} units @ ${formatMarginPctCompact(metrics.marginPct)}</span>
         <span class="upcoming-window-sep">&middot;</span>
         <span>${formatFlightTime(metrics.roundTripMins)} RT</span>
         ${othersNote}
@@ -934,7 +957,7 @@ function renderTravelBestRun(container, best) {
         <span class="best-run-sep">&middot;</span>
         <span>${formatFlightTime(best.metrics.roundTripMins)}</span>
         <span class="best-run-sep">&middot;</span>
-        <span>${best.metrics.marginPct.toFixed(0)}% margin</span>
+        <span>${formatMarginPctCompact(best.metrics.marginPct)} margin</span>
         ${stockNote ? `<span class="best-run-sep">&middot;</span>${stockNote}` : ''}
       </div>
       <a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener"
@@ -979,7 +1002,7 @@ function renderBazaarBestRun(container, best) {
         <span class="best-run-sep">&middot;</span>
         ${qtyNote}
         <span class="best-run-sep">&middot;</span>
-        <span>${best.metrics.marginPct.toFixed(0)}% off market</span>
+        <span>${formatMarginPctCompact(best.metrics.marginPct)} off market</span>
         ${liquidityNote}
       </div>
       <a href="${bazaarUrl}" target="_blank" rel="noopener"

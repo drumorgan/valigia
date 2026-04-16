@@ -78,3 +78,26 @@ export function formatPct(n) {
   if (n == null) return '—';
   return n.toFixed(1) + '%';
 }
+
+/**
+ * Format a margin percentage for card/summary display. Plushies and flowers
+ * trade at Points-denominated sell prices against cash buy prices, so the
+ * raw margin % is honestly in the 5,000–50,000+ range for those items. The
+ * cell-level "%" label becomes unreadable at that scale ("13911%"). Switch
+ * to a multiplier label above 1000% and drop the decimal on anything ≥100
+ * so the eye can scan the scale quickly.
+ *
+ *   n < 100   → "62%"
+ *   n < 1000  → "340%"
+ *   n < 10_000 → "34×"       (1 decimal place up to 999%, multiplier beyond)
+ *   n ≥ 10_000 → "140×"      (integer multiplier)
+ */
+export function formatMarginPctCompact(n) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  if (Math.abs(n) < 100) return `${n.toFixed(1)}%`;
+  if (Math.abs(n) < 1000) return `${Math.round(n)}%`;
+  // 10× = 1000%. Past that, humans read ratios faster than three-digit percentages.
+  const multiplier = n / 100;
+  if (Math.abs(multiplier) < 100) return `${multiplier.toFixed(1)}×`;
+  return `${Math.round(multiplier)}×`;
+}

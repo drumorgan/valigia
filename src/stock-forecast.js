@@ -442,13 +442,20 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // table — a fresh shelf with zero snapshots can still say "restock
   // expected in 40m" if backfill filled in its cadence.
   //
+  // Guard on `restockEtaMins` (during-flight), NOT `restockQty` — the
+  // latter is un-gated and set whenever cadence exists, so using it
+  // here would show arrival-time qty of `restockQty` for shelves whose
+  // next restock is hours after we'd land. That's how Xanax-JPN got a
+  // bogus "ETA 744" when Japan's flight is 9 h and cadence put the
+  // restock well beyond that.
+  //
   // hasHistory is true only when we'll actually project something useful
   // (Now=0 with a restock during flight). Setting it true on the general
   // "we have restock events but nothing interesting to say right now" case
   // would make the UI render a redundant "Now N / ETA N" line.
   if (!samples || samples.length === 0) {
     const nowQty = fallbackNowQty;
-    const restockCoversEmptyShelf = nowQty === 0 && restockQty != null;
+    const restockCoversEmptyShelf = nowQty === 0 && restockEtaMins != null;
     const eta = restockCoversEmptyShelf ? restockQty : nowQty;
     return {
       nowQty,
@@ -479,7 +486,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     // Only one sample in cache, or we just restocked — no slope to extrapolate.
     // If the shelf is empty and a restock is due before we land, project the
     // refill; otherwise keep etaQty pinned to nowQty.
-    const eta = (nowQty === 0 && restockQty != null) ? restockQty : nowQty;
+    const eta = (nowQty === 0 && restockEtaMins != null) ? restockQty : nowQty;
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
@@ -491,7 +498,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   const last = segment[segment.length - 1];
   const spanMins = (last.snappedAt - first.snappedAt) / 60_000;
   if (spanMins < 1) {
-    const eta = (nowQty === 0 && restockQty != null) ? restockQty : nowQty;
+    const eta = (nowQty === 0 && restockEtaMins != null) ? restockQty : nowQty;
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
@@ -520,12 +527,13 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   let etaQty = Math.max(0, Math.min(nowQty, Math.round(projected)));
 
   // Restock override: if the depletion forecast bottomed out at 0 AND a
-  // restock is expected before arrival, replace the empty shelf with the
-  // typical post-restock quantity. This is deliberately narrow — we don't
-  // bump a non-zero ETA upward based on restock prediction because that
-  // would compound two noisy signals. "0 vs. typical post-restock" is the
-  // clearest, highest-value correction our thin history supports.
-  if (etaQty === 0 && restockQty != null) {
+  // restock is expected DURING THIS FLIGHT, replace the empty shelf with
+  // the typical post-restock quantity. Gated on `restockEtaMins` (during-
+  // flight) rather than `restockQty` (un-gated, set whenever cadence data
+  // exists) — otherwise we'd inflate arrival-time stock with a restock
+  // that won't land until long after the traveler is home. This is the
+  // classic Xanax-JPN failure mode at work on the depletion branch too.
+  if (etaQty === 0 && restockEtaMins != null) {
     etaQty = restockQty;
   }
 
