@@ -400,9 +400,10 @@ function latestDepletionSegment(samples) {
  *   confidence: 'none'|'low'|'ok',          // depletion-slope fit confidence
  *   hasHistory: boolean,
  *   timeToEmptyMins: number|null,           // null if not depleting, > 24h, or no slope
- *   restockEtaMins: number|null,
- *   restockQty: number|null,
- *   restockUncertaintyMins: number|null,    // scaled MAD of interval samples
+ *   nextRestockMins: number|null,           // raw time-to-next-restock (un-gated, minutes from now)
+ *   restockEtaMins: number|null,            // only set when restock is expected DURING this flight
+ *   restockQty: number|null,                // typical post-restock qty, set whenever cadence exists
+ *   restockUncertaintyMins: number|null,    // scaled MAD of interval samples, set whenever cadence exists
  *   restockConfidence: 'none'|'low'|'ok'|'high'
  * }}
  */
@@ -420,16 +421,19 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   const restockDuringFlight = !!(
     restockEst && restockEst.timeToNextMins <= arrivalMins
   );
-  const restockEtaMins = restockDuringFlight
-    ? Math.round(restockEst.timeToNextMins)
-    : null;
-  const restockQty = restockDuringFlight ? restockEst.typicalPostQty : null;
-  const restockUncertaintyMins = restockDuringFlight
-    ? restockEst.uncertaintyMins
-    : null;
-  // Surface the restock confidence tier even when the next restock isn't
-  // during this flight — the UI uses it for coloring the "empty" line in
-  // the no-restock-during-flight case, and future surfaces may want it too.
+  // `nextRestockMins` is the raw "time until next restock" regardless of
+  // whether it lands during this flight — fuels the "leave in X minutes"
+  // upcoming-window card. `restockEtaMins` stays gated to during-flight
+  // because the Stock cell's semantic is "a refill happens WHILE I'm in
+  // the air", and unchaining it would make that UI lie.
+  const nextRestockMins = restockEst ? Math.round(restockEst.timeToNextMins) : null;
+  const restockEtaMins = restockDuringFlight ? nextRestockMins : null;
+  // `restockQty` and `restockUncertaintyMins` are un-gated so the Leave
+  // Soon card can see them even when the window is in the future rather
+  // than currently in-flight. Stock cell still keys off `restockEtaMins`
+  // to decide whether to show them, so the cell's behavior is unchanged.
+  const restockQty = restockEst ? restockEst.typicalPostQty : null;
+  const restockUncertaintyMins = restockEst ? restockEst.uncertaintyMins : null;
   const restockConfidence = restockEst ? restockEst.confidence : 'none';
 
   // No snapshot history at all — can't fit a depletion slope, so etaQty
@@ -452,6 +456,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
       confidence: nowQty != null ? 'low' : 'none',
       hasHistory: restockCoversEmptyShelf,
       timeToEmptyMins: null,
+      nextRestockMins,
       restockEtaMins,
       restockQty,
       restockUncertaintyMins,
@@ -478,7 +483,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
-      restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
     };
   }
 
@@ -490,7 +495,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
-      restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
     };
   }
 
@@ -532,6 +537,6 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   return {
     nowQty, etaQty, confidence, hasHistory: true,
     timeToEmptyMins,
-    restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
   };
 }
