@@ -48,13 +48,17 @@ async function boot() {
 
 // ── PDA activity counter ──────────────────────────────────────
 /**
- * Fetch the "scouts · trips · last 24h" pair and reveal the header banner.
+ * Fetch the "Scouts: N · Items Scouted: M · last 24h" pair and reveal the
+ * header banner.
  *
- * Scouts  = distinct observer_player_id over the last 24h (community reach)
- * Trips   = row count over the same window (activity flow)
- *
- * The pair together tells both dimensions honestly: one enthusiastic player
- * shows as 1 scout with many trips; a broad community shows as many scouts.
+ * Scouts        = distinct observer_player_id over the last 24h
+ *                 (community reach)
+ * Items Scouted = row count over the same window — each row is one
+ *                 (item_id, destination) observation in abroad_prices.
+ *                 The RPC field is still named `trips` for brevity; the
+ *                 user-facing label reads "Items Scouted" because
+ *                 re-visiting the same country refreshes existing rows
+ *                 rather than appending new ones.
  *
  * Only travel-runner contributors are counted. The Item Market + Bazaar
  * runners write via anon PostgREST without attribution, so they're
