@@ -779,6 +779,15 @@ const LEAVE_SOON_MAX_MINS = 60;
 // view and muddles the two card identities ("wait to leave" vs. "go now").
 const MIN_LEAVE_LEAD_MINS = 3;
 
+// Absolute cap on the uncertainty band. If our ±U on the restock ETA is
+// wider than this, the "leave in X" copy is theater — the actual window
+// could be an hour either direction and the user would plan wrong. The
+// confidence-tier filter catches *most* of this (relative-MAD ≤ 0.5), but
+// a shelf with a 4 h median cadence and relativeMad = 0.49 still slips
+// through with an honest-but-useless ±118m. An absolute cap keeps the
+// card actionable.
+const MAX_UNCERTAINTY_MINS = 45;
+
 function buildUpcomingWindowCandidates(rows) {
   const flightMultiplier = getFlightMultiplier();
   const isIdeal = realismMode === 'ideal';
@@ -806,6 +815,9 @@ function buildUpcomingWindowCandidates(rows) {
     // band — the restock has likely already happened and been drained.
     const uncertainty = f.restockUncertaintyMins || 0;
     if (leaveInMins < -uncertainty) continue;
+    // Absolute cap on how wide the uncertainty band can be. "Leave in 6m
+    // ±168m" is not a window; it's noise in the shape of a recommendation.
+    if (uncertainty > MAX_UNCERTAINTY_MINS) continue;
     // Skip sub-MIN_LEAVE_LEAD_MINS windows — those are "leave now" by any
     // reasonable reading, and Best Run Right Now handles that case.
     if (leaveInMins < MIN_LEAVE_LEAD_MINS) continue;
