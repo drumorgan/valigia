@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.3.3
+// @version      0.3.4
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices straight into the community cache, (3) any bazaar — push fresh bazaar listings + owner so the bazaar scanner learns new sources for free.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -631,20 +631,22 @@
       const price = parseMoney(priceMatch[1]);
       if (!Number.isFinite(price) || price <= 0) continue;
 
-      // Quantity: first bare integer after removing the price token.
-      // Defaults to 1 because a listing implicitly has at least one unit.
+      // Quantity: first bare integer after removing the price token AND
+      // parenthesized numbers. Category-card pages show "$price (circulation)"
+      // where the parenthesized number is total items in-game, not a listing
+      // quantity. Stripping "(51,422)" etc. lets the qty default to 1 so we
+      // still capture the price signal without skewing floor_qty.
       const withoutPrice = text.replace(/\$\s*[\d,\.]+/g, ' ');
-      const intTokens = withoutPrice.match(/(?<![\w.])\d[\d,]*(?![\w.])/g) || [];
+      const withoutCirculation = withoutPrice.replace(/\(\s*[\d,]+\s*\)/g, ' ');
+      const intTokens = withoutCirculation.match(/(?<![\w.])\d[\d,]*(?![\w.])/g) || [];
       let qty = 1;
       for (const tok of intTokens) {
         const n = parseInt10(tok);
         if (Number.isFinite(n) && n > 0) { qty = n; break; }
       }
 
-      // Reject category-card contamination: "$10,500 (60,007)" would otherwise
-      // post a $10,500 listing with qty=60,007 (circulation), which then skews
-      // floor selection and every downstream profit calc. We lose the
-      // category card's price signal but gain a clean pool.
+      // Safety net: reject listings claiming absurd quantities (likely a
+      // scraping artefact we didn't anticipate).
       if (qty > MAX_LISTING_QTY) continue;
 
       // Item name: prefer the image alt (stable across Torn's UI shuffles);
