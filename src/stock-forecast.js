@@ -4,9 +4,16 @@
 // The Stock column in the UI historically showed YATA's current quantity
 // and clamped effective_slots to min(slots, currentQty). For long flights
 // (UAE, Japan, South Africa: ~3 h one-way) that's fiction — shelves empty
-// or restock before you arrive. This module reads a short history of
-// snapshots from Supabase, fits a simple depletion slope, and projects the
-// quantity at arrival time.
+// or restock before you arrive. This module fuses two signals:
+//
+//   1. `yata_snapshots` (48 h rolling window) — consecutive quantity
+//      samples used to fit a linear depletion slope, projecting stock at
+//      arrival time.
+//   2. `restock_events` (30-day append-only log, migration 018) — one row
+//      per observed positive delta, feeding median interval + typical
+//      post-restock quantity estimates. Split off from snapshots because
+//      cadence estimation wants weeks of history while the slope fit
+//      wants hours.
 //
 // The calling code feeds `flightMins * flightMultiplier` as arrivalMins.
 
@@ -31,12 +38,9 @@ async function reportSnapshotError(message) {
   }
 }
 
-// How far back to look when estimating depletion + restock cadence.
-// Originally 4h when every page load wrote a fresh row, but dedup-on-write
-// drops ~99% of inserts (stable shelves now write once, not every visit),
-// so we can safely widen the window. More history = tighter median on
-// restock-interval estimates, which was the weakest link of the restock
-// predictor with only 1-2 observed events.
+// How far back to look when fitting the depletion slope. Snapshots are
+// pruned to match. Kept short on purpose: slopes from last-hour samples
+// track reality better than slopes smeared across a 48 h restock cycle.
 const HISTORY_WINDOW_MINS = 48 * 60; // 48 h
 
 // How old a snapshot is allowed to be before the prune sweep drops it.
@@ -44,13 +48,26 @@ const HISTORY_WINDOW_MINS = 48 * 60; // 48 h
 // forecaster would still read.
 const PRUNE_OLDER_THAN_MINS = 48 * 60; // 48 h
 
+// Restock cadence lives in a dedicated `restock_events` table (migration
+// 018) that's append-only, so we can look back much further than the
+// snapshot prune window. 30 days gets us ~10-30 restock observations per
+// active shelf — enough for a stable median interval and a variance-based
+// confidence score.
+const RESTOCK_HISTORY_WINDOW_MINS = 30 * 24 * 60; // 30 days
+
 // Minimum samples + minimum span before we upgrade confidence from "low" to "ok".
 const MIN_SAMPLES_FOR_OK = 3;
 const MIN_SPAN_MINS_FOR_OK = 20;
 
-// In-memory cache keyed by `${itemId}|${destination}`.
+// Minimum restock events before estimateNextRestock() yields a prediction.
+// Two events give one interval sample — the statistical floor. More events
+// tighten the median and unlock higher confidence tiers downstream.
+const MIN_RESTOCK_EVENTS = 2;
+
+// In-memory caches keyed by `${itemId}|${destination}`.
 // Populated once per page load via loadForecastData().
 const historyCache = new Map();
+const restockCache = new Map();
 
 function cacheKey(itemId, destination) {
   return `${itemId}|${destination}`;
@@ -136,6 +153,43 @@ export async function recordSnapshots(items) {
     reportSnapshotError(`Stock history write threw: ${e?.message || e}`);
   }
 
+  // Emit restock events for any (item, destination) whose quantity strictly
+  // increased vs. the prior snapshot. Same dedup read we did above already
+  // has the previous quantity — just filter and upsert. ON CONFLICT on the
+  // generated `restocked_minute` column collapses concurrent observers of
+  // the same physical refill into one row. Backfill + this path + the
+  // abroad_prices trigger are the three sources feeding restock_events.
+  const restockEvents = [];
+  const nowIso = new Date().toISOString();
+  for (const row of changed) {
+    const prev = latestMap.get(`${row.item_id}|${row.destination}`);
+    if (prev && row.quantity > prev.quantity) {
+      restockEvents.push({
+        item_id: row.item_id,
+        destination: row.destination,
+        restocked_at: nowIso,
+        pre_qty: prev.quantity,
+        post_qty: row.quantity,
+        source: 'snapshot',
+      });
+    }
+  }
+  if (restockEvents.length > 0) {
+    try {
+      const { error } = await supabase
+        .from('restock_events')
+        .upsert(restockEvents, {
+          onConflict: 'item_id,destination,restocked_minute',
+          ignoreDuplicates: true,
+        });
+      if (error) {
+        reportSnapshotError(`Restock event write failed: ${error.message}`);
+      }
+    } catch (e) {
+      reportSnapshotError(`Restock event write threw: ${e?.message || e}`);
+    }
+  }
+
   // Prune old rows so the table stays bounded. Cheap enough to run every
   // load given the row counts (~200 items * 10 snapshots/h * 4h ~= 8k rows).
   try {
@@ -161,27 +215,39 @@ export async function recordSnapshots(items) {
  */
 export async function loadForecastData(items) {
   historyCache.clear();
+  restockCache.clear();
   if (!Array.isArray(items) || items.length === 0) return false;
 
-  const cutoff = new Date(Date.now() - HISTORY_WINDOW_MINS * 60_000).toISOString();
+  const snapshotCutoff = new Date(Date.now() - HISTORY_WINDOW_MINS * 60_000).toISOString();
+  const restockCutoff = new Date(Date.now() - RESTOCK_HISTORY_WINDOW_MINS * 60_000).toISOString();
   const itemIds = [...new Set(items.map(r => r.item_id).filter(Boolean))];
   if (itemIds.length === 0) return false;
 
-  try {
-    const { data, error } = await supabase
+  // Snapshots (short window, depletion slope) and restock events (long
+  // window, cadence) share no code path but both target the same items —
+  // fire them in parallel so total latency is max(snapshot, restock)
+  // rather than the sum.
+  const [snapshotRes, restockRes] = await Promise.all([
+    supabase
       .from('yata_snapshots')
       .select('item_id, destination, quantity, snapped_at')
       .in('item_id', itemIds)
-      .gte('snapped_at', cutoff)
-      .order('snapped_at', { ascending: true });
+      .gte('snapped_at', snapshotCutoff)
+      .order('snapped_at', { ascending: true })
+      .then(r => r, e => ({ error: e })),
+    supabase
+      .from('restock_events')
+      .select('item_id, destination, restocked_at, post_qty')
+      .in('item_id', itemIds)
+      .gte('restocked_at', restockCutoff)
+      .order('restocked_at', { ascending: true })
+      .then(r => r, e => ({ error: e })),
+  ]);
 
-    if (error) {
-      reportSnapshotError(`Stock history read failed: ${error.message}`);
-      return false;
-    }
-    if (!Array.isArray(data)) return false;
-
-    for (const row of data) {
+  if (snapshotRes.error) {
+    reportSnapshotError(`Stock history read failed: ${snapshotRes.error.message}`);
+  } else if (Array.isArray(snapshotRes.data)) {
+    for (const row of snapshotRes.data) {
       const key = cacheKey(row.item_id, row.destination);
       let arr = historyCache.get(key);
       if (!arr) {
@@ -190,48 +256,50 @@ export async function loadForecastData(items) {
       }
       arr.push({ quantity: row.quantity, snappedAt: new Date(row.snapped_at).getTime() });
     }
-    return historyCache.size > 0;
-  } catch {
-    return false;
   }
-}
 
-/**
- * Scan the full sample series for restock events — indices where quantity
- * went UP between consecutive samples. We capture when each restock landed
- * and what quantity it produced so callers can estimate cadence and the
- * typical post-restock shelf size.
- *
- * Returns an array of { atTime, postQty } in chronological order, or [].
- */
-function detectRestockEvents(samples) {
-  if (!samples || samples.length < 2) return [];
-  const events = [];
-  for (let i = 1; i < samples.length; i++) {
-    if (samples[i].quantity > samples[i - 1].quantity) {
-      events.push({ atTime: samples[i].snappedAt, postQty: samples[i].quantity });
+  if (restockRes.error) {
+    // Don't toast — restock events are an additive signal. Forecaster will
+    // fall back to depletion-only, same as before migration 018. Surfacing
+    // this as an error would be more alarming than informative.
+  } else if (Array.isArray(restockRes.data)) {
+    for (const row of restockRes.data) {
+      const key = cacheKey(row.item_id, row.destination);
+      let arr = restockCache.get(key);
+      if (!arr) {
+        arr = [];
+        restockCache.set(key, arr);
+      }
+      arr.push({
+        atTime: new Date(row.restocked_at).getTime(),
+        postQty: row.post_qty,
+      });
     }
   }
-  return events;
+
+  return historyCache.size > 0 || restockCache.size > 0;
 }
 
 /**
- * Given the detected restock events, estimate when the next one is due and
- * what quantity it will produce. We use the MEDIAN of observed intervals
- * and post-restock quantities — robust to noise with tiny sample counts.
+ * Estimate when the next restock is due and what quantity it will produce
+ * given a chronologically-sorted array of `{ atTime, postQty }` events
+ * pulled from restock_events.
  *
- * Needs at least two restock events in the 4h window to yield a non-null
- * result — one interval sample is the minimum we'll project from. Below
- * that the caller keeps the depletion-only story (no restock prediction).
+ * We use the MEDIAN of observed intervals (robust to the occasional missed
+ * restock widening one gap to 2x normal) and the MEDIAN post-restock
+ * quantity. Needs at least MIN_RESTOCK_EVENTS to yield one interval sample.
  *
  * Returns {
  *   timeToNextMins: number (can be 0 if overdue),
  *   typicalPostQty: number,
+ *   sampleCount: number of interval samples used,
+ *   intervalSpread: interquartile-range ratio (1.0 = perfectly regular),
  * } or null.
  */
 function estimateNextRestock(events, nowMs) {
-  if (events.length < 2) return null;
-  // Intervals between consecutive restock events.
+  if (!events || events.length < MIN_RESTOCK_EVENTS) return null;
+
+  // Intervals between consecutive restock events, in minutes.
   const gaps = [];
   for (let i = 1; i < events.length; i++) {
     gaps.push((events[i].atTime - events[i - 1].atTime) / 60_000);
@@ -247,7 +315,23 @@ function estimateNextRestock(events, nowMs) {
   const sinceLastMins = (nowMs - lastRestockAt) / 60_000;
   const timeToNextMins = Math.max(0, medianInterval - sinceLastMins);
 
-  return { timeToNextMins, typicalPostQty };
+  // Interval spread: p75/p25 ratio, a cheap summary of cadence regularity
+  // that we carry for downstream confidence scoring. 1.0 = every interval
+  // identical; >2.0 = cadence is too irregular to trust. Guard against a
+  // 0-minute p25 by clamping the denominator to at least 1 minute.
+  let intervalSpread = 1;
+  if (gaps.length >= 4) {
+    const p25 = gaps[Math.floor(gaps.length * 0.25)];
+    const p75 = gaps[Math.floor(gaps.length * 0.75)];
+    intervalSpread = p75 / Math.max(1, p25);
+  }
+
+  return {
+    timeToNextMins,
+    typicalPostQty,
+    sampleCount: gaps.length,
+    intervalSpread,
+  };
 }
 
 /**
@@ -301,18 +385,45 @@ function latestDepletionSegment(samples) {
  * }}
  */
 export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty = null) {
-  const samples = historyCache.get(cacheKey(itemId, destination));
+  const key = cacheKey(itemId, destination);
+  const samples = historyCache.get(key);
 
-  // No history at all (fresh install / table just created) — lean on YATA's
-  // live number and report low confidence. Row still renders normally.
+  // Restock cadence comes from the dedicated `restock_events` table (30-day
+  // window, append-only) rather than rescanning the short snapshot window.
+  // Computed up front because it's independent of depletion samples — even
+  // a brand-new item with no snapshots yet can still have backfilled restock
+  // events, and a shelf at 0 benefits from the refill prediction regardless.
+  const restockEvents = restockCache.get(key) || [];
+  const restockEst = estimateNextRestock(restockEvents, Date.now());
+  const restockDuringFlight = !!(
+    restockEst && restockEst.timeToNextMins <= arrivalMins
+  );
+  const restockEtaMins = restockDuringFlight
+    ? Math.round(restockEst.timeToNextMins)
+    : null;
+  const restockQty = restockDuringFlight ? restockEst.typicalPostQty : null;
+
+  // No snapshot history at all — can't fit a depletion slope, so etaQty
+  // falls back to Now. Still honor the restock prediction if Now is empty:
+  // that's the whole point of keeping cadence in a separate long-window
+  // table — a fresh shelf with zero snapshots can still say "restock
+  // expected in 40m" if backfill filled in its cadence.
+  //
+  // hasHistory is true only when we'll actually project something useful
+  // (Now=0 with a restock during flight). Setting it true on the general
+  // "we have restock events but nothing interesting to say right now" case
+  // would make the UI render a redundant "Now N / ETA N" line.
   if (!samples || samples.length === 0) {
+    const nowQty = fallbackNowQty;
+    const restockCoversEmptyShelf = nowQty === 0 && restockQty != null;
+    const eta = restockCoversEmptyShelf ? restockQty : nowQty;
     return {
-      nowQty: fallbackNowQty,
-      etaQty: fallbackNowQty,
-      confidence: fallbackNowQty != null ? 'low' : 'none',
-      hasHistory: false,
-      restockEtaMins: null,
-      restockQty: null,
+      nowQty,
+      etaQty: eta,
+      confidence: nowQty != null ? 'low' : 'none',
+      hasHistory: restockCoversEmptyShelf,
+      restockEtaMins,
+      restockQty,
     };
   }
 
@@ -325,19 +436,6 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // line internally consistent with the "Now" column above it. We only fall
   // back to the snapshot number if YATA didn't give us one this visit.
   const nowQty = fallbackNowQty ?? latest.quantity;
-
-  // Estimate the next restock independently of the depletion slope — the
-  // two live on different signals (positive deltas vs. a slope fit). We
-  // only fold the restock back into etaQty when it clearly beats "0".
-  const restockEvents = detectRestockEvents(samples);
-  const restockEst = estimateNextRestock(restockEvents, Date.now());
-  const restockDuringFlight = !!(
-    restockEst && restockEst.timeToNextMins <= arrivalMins
-  );
-  const restockEtaMins = restockDuringFlight
-    ? Math.round(restockEst.timeToNextMins)
-    : null;
-  const restockQty = restockDuringFlight ? restockEst.typicalPostQty : null;
 
   const segment = latestDepletionSegment(samples);
   if (!segment) {

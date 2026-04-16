@@ -93,7 +93,8 @@ editor; Supabase does not auto-apply them).
 | `bazaar_prices` | Crowd-sourced bazaar pool (item_id + bazaar_owner_id composite key, with `miss_count` for pool hygiene). Written by the web-app scanner and the PDA userscript's Bazaar runner. |
 | `abroad_prices` | First-party travel-shop observations (item_id + destination composite key). Written ONLY by the `ingest-travel-shop` edge function, which validates the submitting key's `player_id` before upserting. Publicly readable. Resurrected in migration 013 to carry live PDA scrapes. |
 | `community_stats` | Single-row spin counter. |
-| `yata_snapshots` | YATA abroad-price history (fallback data source behind first-party scrapes). |
+| `yata_snapshots` | YATA abroad-price history (fallback data source behind first-party scrapes). 48 h prune window, feeds depletion slope. |
+| `restock_events` | Append-only log of observed positive stock deltas. Fed by the client's `recordSnapshots()` and an AFTER-UPDATE trigger on `abroad_prices`. 30-day read window powers restock cadence estimation in `stock-forecast.js`. Migration 018. |
 
 **RPC functions** (granted to anon + authenticated):
 - `record_scan(found_deal boolean)` — atomic increment after each scan
@@ -323,7 +324,8 @@ valigia.girovagabondo.com/
 │       ├── 014_session_token.sql
 │       ├── 015_pda_scout_count.sql
 │       ├── 016_pda_activity.sql
-│       └── 017_price_bigint.sql
+│       ├── 017_price_bigint.sql
+│       └── 018_restock_events.sql
 ├── .env
 ├── vite.config.js
 └── .github/
