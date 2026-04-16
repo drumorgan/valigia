@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.3.4
+// @version      0.4.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices straight into the community cache, (3) any bazaar — push fresh bazaar listings + owner so the bazaar scanner learns new sources for free.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -25,6 +25,8 @@
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
+  const ACTIVITY_URL =
+    'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/record-pda-activity';
   const SUPABASE_ANON_KEY =
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0c2x6cGx6bHhkcHRwdnh0YW56Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MzQyNTMsImV4cCI6MjA5MTQxMDI1M30.Ddzoq8bCmWc875gbdQKhqnR5M7TraWWj4TYS4RRKkMY';
 
@@ -290,6 +292,66 @@
     let parsed = null;
     try { parsed = JSON.parse(res.responseText); } catch (e) { /* ignore */ }
     return { status: res.status, body: parsed, raw: res.responseText };
+  }
+
+  // -- Activity ping -------------------------------------------------------
+  // Fires a key-validated heartbeat to record-pda-activity so the Item
+  // Market and Bazaar scrapes show up in the scout count alongside travel
+  // contributions. Travel's ping is fanned out server-side from
+  // ingest-travel-shop, so we don't ping from runTravel().
+  //
+  // Throttled per page_type via localStorage: each page_type pings at most
+  // once per ACTIVITY_PING_WINDOW_MS. The cap keeps the extra Torn API
+  // calls (one user/basic validation per ping) off the user's rate budget
+  // during long SPA browsing sessions, while still marking them "active"
+  // on a rolling 24h window.
+  //
+  // Fire-and-forget: any failure here is invisible to the user. The scout
+  // count is a vanity metric; it must never interrupt the scrape flow.
+  const ACTIVITY_PING_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+  const ACTIVITY_PING_STORAGE_KEY = 'valigia_last_activity_ping';
+
+  function loadActivityPingMap() {
+    try {
+      const raw = localStorage.getItem(ACTIVITY_PING_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (e) { return {}; }
+  }
+
+  function saveActivityPingMap(map) {
+    try { localStorage.setItem(ACTIVITY_PING_STORAGE_KEY, JSON.stringify(map)); }
+    catch (e) { /* quota or private mode - ignore */ }
+  }
+
+  async function pingActivity(pageType) {
+    const now = Date.now();
+    const map = loadActivityPingMap();
+    const last = Number(map[pageType]) || 0;
+    if (now - last < ACTIVITY_PING_WINDOW_MS) {
+      log('activity ping throttled (' + pageType + ')');
+      return;
+    }
+    // Record the attempt BEFORE firing so a stuck request can't cause
+    // every subsequent scrape to re-ping.
+    map[pageType] = now;
+    saveActivityPingMap(map);
+
+    try {
+      await gmRequest({
+        method: 'POST',
+        url: ACTIVITY_URL,
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+        },
+        data: JSON.stringify({ api_key: TORN_API_KEY, page_type: pageType }),
+      });
+    } catch (e) {
+      log('activity ping failed (' + pageType + '):', e);
+    }
   }
 
   // -- Sell prices from Supabase -------------------------------------------
@@ -732,6 +794,7 @@
     if (result.ok) {
       toast('market: refreshed ' + result.count +
             ' \u00B7 ' + firstName + ' ' + firstPrice, 'success');
+      pingActivity('item_market');
     } else {
       toast('market upsert failed - ' + (result.error || 'unknown'), 'error');
     }
@@ -845,6 +908,7 @@
     const result = await supabaseUpsert(BAZAAR_PRICES_URL, rows);
     if (result.ok) {
       toast('bazaar ' + ownerId + ': logged ' + result.count + ' items', 'success');
+      pingActivity('bazaar');
     } else {
       toast('bazaar upsert failed - ' + (result.error || 'unknown'), 'error');
     }
