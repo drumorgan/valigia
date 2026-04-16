@@ -48,42 +48,72 @@ async function boot() {
 
 // ── PDA activity counter ──────────────────────────────────────
 /**
- * Fetch the "Scouts: N · Items Scouted: M · last 24h" pair and reveal the
- * header banner.
+ * Fetch per-page PDA scout counts (last 24h) and reveal the header banner.
  *
- * Scouts        = distinct observer_player_id over the last 24h
- *                 (community reach)
- * Items Scouted = row count over the same window — each row is one
- *                 (item_id, destination) observation in abroad_prices.
- *                 The RPC field is still named `trips` for brevity; the
- *                 user-facing label reads "Items Scouted" because
- *                 re-visiting the same country refreshes existing rows
- *                 rather than appending new ones.
+ * The RPC returns one row per page_type ('travel', 'item_market', 'bazaar'),
+ * each with a distinct-player scout count plus an event count. The banner
+ * shows one segment per page_type with at least one scout; segments with
+ * zero activity stay hidden so we don't advertise a dead runner.
  *
- * Only travel-runner contributors are counted. The Item Market + Bazaar
- * runners write via anon PostgREST without attribution, so they're
- * intentionally excluded. See migration 016_pda_activity.sql for details.
+ * Trust: every counted player_id is Torn-validated at write time —
+ * travel rows are fanned out from ingest-travel-shop, Item Market and
+ * Bazaar rows come from the record-pda-activity edge function. See
+ * migration 018_pda_activity_log.sql.
  *
  * Silently hides on any failure — vanity metric, not load-blocking.
  */
+const PAGE_TYPES = ['travel', 'item_market', 'bazaar'];
+
 async function loadPdaScoutCount() {
   const banner = document.getElementById('pda-scouts-banner');
-  const scoutsEl = document.getElementById('pda-scouts-count');
-  const tripsEl = document.getElementById('pda-trips-count');
-  if (!banner || !scoutsEl || !tripsEl) return;
+  if (!banner) return;
 
   try {
     const { data, error } = await supabase.rpc('get_pda_activity_24h');
-    if (error || !data) return;
-    // Supabase returns an array for table-returning RPCs.
-    const row = Array.isArray(data) ? data[0] : data;
-    if (!row) return;
-    const scouts = Number(row.scouts);
-    const trips = Number(row.trips);
-    if (!Number.isFinite(scouts) || !Number.isFinite(trips)) return;
-    if (scouts <= 0 && trips <= 0) return;
-    scoutsEl.textContent = scouts.toLocaleString();
-    tripsEl.textContent = trips.toLocaleString();
+    if (error || !Array.isArray(data)) return;
+
+    const byPage = new Map();
+    for (const row of data) {
+      if (!row || typeof row.page_type !== 'string') continue;
+      const scouts = Number(row.scouts);
+      const events = Number(row.events);
+      if (!Number.isFinite(scouts) || scouts <= 0) continue;
+      byPage.set(row.page_type, {
+        scouts,
+        events: Number.isFinite(events) ? events : 0,
+      });
+    }
+
+    if (byPage.size === 0) return;
+
+    for (const pageType of PAGE_TYPES) {
+      const segment = document.getElementById(`pda-${pageType}-segment`);
+      if (!segment) continue;
+      const entry = byPage.get(pageType);
+      if (!entry) { segment.hidden = true; continue; }
+      const scoutsEl = document.getElementById(`pda-${pageType}-scouts`);
+      const eventsEl = document.getElementById(`pda-${pageType}-events`);
+      if (scoutsEl) scoutsEl.textContent = entry.scouts.toLocaleString();
+      if (eventsEl) {
+        eventsEl.textContent = entry.events > 0
+          ? `(${entry.events.toLocaleString()})`
+          : '';
+      }
+      segment.hidden = false;
+    }
+
+    const travelVisible = byPage.has('travel');
+    const marketVisible = byPage.has('item_market');
+    const bazaarVisible = byPage.has('bazaar');
+    const sepTravelMarket = document.getElementById('pda-sep-travel-itemmarket');
+    const sepMarketBazaar = document.getElementById('pda-sep-itemmarket-bazaar');
+    if (sepTravelMarket) {
+      sepTravelMarket.hidden = !(travelVisible && (marketVisible || bazaarVisible));
+    }
+    if (sepMarketBazaar) {
+      sepMarketBazaar.hidden = !((travelVisible || marketVisible) && bazaarVisible);
+    }
+
     banner.hidden = false;
   } catch {
     // Counter is vanity — silent fail keeps it invisible rather than broken.

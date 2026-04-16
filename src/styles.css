@@ -111,6 +111,24 @@ body {
   letter-spacing: 0.08em;
 }
 
+.pda-scouts-segment {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.pda-scouts-pagelabel {
+  color: var(--muted);
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+}
+
+.pda-scouts-events {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
 #player-badge {
   margin-top: 0.75rem;
   display: flex;
