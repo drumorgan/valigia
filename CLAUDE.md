@@ -320,7 +320,10 @@ valigia.girovagabondo.com/
 │       ├── 011_sell_price_depth.sql
 │       ├── 012_dedup_yata_snapshots.sql
 │       ├── 013_abroad_prices.sql
-│       └── 014_session_token.sql
+│       ├── 014_session_token.sql
+│       ├── 015_pda_scout_count.sql
+│       ├── 016_pda_activity.sql
+│       └── 017_price_bigint.sql
 ├── .env
 ├── vite.config.js
 └── .github/
