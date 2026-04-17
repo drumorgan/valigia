@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.7.0
+// @version      0.7.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.7.0';
+  const SCRIPT_VERSION = '0.7.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -979,12 +979,13 @@
   const WATCHLIST_BAZAAR_MAX_AGE_MS = 10 * 60 * 1000;
 
   // Item Market rows older than this are dropped. Mirrors the web
-  // app's 4-hour MARKET_MAX_AGE_MS so a stale floor (e.g. someone
-  // scraped Lucky Quarter 11 hours ago and the listing has long since
-  // been bought) can't masquerade as a current match. The web app
-  // tops up watchlisted items on every dashboard load, so a price
-  // that still holds will quickly re-appear here.
-  const WATCHLIST_MARKET_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+  // app's 1-hour MARKET_MAX_AGE_MS so a stale floor (e.g. someone
+  // scraped Gold Noble Coin an hour ago at $1.4M and the listing has
+  // long since been bought, leaving a $2.3M real floor) can't
+  // masquerade as a current match. The web app force-refreshes every
+  // watchlisted item on a 10-minute staleness window on each dashboard
+  // load, so a price that still holds will quickly re-appear here.
+  const WATCHLIST_MARKET_MAX_AGE_MS = 60 * 60 * 1000;
 
   // Tiny non-crypto hash of the api_key so we can key the player_id cache
   // by it — lets the cache invalidate automatically when the user swaps
