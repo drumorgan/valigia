@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.0
+// @version      0.6.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + owner + show Watchlist matches so you spot a deal the moment you open a bazaar.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -732,6 +732,13 @@
       if (listings.length === 0) continue;
       listings.sort(function (a, b) { return a.price - b.price; });
 
+      // min_price = absolute floor (cheapest listing, any qty). Feeds
+      // the Watchlist matcher: a single-unit $219k listing under a
+      // $250k alert is a real buying opportunity even if the next stack
+      // sits above the threshold. Travel profit math ignores this and
+      // keeps using the qty-filtered effective floor below.
+      const minPrice = listings[0].price;
+
       // Effective floor = first listing with qty >= 2. A single-unit listing
       // at a much lower price is almost always a loss-leader or misclick
       // (see Cannabis case: 1 unit at $10,500 sitting atop 19-unit stacks at
@@ -747,6 +754,7 @@
       rows.push({
         item_id: item_id,
         price: floor.price,
+        min_price: minPrice,
         floor_qty: floor.qty,
         listing_count: listings.length,
         updated_at: now,
@@ -1038,7 +1046,7 @@
       fetchJSON(
         SELL_PRICES_URL +
         '?item_id=' + inClause +
-        '&select=item_id,price,updated_at'
+        '&select=item_id,price,min_price,updated_at'
       ),
       fetchJSON(
         BAZAAR_PRICES_URL +
@@ -1071,22 +1079,30 @@
 
       if (venues.has('market')) {
         const s = sellByItem.get(a.item_id);
-        if (s && Number(s.price) <= maxPrice) {
+        // Match against min_price (absolute floor) — see src/watchlist.js
+        // for the rationale. Falls back to price for rows that haven't
+        // been refreshed since migration 020.
+        const floorPrice = s && s.min_price != null
+          ? Number(s.min_price)
+          : (s && s.price != null ? Number(s.price) : null);
+        if (s && floorPrice != null && floorPrice <= maxPrice) {
           const observedAt = s.updated_at ? new Date(s.updated_at).getTime() : 0;
           const fresh = observedAt > 0 && Date.now() - observedAt <= WATCHLIST_MARKET_MAX_AGE_MS;
           if (fresh) {
-            const price = Number(s.price);
+            const limited = s.price != null
+              && s.min_price != null
+              && Number(s.min_price) < Number(s.price);
             matches.push({
               item_id: a.item_id,
               venue: 'market',
               venue_label: 'Item Market',
-              price: price,
+              price: floorPrice,
               max_price: maxPrice,
-              savings: maxPrice - price,
-              savings_pct: ((maxPrice - price) / maxPrice) * 100,
+              savings: maxPrice - floorPrice,
+              savings_pct: ((maxPrice - floorPrice) / maxPrice) * 100,
               observed_at: observedAt,
               link: 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + a.item_id,
-              extra: {},
+              extra: { limited: limited },
             });
           }
         }
@@ -1287,6 +1303,10 @@
       save.appendChild(document.createTextNode(
         Number.isFinite(m.savings_pct) ? ' (' + Math.round(m.savings_pct) + '%)' : ''
       ));
+      // Loss-leader heads-up — see src/watchlist.js for rationale.
+      if (m.venue === 'market' && m.extra && m.extra.limited) {
+        save.appendChild(document.createTextNode(' \u00B7 single unit'));
+      }
 
       const age = document.createElement('span');
       age.className = 'vgl-wl-age';
