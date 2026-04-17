@@ -171,6 +171,13 @@ serve(async (req) => {
       );
     }
 
+    // Step 4 — fan out to pda_activity so the unified scout count picks up
+    // this travel ping without the userscript needing a second round-trip.
+    // Best-effort: a logging failure here shouldn't fail the ingest.
+    await supabase
+      .from('pda_activity')
+      .insert({ player_id, page_type: 'travel' });
+
     return new Response(
       JSON.stringify({
         ok: true,

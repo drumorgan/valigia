@@ -408,6 +408,30 @@ function renderDestCell(destination) {
   return `${travelLink} <span class="dest-flag" title="${destination}">${flag}</span> <span class="dest-code">${code}</span>`;
 }
 
+// Trailing hint for rows where cadence data exists but isn't confident
+// enough to produce a committed prediction. Returns "· cadence forming
+// (N obs)" or "" depending on whether we have any observations. Meant
+// to be appended inside an existing stock-eta span so the hint inherits
+// the empty/muted color; span wrapping keeps it visually secondary.
+function cadenceLearningHint(forecast) {
+  const count = forecast?.restockEventCount ?? 0;
+  if (count === 0) return '';
+  // Skip the hint when we're already showing a committed restock or
+  // leave-in line — the caller controls which branch fires, but as a
+  // belt-and-suspenders guard: confidence 'ok'/'high' means the other
+  // branches should have claimed the row before this helper was called.
+  // Rendering the hint alongside a committed prediction would be redundant.
+  if (forecast.restockConfidence === 'ok' || forecast.restockConfidence === 'high') {
+    // If a committed prediction is possible for this shelf (based on
+    // confidence tier alone) but the caller still landed in the empty/
+    // fallback branch — most likely because uncertainty exceeded the 45m
+    // cap — the hint is still useful. Gate only on very-low samples.
+    if (count >= 5) return '';
+  }
+  const title = `${count} restock observation${count === 1 ? '' : 's'} in the last 30 days — more samples will tighten the prediction`;
+  return ` <span class="stock-eta__learning" title="${title}">· cadence forming (${count} obs)</span>`;
+}
+
 function renderStockCell(row) {
   const now = row.quantity;
   if (now == null) return '<span class="muted">—</span>';
@@ -425,39 +449,74 @@ function renderStockCell(row) {
   const eta = f.etaQty;
   if (eta == null) return formatQuantity(now);
 
-  // Four possible states, in the order tested below:
-  //   1. Empty now + restock projected to land before arrival → show the
-  //      restock narrative with its uncertainty band ("restock ~52m ±8m → 12").
-  //      The "China at 0" scenario: long flight + regular cadence turns an
-  //      apparent dead run back into a live one.
+  // Six possible states, in the order tested below:
+  //   1. Empty now + restock projected to land DURING flight → compact
+  //      "restock ~52m ±8m → 12" (China-at-0 scenario).
   //   2. Shelf depletes during flight AND restock refills it before arrival
-  //      → two-phase narrative ("empty ~37m · restock ~52m → 894"). Detected
-  //      via `eta > now` — that's only possible because stock-forecast.js
-  //      already overrode etaQty from 0 → restockQty; the depletion clamp
-  //      otherwise enforces eta ≤ now. Without this branch the cell would
-  //      show a naked "ETA 894" with no explanation of the journey.
-  //   3. Shelf will deplete during the flight, no restock projected → swap
-  //      the vague "likely empty" for a concrete "empty ~37m" when the slope
-  //      gives us one; fall back to "likely empty" when it doesn't.
-  //   4. Shelf survives the flight (default) → the existing "ETA N" tile.
+  //      → "empty ~37m · restock ~52m → 894". Detected via `eta > now`
+  //      because stock-forecast.js has already overridden etaQty.
+  //   3. Empty now + restock is AFTER the current arrival time BUT within
+  //      the leave-in window → "leave in ~45m ±12m → 744". Tells the user
+  //      to wait so arrival coincides with the refill. Xanax-JPN case.
+  //   4. Shelf depletes during flight, no restock during flight but there
+  //      IS an actionable leave-in window → "empty ~37m · leave in ~45m → Q".
+  //      Combines the depletion honesty with the wait-for-refill action.
+  //   5. Shelf will deplete during the flight, no usable restock prediction
+  //      → "empty ~37m" (from slope) or "likely empty" as fallback.
+  //   6. Shelf survives the flight (default) → "ETA N".
+  //
+  // Branches 1 and 2 now gate on `restockConfident`, not just
+  // `restockBeforeArrival` — we demand the uncertainty band be within the
+  // same MAX_UNCERTAINTY_MINS cap the leave-in branch uses. "restock ~92m
+  // ±142m" is dishonest precision; when we can't promise ±45m, we fall
+  // through to the empty/likely-empty narrative instead.
   let etaLine;
   const restockBeforeArrival = f.restockEtaMins != null && f.restockQty != null;
+  const uncertainty = f.restockUncertaintyMins ?? 0;
+  const restockConfident = restockBeforeArrival && uncertainty <= MAX_UNCERTAINTY_MINS;
   const restockConfClass = f.restockConfidence === 'high'
     ? 'stock-eta--restock-high'
     : f.restockConfidence === 'ok'
       ? 'stock-eta--restock'
       : 'stock-eta--restock-low';
 
-  if (now === 0 && restockBeforeArrival) {
+  // When the forecaster pushed etaQty from 0 → restockQty (the refill
+  // override) but the ±U is too wide to commit to that refill copy, the
+  // render should behave as if the override never happened — otherwise
+  // we'd fall through the gated branches and show a naked "ETA 894".
+  // displayEta "un-overrides" locally for render-path decisions only;
+  // the underlying forecast.etaQty (used by the calculator for slot
+  // clamp) is left alone so the margin math still reflects "if the
+  // refill lands, you get N units".
+  const displayEta = (eta > now && restockBeforeArrival && !restockConfident)
+    ? 0
+    : eta;
+
+  // Leave-in-X inline signal. Same constants as the gated restock copy so
+  // both surfaces agree on what's actionable. Requires a confident cadence
+  // AND a future (not during-flight) restock AND a reasonably tight ±U.
+  const flightMultiplier = getFlightMultiplier();
+  const arrivalMins = row.flightMins * flightMultiplier;
+  const leaveInMins = f.nextRestockMins != null
+    ? f.nextRestockMins - arrivalMins
+    : null;
+  const canShowLeaveIn =
+    leaveInMins != null
+    && leaveInMins >= MIN_LEAVE_LEAD_MINS
+    && uncertainty <= MAX_UNCERTAINTY_MINS
+    && (f.restockConfidence === 'ok' || f.restockConfidence === 'high')
+    && f.restockQty != null;
+
+  if (now === 0 && restockConfident) {
     const mins = f.restockEtaMins;
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const minsLabel = mins === 0 ? 'imminent' : `~${mins}m`;
-    const uncertainty = f.restockUncertaintyMins != null && mins > 0
+    const uncertLabel = f.restockUncertaintyMins != null && mins > 0
       ? ` ±${f.restockUncertaintyMins}m`
       : '';
     const title = `Based on ${f.restockConfidence}-confidence restock cadence (${f.restockConfidence === 'high' ? 'tight' : 'rough'} interval)`;
-    etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertainty} → ${qty}</span>`;
-  } else if (eta > now && restockBeforeArrival) {
+    etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertLabel} → ${qty}</span>`;
+  } else if (eta > now && restockConfident) {
     const restockMins = f.restockEtaMins;
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const emptyClause = f.timeToEmptyMins != null
@@ -465,11 +524,34 @@ function renderStockCell(row) {
       : '';
     const title = `Slope depletes the shelf mid-flight; restock cadence (${f.restockConfidence} conf) refills it to ~${qty} before you land`;
     etaLine = `<span class="stock-eta stock-eta--refill ${restockConfClass}" title="${title}">${emptyClause}restock ~${restockMins}m → ${qty}</span>`;
-  } else if (eta === 0 && now > 0) {
+  } else if (now === 0 && canShowLeaveIn) {
+    const qty = Number(f.restockQty).toLocaleString('en-US');
+    const uncertLabel = uncertainty > 0 ? ` ±${uncertainty}m` : '';
+    const title = `Wait ~${Math.round(leaveInMins)}m before leaving so your arrival coincides with the expected restock (${f.restockConfidence} conf, ±${uncertainty}m)`;
+    etaLine = `<span class="stock-eta stock-eta--leave-in ${restockConfClass}" title="${title}">leave in ~${Math.round(leaveInMins)}m${uncertLabel} → ${qty}</span>`;
+  } else if (displayEta === 0 && now > 0 && canShowLeaveIn) {
+    const qty = Number(f.restockQty).toLocaleString('en-US');
+    const emptyClause = f.timeToEmptyMins != null
+      ? `empty ~${f.timeToEmptyMins}m · `
+      : '';
+    const title = `Depletion empties the shelf mid-flight; leaving ~${Math.round(leaveInMins)}m from now (±${uncertainty}m, ${f.restockConfidence} conf) lands you at the refill`;
+    etaLine = `<span class="stock-eta stock-eta--leave-in ${restockConfClass}" title="${title}">${emptyClause}leave in ~${Math.round(leaveInMins)}m → ${qty}</span>`;
+  } else if (displayEta === 0 && now > 0) {
     const label = f.timeToEmptyMins != null
       ? `empty ~${f.timeToEmptyMins}m`
       : 'likely empty';
-    etaLine = `<span class="stock-eta stock-eta--empty" title="Recent depletion rate projects the shelf to be empty when you land">${label}</span>`;
+    etaLine = `<span class="stock-eta stock-eta--empty" title="Recent depletion rate projects the shelf to be empty when you land">${label}${cadenceLearningHint(f)}</span>`;
+  } else if (eta === 0 && now === 0) {
+    // Both current and projected zero with no restock copy firing. If we
+    // have SOME observations, surface the learning hint so the row doesn't
+    // read as dead silence — it reads as "we're watching, just need more
+    // data". Without any obs, fall through to naked "ETA 0".
+    const count = f.restockEventCount ?? 0;
+    if (count > 0) {
+      etaLine = `<span class="stock-eta stock-eta--empty" title="No committed restock prediction yet — pipeline is watching">shelf empty${cadenceLearningHint(f)}</span>`;
+    } else {
+      etaLine = `<span class="stock-eta stock-eta--low" title="No restock observations yet — will fill in as scrapes accumulate">ETA 0</span>`;
+    }
   } else {
     const confClass = f.confidence === 'ok' ? 'stock-eta--ok' : 'stock-eta--low';
     const confTitle = f.confidence === 'ok'
@@ -747,162 +829,35 @@ function buildBazaarRun(deal) {
  * summary card above the table. Both are normalized to profit/hr for
  * comparison; the winner is shown in its own visual variant.
  */
-// ── Upcoming Restock Window card ─────────────────────────────
-// Picks the single best "leave in X minutes" candidate across the current
-// row set. Complementary to "Best Run Right Now": Best Run answers
-// "what should I do NOW?", Upcoming Window answers "what should I wait
-// for because a refill is coming?".
-//
-// Math: leaveInMins = nextRestockMins - (flightMins * flightMultiplier).
-// The user wants arrival to coincide with restock, so we subtract the one-
-// way flight time (already multiplied by airstrip/WLT factor) from the
-// predicted restock ETA.
-//
-// Three filters keep the two cards from duplicating each other on the
-// same shelf:
-//   1. row.quantity < slotCount — only shelves that CAN'T fill a full run
-//      right now have anything to gain from waiting.
-//   2. leaveInMins >= MIN_LEAVE_LEAD_MINS — sub-3-min windows are "leave
-//      now" in practice; let Best Run own that copy.
-//   3. leaveInMins <= LEAVE_SOON_MAX_MINS — beyond an hour out, a fresh
-//      page load will produce a better prediction anyway.
+// ── Leave-in-X inline constants ──────────────────────────────
+// Shared between the Stock-cell render (per-row leave-in copy) and any
+// future surface that wants to express "wait N minutes before leaving so
+// arrival coincides with the restock". The standalone Upcoming Window
+// card was removed in favor of per-row rendering — the user's preferred
+// surface is seeing every actionable window inline, not a single top
+// pick above the table.
 
-// Biggest future window we'll still surface. Beyond this the forecaster's
-// uncertainty (and any buy/sell price drift) outweighs the precision of
-// the "leave in" copy. 60 min matches the typical depletion horizon and
-// the rate at which a user's context (available slots, cash) changes.
-const LEAVE_SOON_MAX_MINS = 60;
-
-// Minimum lead time before the card fires. Below this the window is
-// effectively "leave now" — same advice Best Run Right Now gives from a
-// different angle. Surfacing both cards for the same shelf clutters the
-// view and muddles the two card identities ("wait to leave" vs. "go now").
+// Minimum lead time before we render "leave in Xm". Below this the
+// window is effectively "leave now" and Best Run Right Now handles it
+// better; inline copy below 3m flickers as the page renders and would
+// be stale by the time a traveler acted on it.
 const MIN_LEAVE_LEAD_MINS = 3;
 
 // Absolute cap on the uncertainty band. If our ±U on the restock ETA is
-// wider than this, the "leave in X" copy is theater — the actual window
-// could be an hour either direction and the user would plan wrong. The
-// confidence-tier filter catches *most* of this (relative-MAD ≤ 0.5), but
-// a shelf with a 4 h median cadence and relativeMad = 0.49 still slips
-// through with an honest-but-useless ±118m. An absolute cap keeps the
-// card actionable.
+// wider than this, "leave in Xm ±Um" is theater — planning off a 45m
+// window where the actual could be ±2h lands the user wrong every time.
+// The confidence-tier filter catches *most* of this (relative-MAD ≤ 0.5),
+// but a shelf with a 4 h median cadence and relativeMad = 0.49 still
+// slips through with an honest-but-useless ±118m. An absolute cap keeps
+// inline copy honest.
 const MAX_UNCERTAINTY_MINS = 45;
 
-function buildUpcomingWindowCandidates(rows) {
-  const flightMultiplier = getFlightMultiplier();
-  const isIdeal = realismMode === 'ideal';
-
-  const candidates = [];
-  for (const row of rows) {
-    const f = row.forecast;
-    if (!f || f.nextRestockMins == null || f.restockQty == null) continue;
-    if (!row.hasSellPrice) continue;
-    // Gate on confidence. 'low' tiers include shelves with just two observed
-    // intervals — predicting a leave time off a single sample is theater, not
-    // signal. 'none' means no restock estimate exists at all.
-    if (f.restockConfidence === 'low' || f.restockConfidence === 'none') continue;
-
-    // The whole point of this card is "wait for refill to get a full run".
-    // If the shelf already has enough stock to fill your slots right now,
-    // there's nothing to wait for — Best Run Right Now is the right signal.
-    // row.quantity reflects YATA's live reading; compare to slot capacity.
-    if (row.quantity != null && row.quantity >= slotCount) continue;
-
-    const arrivalMins = row.flightMins * flightMultiplier;
-    const leaveInMins = f.nextRestockMins - arrivalMins;
-
-    // Skip if the window already closed further ago than our uncertainty
-    // band — the restock has likely already happened and been drained.
-    const uncertainty = f.restockUncertaintyMins || 0;
-    if (leaveInMins < -uncertainty) continue;
-    // Absolute cap on how wide the uncertainty band can be. "Leave in 6m
-    // ±168m" is not a window; it's noise in the shape of a recommendation.
-    if (uncertainty > MAX_UNCERTAINTY_MINS) continue;
-    // Skip sub-MIN_LEAVE_LEAD_MINS windows — those are "leave now" by any
-    // reasonable reading, and Best Run Right Now handles that case.
-    if (leaveInMins < MIN_LEAVE_LEAD_MINS) continue;
-    // Skip if the window is further out than LEAVE_SOON_MAX_MINS — the
-    // prediction will be more useful next page load anyway.
-    if (leaveInMins > LEAVE_SOON_MAX_MINS) continue;
-
-    // Arrival coincides with the restock landing: the user sees the full
-    // typicalPostQty (ignoring any trickle leftover from pre-restock stock).
-    // We recompute metrics with restockQty as the effective stock rather
-    // than reusing row.metrics, which was computed against forecast.etaQty.
-    const metrics = calculateMargins({
-      buyPrice: row.buyPrice,
-      sellPrice: row.sellPrice,
-      slotCount,
-      flightMins: row.flightMins,
-      flightMultiplier,
-      stockQty: isIdeal ? null : f.restockQty,
-      sellTimeMins: isIdeal ? 0 : getSellTimeMins(row.category),
-    });
-
-    if (metrics.marginPerItem <= 0) continue;
-    if (metrics.effectiveSlots <= 0) continue;
-
-    candidates.push({ row, leaveInMins, metrics });
-  }
-
-  candidates.sort((a, b) => b.metrics.profitPerHour - a.metrics.profitPerHour);
-  return candidates;
-}
-
-function renderUpcomingWindowCard(rows) {
-  const container = document.getElementById('upcoming-window-container');
-  if (!container) return;
-
-  const candidates = buildUpcomingWindowCandidates(rows);
-  if (candidates.length === 0) {
-    container.innerHTML = '';
-    return;
-  }
-
-  const { row, leaveInMins, metrics } = candidates[0];
-  const f = row.forecast;
-
-  // All survivors are >= MIN_LEAVE_LEAD_MINS so "leave now" isn't possible
-  // here — candidate filter gates it out. Keep the ±U beside the number
-  // since that's the whole honesty pitch of the card.
-  const leaveLabel = `leave in ~${Math.round(leaveInMins)}m`;
-  const uncertainty = f.restockUncertaintyMins != null
-    ? ` <span class="upcoming-window-uncertainty">±${f.restockUncertaintyMins}m</span>`
-    : '';
-  const confClass = `upcoming-window-card--${f.restockConfidence}`;
-  const confTitle = f.restockConfidence === 'high'
-    ? 'High confidence — tight, well-observed cadence'
-    : 'Rough cadence estimate — timing may shift';
-
-  const othersNote = candidates.length > 1
-    ? `<span class="upcoming-window-sep">·</span><span class="upcoming-window-others">+${candidates.length - 1} more window${candidates.length === 2 ? '' : 's'}</span>`
-    : '';
-
-  container.innerHTML = `
-    <div class="upcoming-window-card ${confClass}" title="${confTitle}">
-      <div class="upcoming-window-label">Upcoming Restock Window</div>
-      <div class="upcoming-window-body">
-        <div class="upcoming-window-item">
-          <span class="upcoming-window-name">${row.name}</span>
-          <span class="upcoming-window-dest">&rarr; ${row.destination}</span>
-        </div>
-        <div class="upcoming-window-leave">
-          <span class="upcoming-window-leave-value">${leaveLabel}</span>${uncertainty}
-        </div>
-      </div>
-      <div class="upcoming-window-meta">
-        <span>${formatMoney(metrics.profitPerHour)}/hr projected</span>
-        <span class="upcoming-window-sep">&middot;</span>
-        <span>${metrics.effectiveSlots} units @ ${formatMarginPctCompact(metrics.marginPct)}</span>
-        <span class="upcoming-window-sep">&middot;</span>
-        <span>${formatFlightTime(metrics.roundTripMins)} RT</span>
-        ${othersNote}
-      </div>
-      <a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener"
-         class="upcoming-window-cta">Travel &rarr;</a>
-    </div>
-  `;
-}
+// Historically we also capped the leaveInMins upper bound for the card
+// at 60m, because a single-recommendation surface needs a short horizon
+// or the pick drifts. Inline is informational, not prescriptive, so we
+// drop the upper cap — users want to see every actionable future window,
+// and "leave in 4h 12m" is a useful signal if the cadence is reliable
+// enough to be worth committing to at all.
 
 function renderBestRunCard(rows) {
   const container = document.getElementById('best-run-container');
@@ -1033,7 +988,6 @@ export function renderTable() {
   updateHeaderSort();
 
   const rows = buildRows();
-  renderUpcomingWindowCard(rows);
   renderBestRunCard(rows);
 
   if (rows.length === 0) {

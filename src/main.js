@@ -11,6 +11,10 @@ import { prescanBazaarPool, findBestBazaarRun } from './bazaar-scanner.js';
 import { recordSnapshots, loadForecastData } from './stock-forecast.js';
 import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
+  renderMatchesCard, renderWatchlistTab, invalidateWatchlistCache,
+} from './watchlist-ui.js';
+import { setAbroadSnapshot, listAlerts } from './watchlist.js';
+import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
   setBestBazaarRun, getStaleItemIdsForCategory
@@ -23,11 +27,34 @@ const CATEGORY_REFRESH_AGE_MS = 5 * 60 * 1000;
 
 const screenContainer = document.getElementById('screen-container');
 const headerEl = document.getElementById('app-header');
+const tabNav = document.getElementById('tab-nav');
 
 // When knownItems was last sourced from YATA. A live fetch sets this to
 // Date.now(); a cached fetch preserves YATA's original timestamp so we
 // re-attempt the live call as soon as the user engages a category filter.
 let yataFetchedAt = 0;
+
+// Tab state. The Travel tab is the full dashboard (controls + table +
+// best-run + bazaar). Switching tabs hides the Travel DOM and renders the
+// Watchlist DOM in its place — we don't rebuild Travel from scratch,
+// because re-fetching YATA + running a pre-scan on every tab switch would
+// be wasteful and the user would lose their scroll/sort state.
+//
+// The selected tab is persisted to localStorage so a page refresh lands
+// the user back where they were. Only two tabs today, so a tiny string
+// key is enough — no need for a router.
+const STORAGE_ACTIVE_TAB = 'valigia_active_tab';
+const VALID_TABS = ['travel', 'watchlist'];
+let currentTab = 'travel';
+const TAB_CONTAINER_IDS = {
+  travel: 'tab-travel-host',
+  watchlist: 'tab-watchlist-host',
+};
+
+function getStoredTab() {
+  const stored = localStorage.getItem(STORAGE_ACTIVE_TAB);
+  return VALID_TABS.includes(stored) ? stored : 'travel';
+}
 
 // ── Boot ───────────────────────────────────────────────────────
 async function boot() {
@@ -48,42 +75,72 @@ async function boot() {
 
 // ── PDA activity counter ──────────────────────────────────────
 /**
- * Fetch the "Scouts: N · Items Scouted: M · last 24h" pair and reveal the
- * header banner.
+ * Fetch per-page PDA scout counts (last 24h) and reveal the header banner.
  *
- * Scouts        = distinct observer_player_id over the last 24h
- *                 (community reach)
- * Items Scouted = row count over the same window — each row is one
- *                 (item_id, destination) observation in abroad_prices.
- *                 The RPC field is still named `trips` for brevity; the
- *                 user-facing label reads "Items Scouted" because
- *                 re-visiting the same country refreshes existing rows
- *                 rather than appending new ones.
+ * The RPC returns one row per page_type ('travel', 'item_market', 'bazaar'),
+ * each with a distinct-player scout count plus an event count. The banner
+ * shows one segment per page_type with at least one scout; segments with
+ * zero activity stay hidden so we don't advertise a dead runner.
  *
- * Only travel-runner contributors are counted. The Item Market + Bazaar
- * runners write via anon PostgREST without attribution, so they're
- * intentionally excluded. See migration 016_pda_activity.sql for details.
+ * Trust: every counted player_id is Torn-validated at write time —
+ * travel rows are fanned out from ingest-travel-shop, Item Market and
+ * Bazaar rows come from the record-pda-activity edge function. See
+ * migration 018_pda_activity_log.sql.
  *
  * Silently hides on any failure — vanity metric, not load-blocking.
  */
+const PAGE_TYPES = ['travel', 'item_market', 'bazaar'];
+
 async function loadPdaScoutCount() {
   const banner = document.getElementById('pda-scouts-banner');
-  const scoutsEl = document.getElementById('pda-scouts-count');
-  const tripsEl = document.getElementById('pda-trips-count');
-  if (!banner || !scoutsEl || !tripsEl) return;
+  if (!banner) return;
 
   try {
     const { data, error } = await supabase.rpc('get_pda_activity_24h');
-    if (error || !data) return;
-    // Supabase returns an array for table-returning RPCs.
-    const row = Array.isArray(data) ? data[0] : data;
-    if (!row) return;
-    const scouts = Number(row.scouts);
-    const trips = Number(row.trips);
-    if (!Number.isFinite(scouts) || !Number.isFinite(trips)) return;
-    if (scouts <= 0 && trips <= 0) return;
-    scoutsEl.textContent = scouts.toLocaleString();
-    tripsEl.textContent = trips.toLocaleString();
+    if (error || !Array.isArray(data)) return;
+
+    const byPage = new Map();
+    for (const row of data) {
+      if (!row || typeof row.page_type !== 'string') continue;
+      const scouts = Number(row.scouts);
+      const events = Number(row.events);
+      if (!Number.isFinite(scouts) || scouts <= 0) continue;
+      byPage.set(row.page_type, {
+        scouts,
+        events: Number.isFinite(events) ? events : 0,
+      });
+    }
+
+    if (byPage.size === 0) return;
+
+    for (const pageType of PAGE_TYPES) {
+      const segment = document.getElementById(`pda-${pageType}-segment`);
+      if (!segment) continue;
+      const entry = byPage.get(pageType);
+      if (!entry) { segment.hidden = true; continue; }
+      const scoutsEl = document.getElementById(`pda-${pageType}-scouts`);
+      const eventsEl = document.getElementById(`pda-${pageType}-events`);
+      if (scoutsEl) scoutsEl.textContent = entry.scouts.toLocaleString();
+      if (eventsEl) {
+        eventsEl.textContent = entry.events > 0
+          ? `(${entry.events.toLocaleString()})`
+          : '';
+      }
+      segment.hidden = false;
+    }
+
+    const travelVisible = byPage.has('travel');
+    const marketVisible = byPage.has('item_market');
+    const bazaarVisible = byPage.has('bazaar');
+    const sepTravelMarket = document.getElementById('pda-sep-travel-itemmarket');
+    const sepMarketBazaar = document.getElementById('pda-sep-itemmarket-bazaar');
+    if (sepTravelMarket) {
+      sepTravelMarket.hidden = !(travelVisible && (marketVisible || bazaarVisible));
+    }
+    if (sepMarketBazaar) {
+      sepMarketBazaar.hidden = !((travelVisible || marketVisible) && bazaarVisible);
+    }
+
     banner.hidden = false;
   } catch {
     // Counter is vanity — silent fail keeps it invisible rather than broken.
@@ -93,6 +150,8 @@ async function loadPdaScoutCount() {
 // ── Login Screen ───────────────────────────────────────────────
 function showLoginScreen() {
   clearPlayerHeader();
+  hideTabNav();
+  invalidateWatchlistCache();
   renderLoginScreen(screenContainer, (result) => {
     showPlayerHeader(result.name, result.level);
     showToast(`Welcome, ${result.name}!`, 'success');
@@ -138,12 +197,16 @@ async function detectPlayerTravel(playerId) {
 
 // ── Dashboard ──────────────────────────────────────────────────
 async function startDashboard(playerId) {
+  showTabNav();
   screenContainer.innerHTML = `
-    <div id="controls-bar"></div>
-    <div id="upcoming-window-container"></div>
-    <div id="best-run-container"></div>
-    <div id="table-container"></div>
-    <div id="bazaar-container"></div>
+    <div id="${TAB_CONTAINER_IDS.travel}" class="tab-host tab-host--active">
+      <div id="watchlist-matches-card"></div>
+      <div id="controls-bar"></div>
+      <div id="best-run-container"></div>
+      <div id="table-container"></div>
+      <div id="bazaar-container"></div>
+    </div>
+    <div id="${TAB_CONTAINER_IDS.watchlist}" class="tab-host" hidden></div>
   `;
 
   const controlsBar = document.getElementById('controls-bar');
@@ -155,6 +218,11 @@ async function startDashboard(playerId) {
 
   // Resolve item IDs (one-time Torn API call, cached in localStorage)
   await resolveItemIds(playerId);
+
+  // Kick off the watchlist alert fetch in parallel with the YATA / perks
+  // pair so its item IDs are available before fetchAllSellPrices runs.
+  // Swallow failures to []: the matcher handles an empty list gracefully.
+  const watchlistAlertsPromise = listAlerts().catch(() => []);
 
   // Fetch abroad prices from YATA and detect travel perks in parallel
   const [priceResult] = await Promise.all([
@@ -190,6 +258,10 @@ async function startDashboard(playerId) {
 
   // Set items, re-render controls (populates destination dropdown), and render table
   setKnownItems(items);
+  // Share the merged YATA+scrape snapshot with the watchlist matcher so
+  // its abroad-venue lookup matches what the Travel table shows, instead
+  // of being limited to the sparse `abroad_prices` Supabase rows.
+  setAbroadSnapshot(items);
   renderControls(controlsBar, () => renderTable(), (cat) => handleCategoryRefresh(cat, playerId));
   renderTable();
 
@@ -204,10 +276,27 @@ async function startDashboard(playerId) {
     loadForecastData(items),
   ]).then(() => renderTable()).catch(() => {});
 
-  // Fetch live sell prices for all known items
-  const itemIds = getItemIdsForPriceFetch();
+  // Fetch live sell prices for every abroad item AND every watchlisted
+  // item. Including watchlist items here is what keeps the Watchlist
+  // matches card truthful: without this, a Lucky-Quarter-style alert
+  // outside the abroad list only gets its sell_prices row refreshed when
+  // someone happens to scrape the Torn Item Market via the PDA userscript.
+  // The cache-aware fetcher skips any row that's already fresh, so the
+  // extra items rarely burn API calls.
+  const abroadIds = getItemIdsForPriceFetch();
+  const abroadIdSet = new Set(abroadIds);
+  const watchlistAlerts = await watchlistAlertsPromise;
+  const watchlistOnlyIds = (watchlistAlerts || [])
+    .map((a) => Number(a.item_id))
+    .filter((id) => Number.isFinite(id) && !abroadIdSet.has(id));
+  const itemIds = [...abroadIds, ...watchlistOnlyIds];
   if (itemIds.length > 0) {
-    await fetchAllSellPrices(playerId, itemIds, onSellPrice);
+    // onSellPrice mutates the travel-table's price map and re-renders the
+    // table; skip it for watchlist-only items so we don't trigger a
+    // no-op render for each one as it resolves.
+    await fetchAllSellPrices(playerId, itemIds, (itemId, price, depth, fetchedAt) => {
+      if (abroadIdSet.has(itemId)) onSellPrice(itemId, price, depth, fetchedAt);
+    });
   }
 
   // Show bazaar deal scanner button + community stats
@@ -223,6 +312,45 @@ async function startDashboard(playerId) {
   prescanBazaarPool(playerId).then(() => findBestBazaarRun(playerId)).then(deal => {
     if (deal) setBestBazaarRun(deal);
   });
+
+  // Watchlist matches card + tab badge. The card lives above the controls,
+  // so it's the first thing a user with active alerts sees on login. The
+  // tab badge reflects the same count so unvisited matches are obvious.
+  // Fire-and-forget: both surfaces hide themselves if anything fails.
+  refreshWatchlistSurfaces();
+
+  // Restore the last-selected tab. We only do this AFTER the Travel
+  // dashboard's DOM is built and its async data is in flight, so when the
+  // user switches back to Travel the data is already there. Using the
+  // sentinel 'travel' as the default means this is a no-op for users who
+  // never left the default.
+  const storedTab = getStoredTab();
+  if (storedTab !== 'travel') switchTab(storedTab);
+}
+
+// ── Watchlist matches surfacing ───────────────────────────────
+async function refreshWatchlistSurfaces() {
+  const card = document.getElementById('watchlist-matches-card');
+  const badge = document.getElementById('tab-watchlist-badge');
+  if (!card) return;
+  try {
+    await renderMatchesCard(card);
+    // Derive the tab badge from the card's rendered content — we keep a
+    // single source of truth (watchlist-ui.js owns cache) rather than
+    // re-querying here.
+    const matchCountEl = card.querySelector('.wl-card-badge');
+    if (badge) {
+      const count = matchCountEl ? matchCountEl.textContent.trim() : '';
+      if (count && count !== '0') {
+        badge.textContent = count;
+        badge.hidden = false;
+      } else {
+        badge.hidden = true;
+      }
+    }
+  } catch {
+    // Silent — the card's own error path hides itself.
+  }
 }
 
 // ── Category filter refresh ───────────────────────────────────
@@ -283,6 +411,60 @@ function renderYataOfflineBanner(tableContainer, cachedAt) {
     </span>
   `;
   tableContainer.parentNode.insertBefore(banner, tableContainer);
+}
+
+// ── Tab switching ─────────────────────────────────────────────
+function showTabNav() {
+  if (tabNav) tabNav.hidden = false;
+}
+function hideTabNav() {
+  if (tabNav) tabNav.hidden = true;
+  currentTab = 'travel';
+}
+
+async function switchTab(nextTab) {
+  if (!VALID_TABS.includes(nextTab)) nextTab = 'travel';
+  if (nextTab === currentTab) return;
+  currentTab = nextTab;
+  // Persist so a page refresh lands the user back on the same tab.
+  try { localStorage.setItem(STORAGE_ACTIVE_TAB, nextTab); } catch {}
+
+  // Update nav-button styling
+  if (tabNav) {
+    tabNav.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.classList.toggle('tab-btn--active', btn.dataset.tab === nextTab);
+    });
+  }
+
+  const travelHost = document.getElementById(TAB_CONTAINER_IDS.travel);
+  const watchlistHost = document.getElementById(TAB_CONTAINER_IDS.watchlist);
+  if (!travelHost || !watchlistHost) return;
+
+  if (nextTab === 'travel') {
+    travelHost.hidden = false;
+    travelHost.classList.add('tab-host--active');
+    watchlistHost.hidden = true;
+    watchlistHost.classList.remove('tab-host--active');
+    // The underlying sell/bazaar/abroad tables may have changed while the
+    // user was on the Watchlist tab — re-render matches so the card stays
+    // truthful.
+    invalidateWatchlistCache();
+    refreshWatchlistSurfaces();
+  } else if (nextTab === 'watchlist') {
+    travelHost.hidden = true;
+    travelHost.classList.remove('tab-host--active');
+    watchlistHost.hidden = false;
+    watchlistHost.classList.add('tab-host--active');
+    await renderWatchlistTab(watchlistHost);
+  }
+}
+
+if (tabNav) {
+  tabNav.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn || !btn.dataset.tab) return;
+    switchTab(btn.dataset.tab);
+  });
 }
 
 // ── Header ─────────────────────────────────────────────────────

@@ -95,6 +95,7 @@ editor; Supabase does not auto-apply them).
 | `community_stats` | Single-row spin counter. |
 | `yata_snapshots` | YATA abroad-price history (fallback data source behind first-party scrapes). 48 h prune window, feeds depletion slope. |
 | `restock_events` | Append-only log of observed positive stock deltas. Fed by the client's `recordSnapshots()` and an AFTER-UPDATE trigger on `abroad_prices`. 30-day read window powers restock cadence estimation in `stock-forecast.js`. Migration 018. |
+| `watchlist_alerts` | Per-player price-drop watchlist (`player_id + item_id` composite key, `max_price` threshold, `venues` array). Writes go exclusively through the `watchlist` edge function (session-token gated); reads are public. Migration 019. |
 
 **RPC functions** (granted to anon + authenticated):
 - `record_scan(found_deal boolean)` — atomic increment after each scan
@@ -293,6 +294,8 @@ valigia.girovagabondo.com/
 │   ├── ui.js                — table, controls, shimmer, Best Run card
 │   ├── bazaar-scanner.js    — pool maintenance + findBestBazaarRun
 │   ├── bazaar-ui.js         — scan button, runners-up, community stats
+│   ├── watchlist.js         — alert CRUD + 3-venue match resolver
+│   ├── watchlist-ui.js      — Watchlist tab + matches card
 │   ├── styles.css
 │   └── data/
 │       ├── abroad-items.js      — static destination/type metadata
@@ -306,6 +309,7 @@ valigia.girovagabondo.com/
 │   │   ├── set-api-key/          — encrypt + store API key
 │   │   ├── auto-login/           — decrypt key for session
 │   │   ├── ingest-travel-shop/   — validates PDA userscript travel scrapes, upserts abroad_prices
+│   │   ├── watchlist/            — session-gated CRUD on watchlist_alerts
 │   │   └── _shared/              — cors + crypto helpers
 │   └── migrations/
 │       ├── 001_initial_schema.sql
@@ -325,7 +329,8 @@ valigia.girovagabondo.com/
 │       ├── 015_pda_scout_count.sql
 │       ├── 016_pda_activity.sql
 │       ├── 017_price_bigint.sql
-│       └── 018_restock_events.sql
+│       ├── 018_restock_events.sql
+│       └── 019_watchlist_alerts.sql
 ├── .env
 ├── vite.config.js
 └── .github/
@@ -358,9 +363,18 @@ installed PDA.
 
 The travel runner also paints a per-row overlay (`Market Price · $margin ·
 margin%`) with a green BEST badge on the highest-margin in-stock row.
-The Item Market and Bazaar runners are write-only (no in-page UI beyond
-the toast). All three use a single shared `rowContainer()` heuristic
-that tolerates Torn's migration from `<table>` to div-based layouts.
+The Item Market and Bazaar runners additionally inject a collapsed
+**Watchlist Matches bar** at the top of the page — styled to match the
+Valigia web card (green border, triangle expand, one row per hit with
+direct deep-links back into Torn). Hidden entirely when the player has
+no matches. Abroad venue is skipped in the userscript banner (a per-page
+YATA fetch would add latency for a surface where the user is focused on
+Market/Bazaar anyway); the web app remains the matching surface for
+abroad. The banner resolves `player_id` via one Torn `user/?selections=basic`
+call, cached in `localStorage` keyed by a hash of the API key so it survives
+key rotation. All three runners use a single shared `rowContainer()`
+heuristic that tolerates Torn's migration from `<table>` to div-based
+layouts.
 
 ### Why direct anon upserts for sell / bazaar, but an edge function for travel?
 
@@ -441,6 +455,14 @@ that tolerates Torn's migration from `<table>` to div-based layouts.
   `sell_prices` refresh), and bazaar page scrapes (direct
   `bazaar_prices` pool contribution). Travel page also gets an in-game
   per-row profit overlay.
+- **Watchlist alerts** — Per-player price-drop watchlist scoped to one or
+  more venues (Item Market, crowd-sourced bazaars, first-party abroad
+  scrapes). On login the dashboard cross-references every alert against
+  the three price pools and surfaces hits two ways: a compact "Watchlist
+  matches" card above the Travel table, and a dedicated **Watchlist**
+  tab with an add-alert form + full match list. Writes flow through the
+  session-gated `watchlist` edge function; reads are public. No push or
+  email alerts yet — matches only appear on page load.
 
 ### Known Limitations
 - **Slots** — Auto-detect misses faction perks; user overrides manually.
@@ -456,6 +478,7 @@ that tolerates Torn's migration from `<table>` to div-based layouts.
 - `abroad_prices` — First-party travel-shop scrapes from PDA (service-role writes via ingest-travel-shop)
 - `yata_snapshots` — YATA abroad-price history (fallback data source)
 - `community_stats` — Single-row spin counter
+- `watchlist_alerts` — Per-player price-drop alerts (service-role writes via `watchlist` edge fn)
 
 -----
 

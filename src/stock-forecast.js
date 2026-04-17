@@ -281,24 +281,74 @@ export async function loadForecastData(items) {
 }
 
 /**
+ * Leave-one-out in-sample MAE: for each observed interval, compute the
+ * median of the OTHER intervals and measure the residual. Averaging those
+ * residuals tells us how far off the median-predictor typically is when
+ * confronted with its own data — a self-check on the restock model that
+ * doesn't require new observations or a persisted prediction log.
+ *
+ * Why leave-one-out: in-sample MAE with the global median systematically
+ * underestimates error because each sample pulls the median toward itself.
+ * Leaving the sample out gives an honest "what would we have predicted
+ * without this datum" residual.
+ *
+ * Returns MAE in minutes, or null if < 2 gaps (no meaningful LOO).
+ */
+function computeInSampleMAE(gaps) {
+  if (!gaps || gaps.length < 2) return null;
+  let sum = 0;
+  for (let i = 0; i < gaps.length; i++) {
+    const others = [];
+    for (let j = 0; j < gaps.length; j++) {
+      if (j !== i) others.push(gaps[j]);
+    }
+    others.sort((a, b) => a - b);
+    const medianOthers = others[Math.floor(others.length / 2)];
+    sum += Math.abs(gaps[i] - medianOthers);
+  }
+  return sum / gaps.length;
+}
+
+/**
  * Estimate when the next restock is due and how confident we are, given a
  * chronologically-sorted array of `{ atTime, postQty }` events pulled from
  * restock_events.
  *
  * We use the MEDIAN of observed intervals (robust to the occasional missed
  * restock widening one gap to 2x normal) and the MEDIAN post-restock
- * quantity. Uncertainty is scaled Median Absolute Deviation: `1.4826 * MAD`
- * approximates one standard deviation for a normal distribution, but MAD
- * shrugs off outliers that a plain stddev would blow up on.
+ * quantity. Uncertainty is the larger of:
+ *
+ *   - Scaled MAD (1.4826 × MAD) — robust 1-stddev under normality
+ *   - In-sample MAE — the median-predictor's actual typical error against
+ *     its own history
+ *
+ * Whichever is wider becomes the reported `±U`. Under a normal distribution
+ * scaled MAD and MAE are close (MAE ≈ 0.8 × scaledMAD); when MAE is
+ * distinctly larger, the gap distribution has a fat tail and scaled MAD
+ * alone would understate reality. Using the max keeps the ±U copy honest
+ * regardless of which case we're in.
+ *
+ * Confidence then gets auto-capped by two separate MAE-based checks:
+ *
+ *   - MAE > 2 × scaledMAD → step one tier down. Under normality MAE is
+ *     always < scaledMAD, so a 2× multiplier means the distribution is
+ *     distinctly non-normal and our "we've seen enough samples" confidence
+ *     is overclaiming vs. how spread the data actually is.
+ *   - MAE > 0.75 × medianInterval → hard-force 'low'. At that spread the
+ *     median isn't a meaningful center — half the predictions are off by
+ *     more than the interval itself.
  *
  * Needs at least MIN_RESTOCK_EVENTS events (one interval sample) to
- * produce anything.
+ * produce anything. MAE computation needs ≥2 gaps; with only 1 gap the
+ * predictor can't be cross-checked, and confidence stays at its base tier
+ * (which will be 'low' anyway per the sample-depth rule).
  *
  * Returns {
  *   timeToNextMins: number (can be 0 if overdue),
  *   typicalPostQty: number,
- *   uncertaintyMins: number (≥1, scaled MAD — "±Nm" label in the UI),
+ *   uncertaintyMins: number (≥1, scaled MAD or MAE — whichever wider),
  *   sampleCount: number of interval samples,
+ *   cadenceMAE: number|null (in-sample leave-one-out MAE in minutes),
  *   confidence: 'low' | 'ok' | 'high',
  * } or null.
  */
@@ -321,27 +371,52 @@ function estimateNextRestock(events, nowMs) {
   const sinceLastMins = (nowMs - lastRestockAt) / 60_000;
   const timeToNextMins = Math.max(0, medianInterval - sinceLastMins);
 
-  // Scaled MAD: robust 1-stddev equivalent. Clamped to ≥1 min so the
-  // display ("±8m") never shows "±0m" on tiny sample counts.
+  // Spread estimates.
   const deviations = gaps
     .map(g => Math.abs(g - medianInterval))
     .sort((a, b) => a - b);
   const mad = deviations[Math.floor(deviations.length / 2)];
-  const uncertaintyMins = Math.max(1, Math.round(mad * 1.4826));
+  const scaledMad = mad * 1.4826;
+  const cadenceMAE = computeInSampleMAE(gaps);
 
-  // Confidence tiers are driven by BOTH sample depth and cadence tightness.
-  // Relative MAD (MAD / median) is the scale-free "how regular is this
-  // shelf" signal — a 5-min MAD on a 10-min cycle is chaos, the same 5m on
-  // a 4h cycle is basically perfect. Thresholds chosen conservatively so
-  // "high" is only shown when we genuinely trust the number.
+  // Honest uncertainty: report the larger of scaled MAD and MAE. Clamped
+  // to ≥1 min so the display ("±8m") never shows "±0m" on tiny samples.
+  const uncertaintyRaw = cadenceMAE != null
+    ? Math.max(scaledMad, cadenceMAE)
+    : scaledMad;
+  const uncertaintyMins = Math.max(1, Math.round(uncertaintyRaw));
+
+  // Base confidence tier from sample depth + MAD tightness.
+  //
+  //   'high' — ≥5 intervals AND relativeMad ≤ 0.3 (tight, well-observed)
+  //   'ok'   — ≥2 intervals AND relativeMad ≤ 0.6
+  //   'low'  — anything else
   const relativeMad = mad / medianInterval;
   let confidence;
   if (gaps.length >= 5 && relativeMad <= 0.3) {
     confidence = 'high';
-  } else if (gaps.length >= 3 && relativeMad <= 0.5) {
+  } else if (gaps.length >= 2 && relativeMad <= 0.6) {
     confidence = 'ok';
   } else {
     confidence = 'low';
+  }
+
+  // MAE-based self-correction. Applied AFTER the base tier so the auto-cap
+  // can only step confidence DOWN, never up. Two independent checks:
+  //
+  //   1. MAE > 2 × scaledMAD — distribution is so non-normal that sample-
+  //      depth rules are overclaiming. Step one tier down.
+  //   2. MAE > 0.75 × medianInterval — residuals on the scale of the
+  //      interval itself. Hard-force 'low' regardless of sample depth.
+  //
+  // computeInSampleMAE needs ≥2 gaps, matching the base-tier 'ok' threshold,
+  // so this check is meaningful wherever it fires.
+  if (cadenceMAE != null) {
+    if (cadenceMAE > medianInterval * 0.75) {
+      confidence = 'low';
+    } else if (cadenceMAE > scaledMad * 2 && scaledMad > 0) {
+      confidence = confidence === 'high' ? 'ok' : 'low';
+    }
   }
 
   return {
@@ -349,6 +424,7 @@ function estimateNextRestock(events, nowMs) {
     typicalPostQty,
     uncertaintyMins,
     sampleCount: gaps.length,
+    cadenceMAE,
     confidence,
   };
 }
@@ -403,8 +479,10 @@ function latestDepletionSegment(samples) {
  *   nextRestockMins: number|null,           // raw time-to-next-restock (un-gated, minutes from now)
  *   restockEtaMins: number|null,            // only set when restock is expected DURING this flight
  *   restockQty: number|null,                // typical post-restock qty, set whenever cadence exists
- *   restockUncertaintyMins: number|null,    // scaled MAD of interval samples, set whenever cadence exists
- *   restockConfidence: 'none'|'low'|'ok'|'high'
+ *   restockUncertaintyMins: number|null,    // max(scaled MAD, in-sample MAE) — widened when model underclaims
+ *   restockConfidence: 'none'|'low'|'ok'|'high',  // auto-capped when MAE exceeds scaledMAD × 2 or 0.75 × median
+ *   cadenceMAE: number|null,                // leave-one-out in-sample MAE (minutes), null when <2 gaps
+ *   restockEventCount: number               // raw count of observed restocks (30-day window) for "cadence forming (N obs)" hints
  * }}
  */
 export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty = null) {
@@ -435,6 +513,16 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   const restockQty = restockEst ? restockEst.typicalPostQty : null;
   const restockUncertaintyMins = restockEst ? restockEst.uncertaintyMins : null;
   const restockConfidence = restockEst ? restockEst.confidence : 'none';
+  // Cadence MAE (leave-one-out in-sample, minutes). Exposed for future
+  // observability — a layer-2 accuracy log or a debug panel can read it
+  // without re-running estimateNextRestock. null when <2 gaps.
+  const cadenceMAE = restockEst ? restockEst.cadenceMAE : null;
+  // Raw count of observed restocks for this shelf over the 30-day window.
+  // Independent of whether they were enough to produce a prediction — the
+  // UI uses this to render "cadence forming (N obs)" hints on rows where
+  // we're watching but haven't accumulated enough (or regular enough) data
+  // to commit to a leave-in recommendation.
+  const restockEventCount = restockCache.get(key)?.length ?? 0;
 
   // No snapshot history at all — can't fit a depletion slope, so etaQty
   // falls back to Now. Still honor the restock prediction if Now is empty:
@@ -456,18 +544,26 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   if (!samples || samples.length === 0) {
     const nowQty = fallbackNowQty;
     const restockCoversEmptyShelf = nowQty === 0 && restockEtaMins != null;
+    // hasHistory also trips when we have any actionable cadence signal —
+    // the UI needs to reach the stock-cell render logic so the leave-in-X
+    // branch can fire for fresh shelves with backfilled restock history
+    // but zero snapshots yet. Without this, those shelves render as a
+    // naked "Now N" and the user loses the wait-to-leave hint.
+    const hasActionableCadence = restockEst != null && restockQty != null;
     const eta = restockCoversEmptyShelf ? restockQty : nowQty;
     return {
       nowQty,
       etaQty: eta,
       confidence: nowQty != null ? 'low' : 'none',
-      hasHistory: restockCoversEmptyShelf,
+      hasHistory: restockCoversEmptyShelf || hasActionableCadence,
       timeToEmptyMins: null,
       nextRestockMins,
       restockEtaMins,
       restockQty,
       restockUncertaintyMins,
       restockConfidence,
+      cadenceMAE,
+      restockEventCount,
     };
   }
 
@@ -490,7 +586,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
-      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
     };
   }
 
@@ -502,7 +598,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
-      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
     };
   }
 
@@ -545,6 +641,6 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   return {
     nowQty, etaQty, confidence, hasHistory: true,
     timeToEmptyMins,
-    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence,
+    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
   };
 }

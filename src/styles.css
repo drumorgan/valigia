@@ -86,6 +86,16 @@ body {
   font-family: 'Syne Mono', monospace;
 }
 
+/* Author `display: inline-flex` above wins over the UA stylesheet's
+   `[hidden] { display: none }`, so the native `hidden` attribute alone
+   would leave the banner + segments visible with "--" placeholders on
+   first load. These rules restore the intended semantics. */
+.pda-scouts-banner[hidden],
+.pda-scouts-segment[hidden],
+.pda-scouts-sep[hidden] {
+  display: none;
+}
+
 .pda-scouts-count {
   color: var(--positive);
   font-size: 1.05rem;
@@ -109,6 +119,24 @@ body {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.pda-scouts-segment {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.pda-scouts-pagelabel {
+  color: var(--muted);
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+}
+
+.pda-scouts-events {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
 }
 
 #player-badge {
@@ -764,118 +792,28 @@ tr.row--negative td {
   line-height: 1.1;
 }
 
-/* ── Upcoming Restock Window card ──────────────────────────────── */
-/* Placed above Best Run Right Now. Answers "when should I LEAVE" rather
-   than "what should I do NOW" — complementary, not competitive.
-   Visually distinct: cyan accent instead of travel-gold or bazaar-green,
-   so the user instantly sees this is a different kind of signal (time-
-   sensitive anticipation vs. immediate action). */
-
-.upcoming-window-card {
-  background: linear-gradient(135deg, var(--surface) 0%, rgba(74, 180, 232, 0.08) 100%);
-  border: 1px solid #4ab4e8;
-  border-radius: 8px;
-  padding: 0.9rem 1.25rem;
-  margin: 1rem 0;
-  position: relative;
-  font-family: 'Syne', sans-serif;
-}
-
-.upcoming-window-card--ok {
-  /* "ok" confidence — keep the accent, no extra emphasis. */
-}
-
-.upcoming-window-card--high {
-  /* High confidence — stronger border to signal trust. Same hue, fuller
-     saturation, no opacity hit. */
-  border-color: #6ac6f0;
-  box-shadow: 0 0 0 1px rgba(106, 198, 240, 0.2) inset;
-}
-
-.upcoming-window-label {
-  font-size: 0.68rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.stock-eta--leave-in {
+  /* "leave in Xm → Q" — a different action than the other restock copy
+     ("just go, refill happens mid-flight"). Cyan to match the Upcoming
+     Window card so both surfaces use one visual vocabulary for
+     wait-then-go advice. Overrides the green from the --restock classes
+     that tier styling still attaches to this element. */
   color: #4ab4e8;
-  font-weight: 700;
-  margin-bottom: 0.35rem;
+  white-space: normal;
+  line-height: 1.1;
 }
 
-.upcoming-window-body {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 1rem;
-  margin-bottom: 0.35rem;
-}
-
-.upcoming-window-item {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.upcoming-window-name {
-  font-family: 'Syne Mono', monospace;
-  font-size: 1rem;
-  color: var(--text);
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.upcoming-window-dest {
-  font-size: 0.78rem;
+.stock-eta__learning {
+  /* Appended to empty/fallback cells where we have SOME restock
+     observations but not enough (or regular enough) to commit to a
+     prediction. Smaller, muted, italic — a trailing "we're watching"
+     marker rather than a primary signal. */
+  font-size: 0.9em;
   color: var(--muted);
-}
-
-.upcoming-window-leave {
-  font-family: 'Syne Mono', monospace;
-  text-align: right;
-  flex-shrink: 0;
-}
-
-.upcoming-window-leave-value {
-  font-size: 1.15rem;
-  color: #4ab4e8;
-  font-weight: 700;
-}
-
-.upcoming-window-uncertainty {
-  font-size: 0.75rem;
-  color: var(--muted);
-  margin-left: 0.25rem;
-}
-
-.upcoming-window-meta {
-  font-size: 0.75rem;
-  color: var(--muted);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.upcoming-window-sep {
-  color: var(--border);
-}
-
-.upcoming-window-others {
   font-style: italic;
-}
-
-.upcoming-window-cta {
-  display: inline-block;
-  margin-top: 0.5rem;
-  padding: 0.35rem 0.85rem;
-  background: #4ab4e8;
-  color: var(--bg);
-  text-decoration: none;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  font-weight: 400;
+  opacity: 0.85;
+  margin-left: 0.15em;
 }
 
 /* ── Best Run Right Now summary card ───────────────────────────── */
@@ -2427,3 +2365,459 @@ tr.row--negative td {
     padding: 0.2rem 0.45rem;
   }
 }
+
+/* ── Tab nav ──────────────────────────────────────────────────── */
+
+.tab-nav {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-nav[hidden] { display: none; }
+
+.tab-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: 'Syne', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 120ms, border-color 120ms;
+}
+
+.tab-btn:hover { color: var(--text); }
+
+.tab-btn--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-badge {
+  background: var(--positive);
+  color: #0d0f14;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  letter-spacing: 0;
+}
+.tab-badge[hidden] { display: none; }
+
+.tab-host[hidden] { display: none; }
+
+/* ── Watchlist match card (above Best Run on Travel tab) ──────── */
+
+.wl-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--positive);
+  border-radius: 4px;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.wl-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.wl-card-title {
+  color: var(--positive);
+  font-weight: 700;
+}
+
+.wl-card-badge {
+  background: var(--positive);
+  color: #0d0f14;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  letter-spacing: 0;
+}
+
+.wl-card-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.wl-card-more {
+  margin-top: 0.45rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  letter-spacing: 0.04em;
+}
+
+/* ── Match row (shared by card + tab) ─────────────────────────── */
+
+.wl-match-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto auto minmax(0, 1.2fr) auto auto auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(74, 232, 160, 0.04);
+  color: var(--text);
+  text-decoration: none;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.82rem;
+  transition: background 120ms, border-color 120ms;
+}
+
+.wl-match-row:hover {
+  background: rgba(74, 232, 160, 0.1);
+  border-color: rgba(74, 232, 160, 0.4);
+}
+
+.wl-match-item {
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wl-venue {
+  font-size: 0.68rem;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.45rem;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+.wl-venue--market { background: rgba(232, 200, 74, 0.15); color: var(--accent); }
+.wl-venue--bazaar { background: rgba(74, 232, 160, 0.15); color: var(--positive); }
+.wl-venue--abroad { background: rgba(232, 130, 74, 0.15); color: var(--warning); }
+
+.wl-match-price {
+  color: var(--accent);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.wl-match-savings {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.wl-match-savings strong {
+  color: var(--positive);
+  font-weight: 700;
+}
+.wl-match-pct {
+  color: var(--muted);
+  margin-left: 0.15rem;
+}
+
+.wl-match-extra {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.wl-match-age {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.wl-match-arrow {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* Narrow viewports: stack the match row so nothing clips. */
+@media (max-width: 640px) {
+  .wl-match-row {
+    grid-template-columns: 1fr auto;
+    row-gap: 0.25rem;
+  }
+  .wl-match-item { grid-column: 1 / -1; }
+  .wl-match-extra { grid-column: 1 / -1; }
+  .wl-match-age { grid-column: 1 / -1; }
+}
+
+/* ── Watchlist tab body ───────────────────────────────────────── */
+
+.wl-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.wl-intro .wl-heading {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.4rem;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+}
+
+.wl-intro .wl-sub {
+  color: var(--muted);
+  font-size: 0.88rem;
+  max-width: 40rem;
+  line-height: 1.5;
+}
+
+.wl-add {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.wl-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.wl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.wl-field-label {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.wl-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.95rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 3px;
+  width: 100%;
+}
+
+.wl-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* iPadOS Safari renders the default placeholder in a tone close to
+   var(--text), invisible against var(--bg). Force a legible muted color.
+   Use a literal hex (not a CSS variable) — older Safari versions don't
+   resolve var() inside ::placeholder and silently drop the rule. */
+.wl-input::placeholder {
+  color: #8a8fa0;
+  opacity: 1;
+}
+.wl-input::-webkit-input-placeholder {
+  color: #8a8fa0;
+  opacity: 1;
+}
+
+/* ── Typeahead dropdown (replaces native datalist) ─────────────── */
+
+.wl-typeahead {
+  position: relative;
+}
+
+.wl-typeahead-list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  list-style: none;
+  padding: 0.25rem 0;
+  margin: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+  max-height: 22rem;
+  overflow-y: auto;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.9rem;
+  /* Don't let the native iOS tap-delay/selection fire on rows — we're
+     handling the selection ourselves via pointerdown. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+.wl-typeahead-list[hidden] { display: none; }
+
+.wl-typeahead-row {
+  padding: 0.55rem 0.75rem;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wl-typeahead-row:hover,
+.wl-typeahead-row--active {
+  background: rgba(232, 200, 74, 0.12);
+  color: var(--accent);
+}
+
+.wl-typeahead-empty {
+  padding: 0.6rem 0.75rem;
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+.wl-add-btn {
+  background: var(--accent);
+  color: #0d0f14;
+  border: none;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.55rem 1.1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  height: fit-content;
+}
+
+.wl-add-btn:hover:not(:disabled) { background: #f2d45b; }
+.wl-add-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.wl-venues {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.wl-venue-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.wl-venue-toggle input {
+  accent-color: var(--accent);
+}
+
+@media (max-width: 540px) {
+  .wl-add-row {
+    grid-template-columns: 1fr;
+  }
+  .wl-add-btn { width: 100%; }
+}
+
+.wl-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wl-section-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.wl-empty {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  padding: 0.8rem 0;
+  font-family: 'Syne Mono', monospace;
+}
+
+.wl-match-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.wl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.88rem;
+}
+
+.wl-table th {
+  text-align: left;
+  color: var(--muted);
+  font-family: 'Syne', sans-serif;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.wl-table td {
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.wl-cell-item { font-weight: 700; }
+.wl-cell-price { color: var(--accent); white-space: nowrap; }
+.wl-cell-venues { color: var(--muted); font-size: 0.78rem; }
+.wl-cell-action { text-align: right; width: 1%; }
+
+.wl-del-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  font-size: 1rem;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+  transition: color 120ms, border-color 120ms;
+}
+
+.wl-del-btn:hover {
+  color: var(--negative);
+  border-color: var(--negative);
+}
+.wl-del-btn:disabled { opacity: 0.4; cursor: not-allowed; }
