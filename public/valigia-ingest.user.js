@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.7.1
+// @version      0.7.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.7.1';
+  const SCRIPT_VERSION = '0.7.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -838,6 +838,32 @@
     return null;
   }
 
+  /**
+   * Is this bazaar tile a "locked" placeholder?
+   *
+   * Owners routinely park items at $1 as visual placeholders — Torn
+   * overlays a padlock on the tile and the listing isn't buyable. Left
+   * unfiltered these pollute bazaar_prices with a $1 floor for every
+   * item they touch and surface as 60,000%-margin "deals" in the
+   * on-page Bazaar Deals bar (screenshot: Bottle of Beer $1 -> $618).
+   *
+   * Detection is best-effort because Torn's bazaar DOM shifts across
+   * layouts. We look for any of the usual lock signals — lock-named
+   * image, lock-themed class / data / aria attribute, or an explicit
+   * "locked" string — and fall back to a $1-price gate at the caller.
+   */
+  function isLockedListing(row, img) {
+    try {
+      const imgSrc = (img.getAttribute('src') || '').toLowerCase();
+      if (imgSrc.indexOf('lock') !== -1 || imgSrc.indexOf('padlock') !== -1) return true;
+      if (row.querySelector('img[src*="lock" i], img[src*="padlock" i]')) return true;
+      if (row.querySelector('[class*="lock" i], [class*="Lock" i], [data-locked], [aria-label*="lock" i], [title*="lock" i]')) return true;
+      const text = (row.innerText || '').toLowerCase();
+      if (text.indexOf('locked') !== -1) return true;
+    } catch (_) { /* defensive: any DOM hiccup falls through to the $1 filter */ }
+    return false;
+  }
+
   function scrapeBazaarItems() {
     const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
     const byItem = new Map(); // item_id -> {price, qty} (cheapest only)
@@ -853,11 +879,19 @@
       if (!row || seenRows.has(row)) continue;
       seenRows.add(row);
 
+      // Skip locked placeholders before anything else — these pollute the
+      // shared pool AND produce absurd "deals" in the bar.
+      if (isLockedListing(row, img)) continue;
+
       const text = (row.innerText || '').trim();
       const priceMatch = text.match(/\$\s*([\d,\.]+)/);
       if (!priceMatch) continue;
       const price = parseMoney(priceMatch[1]);
       if (!Number.isFinite(price) || price <= 0) continue;
+      // $1 fallback for locked tiles our DOM sniff missed. No real bazaar
+      // listing prices a buyable item at $1 — anything that scrapes at $1
+      // is a placeholder and gets dropped rather than polluting the pool.
+      if (price <= 1) continue;
 
       const withoutPrice = text.replace(/\$\s*[\d,\.]+/g, ' ');
       const intTokens = withoutPrice.match(/(?<![\w.])\d[\d,]*(?![\w.])/g) || [];
