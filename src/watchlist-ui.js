@@ -17,6 +17,11 @@ import { formatMoney } from './calculator.js';
 
 const ITEM_ID_MAP_KEY = 'valigia_item_id_map';
 
+// Show at most this many rows in the typeahead dropdown. Torn has ~1000
+// items; rendering them all each keystroke stutters on iPad. 12 fits on
+// one screen without scroll on a typical dashboard viewport.
+const TYPEAHEAD_MAX_RESULTS = 12;
+
 // Shared per-session state. Both renderers read from these; writers (the
 // add/delete handlers) mutate them and re-render.
 let alertsCache = null;       // Array of { item_id, max_price, venues }
@@ -69,6 +74,119 @@ function resolveItemName(input) {
     if (name.toLowerCase() === needle) return id;
   }
   return null;
+}
+
+/**
+ * Filter the full item list by substring match against the query. Matches
+ * that START with the query rank above substring-only matches; ties break
+ * alphabetically. Empty query returns the first TYPEAHEAD_MAX_RESULTS
+ * alphabetically so the dropdown has something useful on focus before any
+ * typing.
+ */
+function filterItemSuggestions(query) {
+  const all = getItemSuggestions();
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return all.slice(0, TYPEAHEAD_MAX_RESULTS);
+
+  const starts = [];
+  const contains = [];
+  for (const s of all) {
+    const name = s.name.toLowerCase();
+    if (name.startsWith(needle)) starts.push(s);
+    else if (name.includes(needle)) contains.push(s);
+    if (starts.length >= TYPEAHEAD_MAX_RESULTS) break;
+  }
+  return [...starts, ...contains].slice(0, TYPEAHEAD_MAX_RESULTS);
+}
+
+/**
+ * Attach typeahead behaviour to the #wl-item-input + #wl-typeahead-list
+ * pair. Touch-first: tapping a row fills the input and submits focus
+ * back to the price field. Keyboard users get arrow-up/down + Enter.
+ */
+function wireTypeahead(root) {
+  const input = root.querySelector('#wl-item-input');
+  const list = root.querySelector('#wl-typeahead-list');
+  const priceInput = root.querySelector('#wl-price-input');
+  if (!input || !list) return;
+
+  let activeIndex = -1;    // keyboard-highlighted row, -1 = none
+  let currentResults = []; // mirrors what's rendered, for arrow-key picks
+
+  function render(query) {
+    currentResults = filterItemSuggestions(query);
+    if (currentResults.length === 0) {
+      list.innerHTML = `<li class="wl-typeahead-empty">No items match "${query}"</li>`;
+      list.hidden = false;
+      return;
+    }
+    list.innerHTML = currentResults
+      .map((s, i) => `
+        <li class="wl-typeahead-row${i === activeIndex ? ' wl-typeahead-row--active' : ''}"
+            data-id="${s.id}" data-name="${s.name}" role="option">
+          ${s.name}
+        </li>
+      `)
+      .join('');
+    list.hidden = false;
+  }
+
+  function close() {
+    list.hidden = true;
+    activeIndex = -1;
+  }
+
+  function selectRow(row) {
+    if (!row) return;
+    input.value = row.dataset.name || '';
+    close();
+    // Hand focus to the price field — this is the natural next step and
+    // keeps the on-screen keyboard open on iPad instead of dismissing it.
+    if (priceInput) priceInput.focus();
+  }
+
+  input.addEventListener('focus', () => render(input.value));
+  input.addEventListener('input', () => {
+    activeIndex = -1;
+    render(input.value);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (list.hidden) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIndex = Math.min(activeIndex + 1, currentResults.length - 1);
+      render(input.value);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, -1);
+      render(input.value);
+    } else if (e.key === 'Enter' && activeIndex >= 0) {
+      e.preventDefault();
+      const picked = currentResults[activeIndex];
+      if (picked) {
+        input.value = picked.name;
+        close();
+        if (priceInput) priceInput.focus();
+      }
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+
+  // pointerdown fires before blur, so the blur handler doesn't race us into
+  // hiding the list before we can read the tapped row's data.
+  list.addEventListener('pointerdown', (e) => {
+    const row = e.target.closest('.wl-typeahead-row');
+    if (!row) return;
+    e.preventDefault();
+    selectRow(row);
+  });
+
+  input.addEventListener('blur', () => {
+    // Defer so a pointerdown on a row still gets to fire first.
+    setTimeout(close, 120);
+  });
 }
 
 // ── Data plumbing ──────────────────────────────────────────────
@@ -195,17 +313,19 @@ export async function renderWatchlistTab(container) {
         <div class="wl-add-row">
           <label class="wl-field wl-field--item">
             <span class="wl-field-label">Item</span>
-            <input
-              type="text"
-              id="wl-item-input"
-              class="wl-input"
-              list="wl-item-suggestions"
-              placeholder="Xanax"
-              autocomplete="off"
-              spellcheck="false"
-              required
-            />
-            <datalist id="wl-item-suggestions"></datalist>
+            <div class="wl-typeahead" id="wl-typeahead">
+              <input
+                type="text"
+                id="wl-item-input"
+                class="wl-input"
+                placeholder="Type to search — Xanax, Erotic DVD, …"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                required
+              />
+              <ul class="wl-typeahead-list" id="wl-typeahead-list" hidden></ul>
+            </div>
           </label>
           <label class="wl-field wl-field--price">
             <span class="wl-field-label">Max price</span>
@@ -247,11 +367,11 @@ export async function renderWatchlistTab(container) {
     </div>
   `;
 
-  // Populate autocomplete
-  const datalist = container.querySelector('#wl-item-suggestions');
-  datalist.innerHTML = getItemSuggestions()
-    .map((s) => `<option value="${s.name}" data-id="${s.id}"></option>`)
-    .join('');
+  // Wire the custom typeahead. Native <datalist> on iPadOS doesn't filter
+  // as-you-type the way users expect — it flashes the whole Torn catalog.
+  // We do our own substring filter, capped at TYPEAHEAD_MAX_RESULTS rows so
+  // the dropdown stays a tappable size on iPad.
+  wireTypeahead(container);
 
   // Add-alert submit
   container.querySelector('#wl-add-form').addEventListener('submit', async (e) => {
