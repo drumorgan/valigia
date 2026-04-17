@@ -4,6 +4,7 @@
 
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
+import { ingestSellPrices } from './ingest.js';
 import { showToast } from './ui.js';
 
 const MAX_REFRESH_PER_VISIT = 30;  // max Torn API calls per page load
@@ -158,14 +159,12 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
 
   await Promise.allSettled(promises);
 
-  // 4. Write fresh prices back to Supabase for all users
+  // 4. Write fresh prices back to Supabase for all users via the
+  //    ingest-sell-prices edge function (Layer 2 — observer-attributed).
   if (freshPrices.length > 0) {
-    const { error: writeErr } = await supabase
-      .from('sell_prices')
-      .upsert(freshPrices, { onConflict: 'item_id' });
-
-    if (writeErr) {
-      showToast(`Supabase write error: ${writeErr.message}`, 'warning');
+    const result = await ingestSellPrices(freshPrices);
+    if (!result.ok) {
+      showToast(`Sell-price ingest failed: ${result.error}`, 'warning');
     }
   }
 }
@@ -206,12 +205,9 @@ export async function refreshSellPrices(playerId, itemIds, onPrice) {
   await Promise.allSettled(promises);
 
   if (freshPrices.length > 0) {
-    const { error: writeErr } = await supabase
-      .from('sell_prices')
-      .upsert(freshPrices, { onConflict: 'item_id' });
-
-    if (writeErr) {
-      showToast(`Supabase write error: ${writeErr.message}`, 'warning');
+    const result = await ingestSellPrices(freshPrices);
+    if (!result.ok) {
+      showToast(`Sell-price ingest failed: ${result.error}`, 'warning');
     }
   }
 }

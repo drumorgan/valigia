@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.5.1
+// @version      0.6.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + owner + show Watchlist matches so you spot a deal the moment you open a bazaar.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -26,6 +26,10 @@
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
+  const INGEST_SELL_URL =
+    'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-sell-prices';
+  const INGEST_BAZAAR_URL =
+    'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-bazaar-prices';
   const ACTIVITY_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/record-pda-activity';
   const SUPABASE_ANON_KEY =
@@ -389,38 +393,35 @@
     }
   }
 
-  // -- Supabase direct upsert ----------------------------------------------
-  // PostgREST upsert with conflict resolution on the table's primary key.
-  // Used by the Item Market + Bazaar runners to write straight into the
-  // community pool without routing through an edge function.
-  //
-  // Trust model: the data the userscript scrapes is item_id → price/qty.
-  // There's no player secret involved, and the sell_prices / bazaar_prices
-  // tables already allow anon writes for the same reason the web app does.
-  // If spam ever becomes an issue we can add edge-function gating later
-  // without changing the scraper shape.
-  async function supabaseUpsert(tableUrl, rows) {
+  // -- Ingest edge-function post ------------------------------------------
+  // Layer 2 security hardening: writes to sell_prices / bazaar_prices flow
+  // through ingest-sell-prices / ingest-bazaar-prices. Each validates
+  // TORN_API_KEY via user/?selections=basic and stamps observer_player_id
+  // onto every row before a service-role upsert. Same pattern as
+  // ingest-travel-shop — one extra Torn API round-trip per scrape, paid
+  // out of the player's own 100/min budget.
+  async function postIngestRows(ingestUrl, rows) {
     if (!Array.isArray(rows) || rows.length === 0) {
       return { ok: true, count: 0 };
     }
     try {
       const res = await gmRequest({
         method: 'POST',
-        url: tableUrl,
+        url: ingestUrl,
         headers: {
           'Content-Type': 'application/json',
           'apikey': SUPABASE_ANON_KEY,
           'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
-          // merge-duplicates: upsert on primary key, update non-PK columns.
-          // return=minimal: don't echo the rows back - we don't need them.
-          'Prefer': 'resolution=merge-duplicates,return=minimal',
         },
-        data: JSON.stringify(rows),
+        data: JSON.stringify({ api_key: TORN_API_KEY, rows: rows }),
       });
-      if (res.status >= 200 && res.status < 300) {
-        return { ok: true, count: rows.length };
+      let body = null;
+      try { body = JSON.parse(res.responseText); } catch { /* ignore */ }
+      if (res.status >= 200 && res.status < 300 && body && body.ok) {
+        return { ok: true, count: body.stored ?? rows.length };
       }
-      return { ok: false, error: 'HTTP ' + res.status, raw: res.responseText };
+      const err = (body && body.error) || ('HTTP ' + res.status);
+      return { ok: false, error: err, raw: res.responseText };
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     }
@@ -787,11 +788,14 @@
     }
 
     const upsertRows = rows.map(function (r) {
-      const { _name, ...rest } = r;
+      // Drop both the carry-through _name and updated_at — the edge function
+      // stamps updated_at server-side, and there's no name column on
+      // sell_prices.
+      const { _name, updated_at, ...rest } = r;
       return rest;
     });
 
-    const result = await supabaseUpsert(SELL_PRICES_URL, upsertRows);
+    const result = await postIngestRows(INGEST_SELL_URL, upsertRows);
     if (result.ok) {
       toast('Item Market: ' + result.count + ' prices collected \u00B7 thanks!', 'success');
       pingActivity('item_market');
@@ -897,20 +901,19 @@
     // Scraping a bazaar page is a definitive hit: we see the listing right
     // now, so miss_count resets to 0. Items that USED to be in this bazaar
     // but aren't in our scrape are left alone - the web-app scanner's
-    // miss-count logic catches those on its next live check.
-    const now = new Date().toISOString();
+    // miss-count logic catches those on its next live check. checked_at is
+    // stamped server-side by the edge function.
     const rows = items.map(function (it) {
       return {
         item_id: it.item_id,
         bazaar_owner_id: ownerId,
         price: it.price,
         quantity: it.quantity,
-        checked_at: now,
         miss_count: 0,
       };
     });
 
-    const result = await supabaseUpsert(BAZAAR_PRICES_URL, rows);
+    const result = await postIngestRows(INGEST_BAZAAR_URL, rows);
     if (result.ok) {
       toast('Bazaar: ' + result.count + ' prices collected \u00B7 thanks!', 'success');
       pingActivity('bazaar');
