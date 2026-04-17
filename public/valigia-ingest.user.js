@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.4
+// @version      0.6.5
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + paint current Item Market prices on every row so arbitrage is obvious at a glance.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -27,7 +27,7 @@
   // Stamped on success toasts so you can tell at a glance which userscript
   // version is loaded in PDA. Bumping this in the @version header above
   // means bumping it here too.
-  const SCRIPT_VERSION = '0.6.4';
+  const SCRIPT_VERSION = '0.6.5';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1497,6 +1497,13 @@
       '  all: initial;',
       '  display: block;',
       '  box-sizing: border-box;',
+      '  width: 100%;',
+      // If the overlay ends up inside a flex-row parent anyway (e.g. a
+      // Torn layout variant we didn\'t anticipate), these force it to
+      // take the full row and wrap below instead of being squeezed as a
+      // third flex item.
+      '  flex: 0 0 100%;',
+      '  order: 99;',
       '  margin: 4px 0 0;',
       '  padding: 2px 6px;',
       '  font: 11px/1.3 ui-monospace, Menlo, Consolas, monospace;',
@@ -1552,6 +1559,26 @@
       el = parent;
     }
     return img.parentElement;
+  }
+
+  /**
+   * Within a single-item tile, find the leaf element whose text is the
+   * `$XXX,XXX` price. Torn's bazaar tiles lay the image-column and the
+   * text-column side by side as flex row items; appending our overlay
+   * directly to the tile drops it as a third flex sibling and squeezes
+   * it into a narrow vertical strip. Anchoring the overlay to the price
+   * element's parent instead lands it inside the text-column, where
+   * children stack vertically and our block-level overlay reads cleanly.
+   */
+  function findPriceAnchor(tile) {
+    const walker = document.createTreeWalker(tile, NodeFilter.SHOW_ELEMENT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.firstElementChild) continue; // only leaves
+      const text = (node.textContent || '').trim();
+      if (/^\$\s*[\d,.]+$/.test(text)) return node;
+    }
+    return null;
   }
 
   async function paintBazaarMarketOverlay(scrapedItems) {
@@ -1616,10 +1643,16 @@
       ].join('');
       overlay.innerHTML = formatted;
 
-      // Append inside the single-item tile. With display:block in CSS
-      // the overlay sits on its own line below the item's existing
-      // name/price/stock rows without spilling into the next tile.
-      tile.appendChild(overlay);
+      // Anchor the overlay next to the price text so it lives in the
+      // tile's text-column (flex-column layout, children stack nicely).
+      // Fallback to appending to the tile if we can't find a price leaf
+      // — worst case it looks cramped, but that's no worse than before.
+      const priceAnchor = findPriceAnchor(tile);
+      if (priceAnchor && priceAnchor.parentElement) {
+        priceAnchor.parentElement.appendChild(overlay);
+      } else {
+        tile.appendChild(overlay);
+      }
     }
   }
 
