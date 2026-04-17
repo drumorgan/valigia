@@ -48,23 +48,31 @@ async function callWatchlistFn(action, extras = {}) {
   if (!player_id || !session_token) {
     return { success: false, error: 'not_logged_in' };
   }
-  const res = await fetch(WATCHLIST_FN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${supabaseAnonKey}`,
-    },
-    body: JSON.stringify({
-      action,
-      player_id: Number(player_id),
-      session_token,
-      ...extras,
-    }),
-  });
+  // fetch() itself can throw on CORS failures, offline, or DNS errors, and
+  // Supabase returns a non-JSON body on some 500s. Catch both so callers
+  // always get a structured {success:false,error} instead of an exception —
+  // otherwise a thrown promise leaves buttons stuck on "Saving…".
   try {
-    return await res.json();
-  } catch {
-    return { success: false, error: 'bad_response' };
+    const res = await fetch(WATCHLIST_FN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+      },
+      body: JSON.stringify({
+        action,
+        player_id: Number(player_id),
+        session_token,
+        ...extras,
+      }),
+    });
+    try {
+      return await res.json();
+    } catch {
+      return { success: false, error: 'bad_response', status: res.status };
+    }
+  } catch (err) {
+    return { success: false, error: 'network', detail: err?.message };
   }
 }
 
