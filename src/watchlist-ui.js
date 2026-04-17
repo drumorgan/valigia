@@ -318,7 +318,6 @@ export async function renderWatchlistTab(container) {
                 type="text"
                 id="wl-item-input"
                 class="wl-input"
-                placeholder="Type to search — Xanax, Erotic DVD, …"
                 autocomplete="off"
                 autocapitalize="off"
                 spellcheck="false"
@@ -333,7 +332,6 @@ export async function renderWatchlistTab(container) {
               type="number"
               id="wl-price-input"
               class="wl-input"
-              placeholder="700000"
               min="1"
               step="1"
               required
@@ -401,14 +399,27 @@ export async function renderWatchlistTab(container) {
 
     btn.disabled = true;
     btn.textContent = 'Saving…';
-    const result = await upsertAlert(itemId, price, venues);
-    btn.disabled = false;
-    btn.textContent = 'Add';
+    let result;
+    try {
+      result = await upsertAlert(itemId, price, venues);
+    } catch (err) {
+      // Network / CORS / thrown fetch — make sure we always reset the
+      // button so the form isn't stuck on "Saving…". Swallow to the toast.
+      result = { success: false, error: err?.message || 'network' };
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Add';
+    }
 
     if (!result?.success) {
-      const msg = result?.error === 'alert_cap_reached'
-        ? 'You already have 50 alerts — delete one first.'
-        : 'Could not save alert. Try again.';
+      const errMap = {
+        alert_cap_reached: 'You already have 50 alerts — delete one first.',
+        not_logged_in: 'Your session expired — log in again.',
+        unauthorized: 'Your session expired — log in again.',
+        network: 'Network or server unreachable — is the watchlist edge function deployed?',
+        bad_response: 'Server returned an unexpected response — try again shortly.',
+      };
+      const msg = errMap[result?.error] || `Could not save alert: ${result?.error || 'unknown'}`;
       showToast(msg);
       return;
     }
@@ -486,7 +497,12 @@ function renderAlertsTable(host, tabRoot) {
     btn.addEventListener('click', async () => {
       const itemId = Number(btn.dataset.itemId);
       btn.disabled = true;
-      const result = await deleteAlert(itemId);
+      let result;
+      try {
+        result = await deleteAlert(itemId);
+      } catch (err) {
+        result = { success: false, error: err?.message || 'network' };
+      }
       if (!result?.success) {
         btn.disabled = false;
         showToast('Could not delete alert. Try again.');
