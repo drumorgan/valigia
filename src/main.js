@@ -38,11 +38,22 @@ let yataFetchedAt = 0;
 // Watchlist DOM in its place — we don't rebuild Travel from scratch,
 // because re-fetching YATA + running a pre-scan on every tab switch would
 // be wasteful and the user would lose their scroll/sort state.
+//
+// The selected tab is persisted to localStorage so a page refresh lands
+// the user back where they were. Only two tabs today, so a tiny string
+// key is enough — no need for a router.
+const STORAGE_ACTIVE_TAB = 'valigia_active_tab';
+const VALID_TABS = ['travel', 'watchlist'];
 let currentTab = 'travel';
 const TAB_CONTAINER_IDS = {
   travel: 'tab-travel-host',
   watchlist: 'tab-watchlist-host',
 };
+
+function getStoredTab() {
+  const stored = localStorage.getItem(STORAGE_ACTIVE_TAB);
+  return VALID_TABS.includes(stored) ? stored : 'travel';
+}
 
 // ── Boot ───────────────────────────────────────────────────────
 async function boot() {
@@ -280,6 +291,14 @@ async function startDashboard(playerId) {
   // tab badge reflects the same count so unvisited matches are obvious.
   // Fire-and-forget: both surfaces hide themselves if anything fails.
   refreshWatchlistSurfaces();
+
+  // Restore the last-selected tab. We only do this AFTER the Travel
+  // dashboard's DOM is built and its async data is in flight, so when the
+  // user switches back to Travel the data is already there. Using the
+  // sentinel 'travel' as the default means this is a no-op for users who
+  // never left the default.
+  const storedTab = getStoredTab();
+  if (storedTab !== 'travel') switchTab(storedTab);
 }
 
 // ── Watchlist matches surfacing ───────────────────────────────
@@ -377,8 +396,11 @@ function hideTabNav() {
 }
 
 async function switchTab(nextTab) {
+  if (!VALID_TABS.includes(nextTab)) nextTab = 'travel';
   if (nextTab === currentTab) return;
   currentTab = nextTab;
+  // Persist so a page refresh lands the user back on the same tab.
+  try { localStorage.setItem(STORAGE_ACTIVE_TAB, nextTab); } catch {}
 
   // Update nav-button styling
   if (tabNav) {
