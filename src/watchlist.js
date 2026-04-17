@@ -22,6 +22,18 @@ const WATCHLIST_FN_URL = `${supabaseUrl}/functions/v1/watchlist`;
 // Showing a 2-hour-old bazaar price as a "current match" would be a lie.
 const BAZAAR_MAX_AGE_MS = 10 * 60 * 1000;
 
+// Item Market rows older than this are considered stale. Mirrors the
+// STALE_MS threshold market.js uses before re-fetching from Torn. The
+// Item Market churns constantly — by the time a price is a few hours
+// old the listing at that price is almost certainly gone, so surfacing
+// it as a "current match" misleads the user (they click through and
+// the price they saw is nowhere on the listings page). Dashboard loads
+// now refresh sell_prices for every watchlisted item, so a match that
+// disappears here will re-appear within minutes if the price still
+// holds; otherwise it's been bought and the watchlist correctly
+// reflects that it's no longer actionable.
+const MARKET_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+
 // `abroad_prices` alone is too sparse — it only has rows for destinations
 // users have PDA-scraped recently. The Travel tab shows a superset by
 // merging scrapes with the YATA community API, which covers every
@@ -147,20 +159,28 @@ function matchesForAlert(alert, context) {
   if (venueSet.has('market')) {
     const row = sellByItem.get(alert.item_id);
     if (row && row.price != null && Number(row.price) <= maxPrice) {
-      const price = Number(row.price);
-      out.push({
-        item_id: alert.item_id,
-        item_name: itemName,
-        venue: 'market',
-        venue_label: 'Item Market',
-        price,
-        max_price: maxPrice,
-        savings: maxPrice - price,
-        savings_pct: ((maxPrice - price) / maxPrice) * 100,
-        observed_at: row.updated_at ? new Date(row.updated_at).getTime() : 0,
-        link: `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${alert.item_id}`,
-        extra: {},
-      });
+      const observedAt = row.updated_at ? new Date(row.updated_at).getTime() : 0;
+      // Drop stale rows rather than advertising a price whose listing
+      // has almost certainly been bought. The dashboard's refresh pass
+      // tops up watchlist items on every login, so anything still in
+      // the market at the cached price will re-surface fresh.
+      const fresh = observedAt > 0 && Date.now() - observedAt <= MARKET_MAX_AGE_MS;
+      if (fresh) {
+        const price = Number(row.price);
+        out.push({
+          item_id: alert.item_id,
+          item_name: itemName,
+          venue: 'market',
+          venue_label: 'Item Market',
+          price,
+          max_price: maxPrice,
+          savings: maxPrice - price,
+          savings_pct: ((maxPrice - price) / maxPrice) * 100,
+          observed_at: observedAt,
+          link: `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${alert.item_id}`,
+          extra: {},
+        });
+      }
     }
   }
 

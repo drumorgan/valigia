@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.5.0
+// @version      0.5.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + owner + show Watchlist matches so you spot a deal the moment you open a bazaar.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -947,6 +947,14 @@
   // 10-minute threshold so the bar doesn't claim a stale deal.
   const WATCHLIST_BAZAAR_MAX_AGE_MS = 10 * 60 * 1000;
 
+  // Item Market rows older than this are dropped. Mirrors the web
+  // app's 4-hour MARKET_MAX_AGE_MS so a stale floor (e.g. someone
+  // scraped Lucky Quarter 11 hours ago and the listing has long since
+  // been bought) can't masquerade as a current match. The web app
+  // tops up watchlisted items on every dashboard load, so a price
+  // that still holds will quickly re-appear here.
+  const WATCHLIST_MARKET_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+
   // Tiny non-crypto hash of the api_key so we can key the player_id cache
   // by it — lets the cache invalidate automatically when the user swaps
   // to a different Torn API key without leaking the key itself.
@@ -1061,19 +1069,23 @@
       if (venues.has('market')) {
         const s = sellByItem.get(a.item_id);
         if (s && Number(s.price) <= maxPrice) {
-          const price = Number(s.price);
-          matches.push({
-            item_id: a.item_id,
-            venue: 'market',
-            venue_label: 'Item Market',
-            price: price,
-            max_price: maxPrice,
-            savings: maxPrice - price,
-            savings_pct: ((maxPrice - price) / maxPrice) * 100,
-            observed_at: s.updated_at ? new Date(s.updated_at).getTime() : 0,
-            link: 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + a.item_id,
-            extra: {},
-          });
+          const observedAt = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+          const fresh = observedAt > 0 && Date.now() - observedAt <= WATCHLIST_MARKET_MAX_AGE_MS;
+          if (fresh) {
+            const price = Number(s.price);
+            matches.push({
+              item_id: a.item_id,
+              venue: 'market',
+              venue_label: 'Item Market',
+              price: price,
+              max_price: maxPrice,
+              savings: maxPrice - price,
+              savings_pct: ((maxPrice - price) / maxPrice) * 100,
+              observed_at: observedAt,
+              link: 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + a.item_id,
+              extra: {},
+            });
+          }
         }
       }
       if (venues.has('bazaar')) {

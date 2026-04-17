@@ -13,7 +13,7 @@ import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
   renderMatchesCard, renderWatchlistTab, invalidateWatchlistCache,
 } from './watchlist-ui.js';
-import { setAbroadSnapshot } from './watchlist.js';
+import { setAbroadSnapshot, listAlerts } from './watchlist.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
@@ -219,6 +219,11 @@ async function startDashboard(playerId) {
   // Resolve item IDs (one-time Torn API call, cached in localStorage)
   await resolveItemIds(playerId);
 
+  // Kick off the watchlist alert fetch in parallel with the YATA / perks
+  // pair so its item IDs are available before fetchAllSellPrices runs.
+  // Swallow failures to []: the matcher handles an empty list gracefully.
+  const watchlistAlertsPromise = listAlerts().catch(() => []);
+
   // Fetch abroad prices from YATA and detect travel perks in parallel
   const [priceResult] = await Promise.all([
     fetchAbroadPrices().catch(() => null),
@@ -271,10 +276,27 @@ async function startDashboard(playerId) {
     loadForecastData(items),
   ]).then(() => renderTable()).catch(() => {});
 
-  // Fetch live sell prices for all known items
-  const itemIds = getItemIdsForPriceFetch();
+  // Fetch live sell prices for every abroad item AND every watchlisted
+  // item. Including watchlist items here is what keeps the Watchlist
+  // matches card truthful: without this, a Lucky-Quarter-style alert
+  // outside the abroad list only gets its sell_prices row refreshed when
+  // someone happens to scrape the Torn Item Market via the PDA userscript.
+  // The cache-aware fetcher skips any row that's already fresh, so the
+  // extra items rarely burn API calls.
+  const abroadIds = getItemIdsForPriceFetch();
+  const abroadIdSet = new Set(abroadIds);
+  const watchlistAlerts = await watchlistAlertsPromise;
+  const watchlistOnlyIds = (watchlistAlerts || [])
+    .map((a) => Number(a.item_id))
+    .filter((id) => Number.isFinite(id) && !abroadIdSet.has(id));
+  const itemIds = [...abroadIds, ...watchlistOnlyIds];
   if (itemIds.length > 0) {
-    await fetchAllSellPrices(playerId, itemIds, onSellPrice);
+    // onSellPrice mutates the travel-table's price map and re-renders the
+    // table; skip it for watchlist-only items so we don't trigger a
+    // no-op render for each one as it resolves.
+    await fetchAllSellPrices(playerId, itemIds, (itemId, price, depth, fetchedAt) => {
+      if (abroadIdSet.has(itemId)) onSellPrice(itemId, price, depth, fetchedAt);
+    });
   }
 
   // Show bazaar deal scanner button + community stats
