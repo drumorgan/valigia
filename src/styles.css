@@ -2365,3 +2365,393 @@ tr.row--negative td {
     padding: 0.2rem 0.45rem;
   }
 }
+
+/* ── Tab nav ──────────────────────────────────────────────────── */
+
+.tab-nav {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-nav[hidden] { display: none; }
+
+.tab-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: 'Syne', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 120ms, border-color 120ms;
+}
+
+.tab-btn:hover { color: var(--text); }
+
+.tab-btn--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-badge {
+  background: var(--positive);
+  color: #0d0f14;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  letter-spacing: 0;
+}
+.tab-badge[hidden] { display: none; }
+
+.tab-host[hidden] { display: none; }
+
+/* ── Watchlist match card (above Best Run on Travel tab) ──────── */
+
+.wl-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--positive);
+  border-radius: 4px;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.wl-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.wl-card-title {
+  color: var(--positive);
+  font-weight: 700;
+}
+
+.wl-card-badge {
+  background: var(--positive);
+  color: #0d0f14;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  letter-spacing: 0;
+}
+
+.wl-card-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.wl-card-more {
+  margin-top: 0.45rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  letter-spacing: 0.04em;
+}
+
+/* ── Match row (shared by card + tab) ─────────────────────────── */
+
+.wl-match-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto auto minmax(0, 1.2fr) auto auto auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(74, 232, 160, 0.04);
+  color: var(--text);
+  text-decoration: none;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.82rem;
+  transition: background 120ms, border-color 120ms;
+}
+
+.wl-match-row:hover {
+  background: rgba(74, 232, 160, 0.1);
+  border-color: rgba(74, 232, 160, 0.4);
+}
+
+.wl-match-item {
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wl-venue {
+  font-size: 0.68rem;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.45rem;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+.wl-venue--market { background: rgba(232, 200, 74, 0.15); color: var(--accent); }
+.wl-venue--bazaar { background: rgba(74, 232, 160, 0.15); color: var(--positive); }
+.wl-venue--abroad { background: rgba(232, 130, 74, 0.15); color: var(--warning); }
+
+.wl-match-price {
+  color: var(--accent);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.wl-match-savings {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.wl-match-savings strong {
+  color: var(--positive);
+  font-weight: 700;
+}
+.wl-match-pct {
+  color: var(--muted);
+  margin-left: 0.15rem;
+}
+
+.wl-match-extra {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.wl-match-age {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.wl-match-arrow {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* Narrow viewports: stack the match row so nothing clips. */
+@media (max-width: 640px) {
+  .wl-match-row {
+    grid-template-columns: 1fr auto;
+    row-gap: 0.25rem;
+  }
+  .wl-match-item { grid-column: 1 / -1; }
+  .wl-match-extra { grid-column: 1 / -1; }
+  .wl-match-age { grid-column: 1 / -1; }
+}
+
+/* ── Watchlist tab body ───────────────────────────────────────── */
+
+.wl-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.wl-intro .wl-heading {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.4rem;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+}
+
+.wl-intro .wl-sub {
+  color: var(--muted);
+  font-size: 0.88rem;
+  max-width: 40rem;
+  line-height: 1.5;
+}
+
+.wl-add {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.wl-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.wl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.wl-field-label {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.wl-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.95rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 3px;
+  width: 100%;
+}
+
+.wl-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.wl-add-btn {
+  background: var(--accent);
+  color: #0d0f14;
+  border: none;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.55rem 1.1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  height: fit-content;
+}
+
+.wl-add-btn:hover:not(:disabled) { background: #f2d45b; }
+.wl-add-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.wl-venues {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.wl-venue-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.wl-venue-toggle input {
+  accent-color: var(--accent);
+}
+
+@media (max-width: 540px) {
+  .wl-add-row {
+    grid-template-columns: 1fr;
+  }
+  .wl-add-btn { width: 100%; }
+}
+
+.wl-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wl-section-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.wl-empty {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  padding: 0.8rem 0;
+  font-family: 'Syne Mono', monospace;
+}
+
+.wl-match-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.wl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.88rem;
+}
+
+.wl-table th {
+  text-align: left;
+  color: var(--muted);
+  font-family: 'Syne', sans-serif;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.wl-table td {
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.wl-cell-item { font-weight: 700; }
+.wl-cell-price { color: var(--accent); white-space: nowrap; }
+.wl-cell-venues { color: var(--muted); font-size: 0.78rem; }
+.wl-cell-action { text-align: right; width: 1%; }
+
+.wl-del-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  font-size: 1rem;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+  transition: color 120ms, border-color 120ms;
+}
+
+.wl-del-btn:hover {
+  color: var(--negative);
+  border-color: var(--negative);
+}
+.wl-del-btn:disabled { opacity: 0.4; cursor: not-allowed; }
