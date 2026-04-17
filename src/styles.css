@@ -2634,6 +2634,17 @@ tr.row--negative td {
   border-color: var(--accent);
 }
 
+/* iPadOS Safari defaults placeholder text to a color that's nearly
+   invisible against --bg. Force a legible muted tone. */
+.wl-input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+.wl-input::-webkit-input-placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
 /* ── Typeahead dropdown (replaces native datalist) ─────────────── */
 
 .wl-typeahead {

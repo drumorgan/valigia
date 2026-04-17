@@ -22,11 +22,23 @@ const WATCHLIST_FN_URL = `${supabaseUrl}/functions/v1/watchlist`;
 // Showing a 2-hour-old bazaar price as a "current match" would be a lie.
 const BAZAAR_MAX_AGE_MS = 10 * 60 * 1000;
 
-// Abroad prices are first-party PDA scrapes; they go stale faster because
-// Torn shops restock and deplete continuously. 30 min is generous enough
-// to avoid an empty card when nobody's travelled in a while, tight enough
-// that we don't claim a stock level that no longer exists.
-const ABROAD_MAX_AGE_MS = 30 * 60 * 1000;
+// `abroad_prices` alone is too sparse — it only has rows for destinations
+// users have PDA-scraped recently. The Travel tab shows a superset by
+// merging scrapes with the YATA community API, which covers every
+// destination continuously but can lag by hours. The matcher uses the
+// same merged snapshot so the Watchlist surfaces anything visible on
+// Travel. A looser staleness window (2h) tolerates YATA's update cadence;
+// the match row still prints "age" so the user can judge freshness.
+const ABROAD_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+// Abroad snapshot injected by main.js after `fetchAbroadPrices()` runs.
+// Shape: [{item_id, destination, buy_price, quantity, reported_at, source}]
+// where reported_at is an ISO timestamp. If still empty at match time we
+// fall back to a live `abroad_prices` query.
+let abroadSnapshot = [];
+export function setAbroadSnapshot(items) {
+  abroadSnapshot = Array.isArray(items) ? items : [];
+}
 
 export const ALL_VENUES = ['market', 'bazaar', 'abroad'];
 
@@ -228,19 +240,30 @@ export async function findMatches(alerts, itemNameById) {
   if (!Array.isArray(alerts) || alerts.length === 0) return [];
   const itemIds = [...new Set(alerts.map((a) => a.item_id))];
 
-  // Fire all three queries in parallel. An individual failure degrades to
-  // "no matches from that venue" — never throws out of findMatches.
-  const [sellRes, bazaarRes, abroadRes] = await Promise.allSettled([
+  // sell_prices + bazaar_prices come from Supabase. abroad_prices is
+  // skipped in favour of the in-memory snapshot when we have one — that
+  // snapshot is the same merged YATA+scrape data the Travel tab shows,
+  // which covers every destination instead of only the ones that have
+  // been PDA-scraped recently. We only hit Supabase for abroad as a
+  // fallback when the snapshot is empty (user landed on Watchlist tab
+  // before YATA resolved, or YATA itself failed).
+  const queries = [
     supabase.from('sell_prices').select('item_id, price, updated_at').in('item_id', itemIds),
     supabase
       .from('bazaar_prices')
       .select('item_id, price, quantity, bazaar_owner_id, checked_at')
       .in('item_id', itemIds),
-    supabase
-      .from('abroad_prices')
-      .select('item_id, destination, buy_price, stock, observed_at')
-      .in('item_id', itemIds),
-  ]);
+  ];
+  if (abroadSnapshot.length === 0) {
+    queries.push(
+      supabase
+        .from('abroad_prices')
+        .select('item_id, destination, buy_price, stock, observed_at')
+        .in('item_id', itemIds)
+    );
+  }
+  const results = await Promise.allSettled(queries);
+  const [sellRes, bazaarRes, abroadRes] = results;
 
   const sellByItem = new Map();
   if (sellRes.status === 'fulfilled' && Array.isArray(sellRes.value?.data)) {
@@ -253,8 +276,26 @@ export async function findMatches(alerts, itemNameById) {
       bazaarByItem.get(row.item_id).push(row);
     }
   }
+
+  // Build the abroad lookup from whichever source we have. The snapshot
+  // uses `reported_at` + `quantity`; the table uses `observed_at` +
+  // `stock`. Normalise to the table's field names so matchesForAlert
+  // stays source-agnostic.
   const abroadByItem = new Map();
-  if (abroadRes.status === 'fulfilled' && Array.isArray(abroadRes.value?.data)) {
+  const alertedIds = new Set(itemIds);
+  if (abroadSnapshot.length > 0) {
+    for (const it of abroadSnapshot) {
+      if (!alertedIds.has(it.item_id)) continue;
+      if (!abroadByItem.has(it.item_id)) abroadByItem.set(it.item_id, []);
+      abroadByItem.get(it.item_id).push({
+        item_id: it.item_id,
+        destination: it.destination,
+        buy_price: it.buy_price,
+        stock: it.quantity,
+        observed_at: it.reported_at,
+      });
+    }
+  } else if (abroadRes?.status === 'fulfilled' && Array.isArray(abroadRes.value?.data)) {
     for (const row of abroadRes.value.data) {
       if (!abroadByItem.has(row.item_id)) abroadByItem.set(row.item_id, []);
       abroadByItem.get(row.item_id).push(row);
