@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.8
+// @version      0.6.9
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + paint current Item Market prices on every row so arbitrage is obvious at a glance.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.6.8';
+  const SCRIPT_VERSION = '0.6.9';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1266,6 +1266,29 @@
     return sign + '$' + Math.abs(Math.round(n)).toLocaleString('en-US');
   }
 
+  /**
+   * Compact money formatter used inside the bazaar row overlay where
+   * horizontal space is tight. < $10k: full digits ($9,876). $10k–$1M:
+   * "$12.3k" / "$123k". >= $1M: "$1.2M" / "$120M". Negative numbers get
+   * a leading "-".
+   */
+  function formatMoneyCompact(n) {
+    if (n == null || !Number.isFinite(n)) return '\u2014';
+    const sign = n < 0 ? '-' : '';
+    const abs = Math.abs(n);
+    if (abs < 10000) return sign + '$' + Math.round(abs).toLocaleString('en-US');
+    if (abs < 1_000_000) {
+      const k = abs / 1000;
+      return sign + '$' + (k >= 100 ? Math.round(k) : k.toFixed(1)) + 'k';
+    }
+    if (abs < 1_000_000_000) {
+      const m = abs / 1_000_000;
+      return sign + '$' + (m >= 100 ? Math.round(m) : m.toFixed(1)) + 'M';
+    }
+    const b = abs / 1_000_000_000;
+    return sign + '$' + (b >= 100 ? Math.round(b) : b.toFixed(1)) + 'B';
+  }
+
   function formatAge(ms) {
     if (!ms) return '';
     const diff = Date.now() - ms;
@@ -1506,30 +1529,45 @@
       '  flex: 0 0 100%;',
       '  order: 99;',
       '  margin: 4px 0 0;',
-      '  padding: 2px 6px;',
-      '  font: 11px/1.3 ui-monospace, Menlo, Consolas, monospace;',
+      '  padding: 3px 6px;',
+      '  font: 11px/1.35 ui-monospace, Menlo, Consolas, monospace;',
       '  color: #c8cdd8;',
-      '  background: rgba(22,26,34,0.9);',
+      '  background: rgba(22,26,34,0.92);',
       '  border: 1px solid #252a35;',
       '  border-radius: 3px;',
-      '  white-space: nowrap;',
-      '  overflow: hidden;',
-      '  text-overflow: ellipsis;',
+      // Allow wrap so long tile values like "$12.4M" + "$11.8M" + delta
+      // can break onto a second line instead of being clipped by the
+      // tile width. Words are short (formatMoneyCompact); rare wraps
+      // give us a 2-line overlay rather than truncated info.
+      '  white-space: normal;',
+      '  overflow-wrap: anywhere;',
       '  position: relative;',
       '  z-index: 5;',
+      '  text-decoration: none;',
+      '  cursor: pointer;',
       '}',
+      // Profit row: green left-border AND a faint green background tint
+      // so the eye picks it out from a sea of losses without reading
+      // the +/- sign.
       '.' + BAZAAR_OVERLAY_CLASS + '--profit {',
-      '  border-left: 2px solid #4ae8a0;',
+      '  border-left: 3px solid #4ae8a0;',
+      '  background: rgba(74,232,160,0.10);',
       '}',
+      // Loss row: red left-border AND a faint red background tint.
+      // Previously a gray dimmed look made losses easy to miss when
+      // every visible item happened to be a loss.
       '.' + BAZAAR_OVERLAY_CLASS + '--loss {',
-      '  border-left: 2px solid #8a8fa0;',
-      '  opacity: 0.75;',
+      '  border-left: 3px solid #e8824a;',
+      '  background: rgba(232,130,74,0.08);',
+      '}',
+      '.' + BAZAAR_OVERLAY_CLASS + ':hover {',
+      '  filter: brightness(1.15);',
       '}',
       '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-label { color: #8a8fa0; }',
       '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-mkt { color: #e8c84a; font-weight: 700; }',
       '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-net { color: #c8cdd8; }',
       '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-gain { color: #4ae8a0; font-weight: 700; margin-left: 4px; }',
-      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-miss { color: #8a8fa0; margin-left: 4px; }',
+      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-miss { color: #e8824a; font-weight: 700; margin-left: 4px; }',
     ].join('\n');
     const el = document.createElement('style');
     el.id = BAZAAR_OVERLAY_STYLE_ID;
@@ -1634,27 +1672,37 @@
       const profit = netSell - bazaarPrice;
       const profitPct = bazaarPrice > 0 ? (profit / bazaarPrice) * 100 : 0;
 
-      const overlay = document.createElement('div');
+      // Anchor as <a> so a tap on the overlay opens the Item Market for
+      // this exact item — flipping the listing is one tap away. target
+      // _top so the link replaces the whole webview (PDA's iframe shape).
+      const overlay = document.createElement('a');
+      overlay.href = 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + itemId;
+      overlay.target = '_top';
+      overlay.rel = 'noopener';
       overlay.className = BAZAAR_OVERLAY_CLASS +
         (profit > 0 ? ' ' + BAZAAR_OVERLAY_CLASS + '--profit'
                     : ' ' + BAZAAR_OVERLAY_CLASS + '--loss');
 
+      const profitClass = profit > 0 ? 'vgl-bz-gain' : 'vgl-bz-miss';
+      const profitSign = profit > 0 ? '+' : '';
+      const pctStr = profitPct >= 100
+        ? Math.round(profitPct)
+        : profitPct.toFixed(profitPct >= 10 || profitPct <= -10 ? 0 : 1);
+
       const formatted = [
         '<span class="vgl-bz-label">Mkt </span>',
-        '<span class="vgl-bz-mkt">' + formatMoney(marketPrice) + '</span>',
+        '<span class="vgl-bz-mkt">' + formatMoneyCompact(marketPrice) + '</span>',
         '<span class="vgl-bz-label"> \u00B7 net </span>',
-        '<span class="vgl-bz-net">' + formatMoney(netSell) + '</span>',
-        profit > 0
-          ? '<span class="vgl-bz-gain">+' + formatMoney(profit) +
-            ' (' + (profitPct >= 100 ? Math.round(profitPct) : profitPct.toFixed(1)) + '%)</span>'
-          : '<span class="vgl-bz-miss">' + formatMoney(profit) + '</span>',
+        '<span class="vgl-bz-net">' + formatMoneyCompact(netSell) + '</span>',
+        '<span class="' + profitClass + '"> ' + profitSign + formatMoneyCompact(profit) +
+          ' (' + profitSign + pctStr + '%)</span>',
       ].join('');
       overlay.innerHTML = formatted;
 
       // Anchor the overlay next to the price text so it lives in the
       // tile's text-column (flex-column layout, children stack nicely).
-      // Fallback to appending to the tile if we can't find a price leaf
-      // — worst case it looks cramped, but that's no worse than before.
+      // Fallback to appending to the tile if the price-search misses
+      // — the CSS belt-and-braces forces full-width either way.
       const priceAnchor = findPriceAnchor(tile);
       if (priceAnchor && priceAnchor.parentElement) {
         priceAnchor.parentElement.appendChild(overlay);
