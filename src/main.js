@@ -13,6 +13,7 @@ import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
   renderMatchesCard, renderWatchlistTab, invalidateWatchlistCache,
 } from './watchlist-ui.js';
+import { setAbroadSnapshot } from './watchlist.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
@@ -252,6 +253,10 @@ async function startDashboard(playerId) {
 
   // Set items, re-render controls (populates destination dropdown), and render table
   setKnownItems(items);
+  // Share the merged YATA+scrape snapshot with the watchlist matcher so
+  // its abroad-venue lookup matches what the Travel table shows, instead
+  // of being limited to the sparse `abroad_prices` Supabase rows.
+  setAbroadSnapshot(items);
   renderControls(controlsBar, () => renderTable(), (cat) => handleCategoryRefresh(cat, playerId));
   renderTable();
 
