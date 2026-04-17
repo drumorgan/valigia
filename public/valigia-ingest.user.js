@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.2
+// @version      0.6.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + paint current Item Market prices on every row so arbitrage is obvious at a glance.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -23,6 +23,11 @@
   // PDA substitutes ###PDA-APIKEY### with the user's Torn key at runtime.
   // Outside PDA the placeholder stays literal, and the script aborts cleanly.
   const TORN_API_KEY = '###PDA-APIKEY###';
+
+  // Stamped on success toasts so you can tell at a glance which userscript
+  // version is loaded in PDA. Bumping this in the @version header above
+  // means bumping it here too.
+  const SCRIPT_VERSION = '0.6.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -805,7 +810,7 @@
 
     const result = await postIngestRows(INGEST_SELL_URL, upsertRows);
     if (result.ok) {
-      toast('Item Market: ' + result.count + ' prices collected \u00B7 thanks!', 'success');
+      toast('Item Market: ' + result.count + ' prices collected · thanks! (v' + SCRIPT_VERSION + ')', 'success');
       pingActivity('item_market');
     } else {
       toast('market upsert failed - ' + (result.error || 'unknown'), 'error');
@@ -928,7 +933,7 @@
 
     const result = await postIngestRows(INGEST_BAZAAR_URL, rows);
     if (result.ok) {
-      toast('Bazaar: ' + result.count + ' prices collected \u00B7 thanks!', 'success');
+      toast('Bazaar: ' + result.count + ' prices collected · thanks! (v' + SCRIPT_VERSION + ')', 'success');
       pingActivity('bazaar');
     } else {
       toast('bazaar upsert failed - ' + (result.error || 'unknown'), 'error');
@@ -1576,7 +1581,7 @@
         const status = result.status;
         const body = result.body;
         if (status >= 200 && status < 300 && body && body.ok) {
-          toast(destination + ': ' + body.stored + ' prices collected \u00B7 thanks!', 'success');
+          toast(destination + ': ' + body.stored + ' prices collected · thanks! (v' + SCRIPT_VERSION + ')', 'success');
         } else {
           const msg = (body && body.error) || ('HTTP ' + status);
           toast('ingest failed - ' + msg, 'error');
