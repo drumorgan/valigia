@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.7
+// @version      0.6.8
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + paint current Item Market prices on every row so arbitrage is obvious at a glance.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.6.7';
+  const SCRIPT_VERSION = '0.6.8';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1261,7 +1261,7 @@
   }
 
   function formatMoney(n) {
-    if (n == null) return '—';
+    if (n == null) return '\u2014';
     const sign = n < 0 ? '-' : '';
     return sign + '$' + Math.abs(Math.round(n)).toLocaleString('en-US');
   }
@@ -1374,7 +1374,7 @@
     count.textContent = String(matches.length);
     const caret = document.createElement('span');
     caret.className = 'vgl-wl-caret';
-    caret.textContent = '▾';
+    caret.textContent = '\u25BE';
     head.appendChild(title);
     head.appendChild(count);
     head.appendChild(caret);
@@ -1420,7 +1420,7 @@
 
       const arrow = document.createElement('span');
       arrow.className = 'vgl-wl-arrow';
-      arrow.textContent = '→';
+      arrow.textContent = '\u2192';
 
       row.appendChild(name);
       row.appendChild(venue);
@@ -1563,21 +1563,28 @@
   }
 
   /**
-   * Within a single-item tile, find the leaf element whose text is the
-   * `$XXX,XXX` price. Torn's bazaar tiles lay the image-column and the
-   * text-column side by side as flex row items; appending our overlay
-   * directly to the tile drops it as a third flex sibling and squeezes
-   * it into a narrow vertical strip. Anchoring the overlay to the price
-   * element's parent instead lands it inside the text-column, where
+   * Within a single-item tile, find the element whose own (direct) text
+   * contains the `$XXX,XXX` price. Torn's bazaar tiles lay the image-column
+   * and the text-column side by side as flex row items; appending our
+   * overlay directly to the tile drops it as a third flex sibling and
+   * squeezes it into a narrow vertical strip. Anchoring the overlay to the
+   * price element's parent instead lands it inside the text-column, where
    * children stack vertically and our block-level overlay reads cleanly.
+   *
+   * Matches on DIRECT text children only (not descendants) so a price
+   * element that also contains sibling spans for the `↑2%` / `↓2%` change
+   * indicator still gets picked up — the direct text is still "$XXX,XXX",
+   * even though the element isn't a leaf.
    */
   function findPriceAnchor(tile) {
     const walker = document.createTreeWalker(tile, NodeFilter.SHOW_ELEMENT);
     let node;
     while ((node = walker.nextNode())) {
-      if (node.firstElementChild) continue; // only leaves
-      const text = (node.textContent || '').trim();
-      if (/^\$\s*[\d,.]+$/.test(text)) return node;
+      let directText = '';
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) directText += child.nodeValue || '';
+      }
+      if (/\$\s*\d[\d,.]*/.test(directText)) return node;
     }
     return null;
   }
@@ -1635,7 +1642,7 @@
       const formatted = [
         '<span class="vgl-bz-label">Mkt </span>',
         '<span class="vgl-bz-mkt">' + formatMoney(marketPrice) + '</span>',
-        '<span class="vgl-bz-label"> · net </span>',
+        '<span class="vgl-bz-label"> \u00B7 net </span>',
         '<span class="vgl-bz-net">' + formatMoney(netSell) + '</span>',
         profit > 0
           ? '<span class="vgl-bz-gain">+' + formatMoney(profit) +
