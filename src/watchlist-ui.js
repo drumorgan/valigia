@@ -234,6 +234,13 @@ function matchRowHtml(match) {
   if (match.venue === 'bazaar' && match.extra?.owner_id) {
     extraBits.push(`Owner #${match.extra.owner_id}`);
   }
+  // Loss-leader match: the absolute floor is below the user's threshold
+  // but the qty-filtered effective floor isn't. Tell them the cheap
+  // price is almost certainly one-unit-only so they don't expect to
+  // clear a stack at $219k when the real wall sits at $222k.
+  if (match.venue === 'market' && match.extra?.limited) {
+    extraBits.push('single unit');
+  }
   const extraHtml = extraBits.length
     ? `<span class="wl-match-extra">${extraBits.join(' · ')}</span>`
     : '';

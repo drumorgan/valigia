@@ -89,7 +89,7 @@ editor; Supabase does not auto-apply them).
 | Table | Purpose |
 |---|---|
 | `player_secrets` | AES-256-GCM encrypted API keys. Service-role-only. |
-| `sell_prices` | Shared cache of item market sell prices (item_id PK). Written by both the web app and the PDA userscript's Item Market runner. |
+| `sell_prices` | Shared cache of item market sell prices (item_id PK). `price` = qty-filtered effective floor (skips 1-unit loss-leaders), used by Travel profit math. `min_price` = absolute cheapest listing regardless of qty, used by the Watchlist matcher so single-unit opportunities below a user's threshold still fire. Written by both the web app and the PDA userscript's Item Market runner. |
 | `bazaar_prices` | Crowd-sourced bazaar pool (item_id + bazaar_owner_id composite key, with `miss_count` for pool hygiene). Written by the web-app scanner and the PDA userscript's Bazaar runner. |
 | `abroad_prices` | First-party travel-shop observations (item_id + destination composite key). Written ONLY by the `ingest-travel-shop` edge function, which validates the submitting key's `player_id` before upserting. Publicly readable. Resurrected in migration 013 to carry live PDA scrapes. |
 | `community_stats` | Single-row spin counter. |
@@ -330,7 +330,8 @@ valigia.girovagabondo.com/
 │       ├── 016_pda_activity.sql
 │       ├── 017_price_bigint.sql
 │       ├── 018_restock_events.sql
-│       └── 019_watchlist_alerts.sql
+│       ├── 019_watchlist_alerts.sql
+│       └── 022_sell_prices_min_price.sql
 ├── .env
 ├── vite.config.js
 └── .github/

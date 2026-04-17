@@ -31,11 +31,19 @@ async function fetchOneSellPrice(playerId, itemId) {
   if (data.selections && !data.itemmarket) return null;
 
   let lowestPrice = null;
+  let minPrice = null;
   let floorQty = null;
   let listingCount = null;
   // V2 itemmarket returns { itemmarket: [...] } or { itemmarket: { listings: [...] } }
   const listings = data.itemmarket?.listings || data.itemmarket;
   if (Array.isArray(listings) && listings.length > 0) {
+    // min_price = absolute floor (first listing, any qty). This is what
+    // the Watchlist matcher compares against — a user who pinned "ping
+    // me at $250k" wants to hear about a lone $219k listing even if the
+    // next stack is above $250k. The Travel tab's profit math uses
+    // `price` (the qty-filtered effective floor) instead.
+    minPrice = listings[0].cost || listings[0].price;
+
     // Effective floor = first listing with qty >= 2. Single-unit loss-leaders
     // (e.g. 1 cannabis @ $10,500 beneath 19 cannabis @ $12,900) massively
     // overstate profit for a multi-unit travel run. Skip them unless every
@@ -56,7 +64,7 @@ async function fetchOneSellPrice(playerId, itemId) {
     listingCount = 0;
   }
 
-  return { lowestPrice, floorQty, listingCount };
+  return { lowestPrice, minPrice, floorQty, listingCount };
 }
 
 /**
@@ -77,7 +85,7 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   // 1. Read all cached sell prices from Supabase (single query)
   const { data: cached, error: readErr } = await supabase
     .from('sell_prices')
-    .select('item_id, price, updated_at, floor_qty, listing_count')
+    .select('item_id, price, min_price, updated_at, floor_qty, listing_count')
     .in('item_id', itemIds);
 
   if (readErr) {
@@ -142,11 +150,12 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
     }
     apiSuccessCount++;
 
-    const { lowestPrice, floorQty, listingCount } = result;
+    const { lowestPrice, minPrice, floorQty, listingCount } = result;
     const fetchedAt = Date.now();
     freshPrices.push({
       item_id: itemId,
       price: lowestPrice,
+      min_price: minPrice,
       floor_qty: floorQty,
       listing_count: listingCount,
       updated_at: new Date(fetchedAt).toISOString(),
@@ -187,11 +196,12 @@ export async function refreshSellPrices(playerId, itemIds, onPrice) {
     const result = await fetchOneSellPrice(playerId, itemId);
     if (!result) return;
 
-    const { lowestPrice, floorQty, listingCount } = result;
+    const { lowestPrice, minPrice, floorQty, listingCount } = result;
     const fetchedAt = Date.now();
     freshPrices.push({
       item_id: itemId,
       price: lowestPrice,
+      min_price: minPrice,
       floor_qty: floorQty,
       listing_count: listingCount,
       updated_at: new Date(fetchedAt).toISOString(),

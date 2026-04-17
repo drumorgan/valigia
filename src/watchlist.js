@@ -158,7 +158,15 @@ function matchesForAlert(alert, context) {
   // --- Item Market ---
   if (venueSet.has('market')) {
     const row = sellByItem.get(alert.item_id);
-    if (row && row.price != null && Number(row.price) <= maxPrice) {
+    // Watchlist matches against the absolute floor (min_price), not the
+    // qty-filtered effective floor (price). A lone $219k unit under a
+    // $250k alert is still a real buying opportunity even when the next
+    // stack sits above the threshold. Fall back to `price` for rows
+    // that haven't been refreshed since migration 020 added min_price.
+    const floorPrice = row?.min_price != null
+      ? Number(row.min_price)
+      : (row?.price != null ? Number(row.price) : null);
+    if (row && floorPrice != null && floorPrice <= maxPrice) {
       const observedAt = row.updated_at ? new Date(row.updated_at).getTime() : 0;
       // Drop stale rows rather than advertising a price whose listing
       // has almost certainly been bought. The dashboard's refresh pass
@@ -166,19 +174,25 @@ function matchesForAlert(alert, context) {
       // the market at the cached price will re-surface fresh.
       const fresh = observedAt > 0 && Date.now() - observedAt <= MARKET_MAX_AGE_MS;
       if (fresh) {
-        const price = Number(row.price);
+        // Flag "limited" when the match is only possible because of the
+        // loss-leader rule — i.e. the absolute floor sits below the
+        // effective floor. Tells the UI to warn the user they'll
+        // probably only get one unit at this price.
+        const limited = row.price != null
+          && row.min_price != null
+          && Number(row.min_price) < Number(row.price);
         out.push({
           item_id: alert.item_id,
           item_name: itemName,
           venue: 'market',
           venue_label: 'Item Market',
-          price,
+          price: floorPrice,
           max_price: maxPrice,
-          savings: maxPrice - price,
-          savings_pct: ((maxPrice - price) / maxPrice) * 100,
+          savings: maxPrice - floorPrice,
+          savings_pct: ((maxPrice - floorPrice) / maxPrice) * 100,
           observed_at: observedAt,
           link: `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${alert.item_id}`,
-          extra: {},
+          extra: { limited },
         });
       }
     }
@@ -268,7 +282,7 @@ export async function findMatches(alerts, itemNameById) {
   // fallback when the snapshot is empty (user landed on Watchlist tab
   // before YATA resolved, or YATA itself failed).
   const queries = [
-    supabase.from('sell_prices').select('item_id, price, updated_at').in('item_id', itemIds),
+    supabase.from('sell_prices').select('item_id, price, min_price, updated_at').in('item_id', itemIds),
     supabase
       .from('bazaar_prices')
       .select('item_id, price, quantity, bazaar_owner_id, checked_at')

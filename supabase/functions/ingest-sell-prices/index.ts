@@ -27,6 +27,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 interface SellRow {
   item_id: number;
   price: number | null;
+  min_price: number | null;
   floor_qty: number | null;
   listing_count: number | null;
 }
@@ -139,6 +140,15 @@ function normalizeRow(raw: unknown): SellRow | { skip: string } {
     return { skip: `invalid price for ${item_id}: ${r.price}` };
   }
 
+  // min_price = absolute cheapest listing (regardless of qty) — migration 020.
+  // Feeds the Watchlist matcher. Same range as price.
+  const minPriceRaw = r.min_price;
+  const min_price =
+    minPriceRaw === null || minPriceRaw === undefined ? null : Number(minPriceRaw);
+  if (min_price !== null && (!Number.isFinite(min_price) || min_price < 1 || min_price > 100_000_000_000)) {
+    return { skip: `invalid min_price for ${item_id}: ${r.min_price}` };
+  }
+
   const floorRaw = r.floor_qty;
   const floor_qty =
     floorRaw === null || floorRaw === undefined ? null : Number(floorRaw);
@@ -153,7 +163,7 @@ function normalizeRow(raw: unknown): SellRow | { skip: string } {
     return { skip: `invalid listing_count for ${item_id}: ${r.listing_count}` };
   }
 
-  return { item_id, price, floor_qty, listing_count };
+  return { item_id, price, min_price, floor_qty, listing_count };
 }
 
 // ── Handler ─────────────────────────────────────────────────────
@@ -197,6 +207,7 @@ serve(async (req) => {
     const normalized: Array<{
       item_id: number;
       price: number | null;
+      min_price: number | null;
       floor_qty: number | null;
       listing_count: number | null;
       updated_at: string;
@@ -214,6 +225,7 @@ serve(async (req) => {
       normalized.push({
         item_id: norm.item_id,
         price: norm.price,
+        min_price: norm.min_price,
         floor_qty: norm.floor_qty,
         listing_count: norm.listing_count,
         updated_at,
