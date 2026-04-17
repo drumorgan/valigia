@@ -318,6 +318,7 @@ export async function renderWatchlistTab(container) {
                 type="text"
                 id="wl-item-input"
                 class="wl-input"
+                placeholder="Type to search — Xanax, Erotic DVD, …"
                 autocomplete="off"
                 autocapitalize="off"
                 spellcheck="false"
