@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.3
+// @version      0.6.4
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + paint current Item Market prices on every row so arbitrage is obvious at a glance.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -27,7 +27,7 @@
   // Stamped on success toasts so you can tell at a glance which userscript
   // version is loaded in PDA. Bumping this in the @version header above
   // means bumping it here too.
-  const SCRIPT_VERSION = '0.6.3';
+  const SCRIPT_VERSION = '0.6.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -963,6 +963,15 @@
   const WATCHLIST_BAR_ID = 'valigia-watchlist-bar';
   const WATCHLIST_ALERTS_URL = SUPABASE_REST_URL + '/watchlist_alerts';
   const PLAYER_ID_CACHE_KEY = 'valigia_pda_player_id_v1';
+  // Torn items catalog cache. The web app maintains its own copy on
+  // valigia.girovagabondo.com, but userscript localStorage is scoped to
+  // torn.com — we can't share. Cost is one Torn /torn/?selections=items
+  // call per player per catalog-TTL, answered by a static dataset.
+  const ITEM_CATALOG_CACHE_KEY = 'valigia_item_catalog_v1';
+  // Torn rarely changes item names. A 30-day TTL keeps the cache small in
+  // terms of refresh pressure; any unknown id at lookup time still falls
+  // back to "Item #N" so a stale cache doesn't break the banner.
+  const ITEM_CATALOG_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
   // Bazaar rows older than this are dropped — matches the web app's
   // 10-minute threshold so the bar doesn't claim a stale deal.
@@ -1267,18 +1276,86 @@
     return Math.floor(hrs / 24) + 'd ago';
   }
 
-  // Resolve the item id → name map we already maintain in the travel
-  // runner's cache. Falls back to "Item #N" if we haven't seen it.
-  function itemNameFor(itemId) {
+  // In-memory view of the Torn items catalog. Populated lazily by
+  // ensureItemCatalog() from localStorage or a Torn API call. Shape:
+  // Map<itemId:number, name:string>.
+  let itemNameCache = null;
+
+  /**
+   * Load the id→name map, hydrating the in-memory cache from localStorage
+   * or fetching from Torn if we're cold. Safe to call repeatedly — only
+   * hits the network once per TTL window. Silent-fail on any error so
+   * the banner never blocks on name resolution.
+   */
+  async function ensureItemCatalog() {
+    if (itemNameCache && itemNameCache.size > 0) return itemNameCache;
+
+    // Try localStorage first. If the cached blob is present and fresh,
+    // hydrate the in-memory cache and skip the fetch entirely.
     try {
-      const raw = localStorage.getItem('valigia_item_id_map');
+      const raw = localStorage.getItem(ITEM_CATALOG_CACHE_KEY);
       if (raw) {
-        const nameToId = JSON.parse(raw);
-        for (const name in nameToId) {
-          if (Number(nameToId[name]) === Number(itemId)) return name;
+        const cached = JSON.parse(raw);
+        if (
+          cached &&
+          cached.fetchedAt &&
+          Date.now() - cached.fetchedAt < ITEM_CATALOG_TTL_MS &&
+          cached.nameById && typeof cached.nameById === 'object'
+        ) {
+          itemNameCache = new Map();
+          for (const idStr in cached.nameById) {
+            itemNameCache.set(Number(idStr), cached.nameById[idStr]);
+          }
+          if (itemNameCache.size > 0) return itemNameCache;
         }
       }
-    } catch (_) { /* ignore */ }
+    } catch (_) { /* corrupt cache — fall through to refetch */ }
+
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) {
+      return itemNameCache || new Map();
+    }
+
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: 'https://api.torn.com/torn/?selections=items&key=' +
+             encodeURIComponent(TORN_API_KEY),
+        headers: { 'Accept': 'application/json' },
+      });
+      let data = null;
+      try { data = JSON.parse(res.responseText); } catch (_) { /* ignore */ }
+      if (data && data.items) {
+        const nameById = {};
+        const map = new Map();
+        for (const idStr in data.items) {
+          const entry = data.items[idStr];
+          const name = entry && entry.name;
+          if (name) {
+            nameById[idStr] = name;
+            map.set(Number(idStr), name);
+          }
+        }
+        try {
+          localStorage.setItem(
+            ITEM_CATALOG_CACHE_KEY,
+            JSON.stringify({ nameById, fetchedAt: Date.now() })
+          );
+        } catch (_) { /* storage full / disabled — non-fatal */ }
+        itemNameCache = map;
+        return itemNameCache;
+      }
+    } catch (err) {
+      log('item catalog fetch failed', err);
+    }
+
+    return itemNameCache || new Map();
+  }
+
+  /** Synchronous lookup used once the catalog is warm. "Item #N" fallback. */
+  function itemNameFor(itemId) {
+    if (itemNameCache && itemNameCache.has(Number(itemId))) {
+      return itemNameCache.get(Number(itemId));
+    }
     return 'Item #' + itemId;
   }
 
@@ -1375,7 +1452,13 @@
     const playerId = await resolvePlayerId();
     if (!playerId) return;
 
-    const matches = await fetchWatchlistMatches(playerId);
+    // Warm the items catalog in parallel with the match fetch — by the
+    // time we go to render row labels we'll have real item names instead
+    // of the "Item #N" fallback.
+    const [matches] = await Promise.all([
+      fetchWatchlistMatches(playerId),
+      ensureItemCatalog(),
+    ]);
     if (matches.length === 0) return;
 
     injectWatchlistStyles();
@@ -1412,8 +1495,9 @@
     const css = [
       '.' + BAZAAR_OVERLAY_CLASS + ' {',
       '  all: initial;',
-      '  display: inline-block;',
-      '  margin-top: 4px;',
+      '  display: block;',
+      '  box-sizing: border-box;',
+      '  margin: 4px 0 0;',
       '  padding: 2px 6px;',
       '  font: 11px/1.3 ui-monospace, Menlo, Consolas, monospace;',
       '  color: #c8cdd8;',
@@ -1421,6 +1505,10 @@
       '  border: 1px solid #252a35;',
       '  border-radius: 3px;',
       '  white-space: nowrap;',
+      '  overflow: hidden;',
+      '  text-overflow: ellipsis;',
+      '  position: relative;',
+      '  z-index: 5;',
       '}',
       '.' + BAZAAR_OVERLAY_CLASS + '--profit {',
       '  border-left: 2px solid #4ae8a0;',
@@ -1447,6 +1535,25 @@
    * overlay badge next to each listing. Silent no-op on any failure —
    * the underlying scrape + upsert flow continues regardless.
    */
+  /**
+   * Find the smallest ancestor of `img` that contains just this one item
+   * (not the whole 3-up bazaar row). Walks up until the parent starts
+   * including other item images — the last single-item ancestor is the
+   * tile we want. The generic scraper uses the broader rowContainer(),
+   * which is the right shape for price extraction but wrong for our
+   * overlay (an appended child would spill into the next row visually).
+   */
+  function itemTileFor(img) {
+    let el = img.parentElement;
+    while (el && el.parentElement) {
+      const parent = el.parentElement;
+      const parentImgs = parent.querySelectorAll('img[src*="/images/items/"]');
+      if (parentImgs.length > 1) return el; // parent has siblings = row
+      el = parent;
+    }
+    return img.parentElement;
+  }
+
   async function paintBazaarMarketOverlay(scrapedItems) {
     if (!Array.isArray(scrapedItems) || scrapedItems.length === 0) return;
     const ids = [...new Set(scrapedItems.map(function (r) { return r.item_id; }))];
@@ -1466,11 +1573,8 @@
 
     injectBazaarOverlayStyles();
 
-    // Walk the same image selector the scraper uses so we hit every
-    // row Torn has rendered. Each row gets at most one overlay, tagged
-    // on the DOM so repeat dispatches don't stack duplicates.
     const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
-    const seenRows = new Set();
+    const seenTiles = new Set();
     const scrapedByItem = new Map();
     for (const it of scrapedItems) scrapedByItem.set(Number(it.item_id), it);
 
@@ -1479,12 +1583,12 @@
       const idMatch = src.match(/\/images\/items\/(\d+)\//);
       if (!idMatch) continue;
       const itemId = Number(idMatch[1]);
-      const row = rowContainer(img);
-      if (!row || seenRows.has(row)) continue;
-      seenRows.add(row);
+      const tile = itemTileFor(img);
+      if (!tile || seenTiles.has(tile)) continue;
+      seenTiles.add(tile);
 
-      // Skip if we already painted this row on an earlier dispatch.
-      if (row.querySelector('.' + BAZAAR_OVERLAY_CLASS)) continue;
+      // Skip if we already painted this tile on an earlier dispatch.
+      if (tile.querySelector('.' + BAZAAR_OVERLAY_CLASS)) continue;
 
       const bazaarEntry = scrapedByItem.get(itemId);
       const marketPrice = marketByItem.get(itemId);
@@ -1495,7 +1599,7 @@
       const profit = netSell - bazaarPrice;
       const profitPct = bazaarPrice > 0 ? (profit / bazaarPrice) * 100 : 0;
 
-      const overlay = document.createElement('span');
+      const overlay = document.createElement('div');
       overlay.className = BAZAAR_OVERLAY_CLASS +
         (profit > 0 ? ' ' + BAZAAR_OVERLAY_CLASS + '--profit'
                     : ' ' + BAZAAR_OVERLAY_CLASS + '--loss');
@@ -1512,9 +1616,10 @@
       ].join('');
       overlay.innerHTML = formatted;
 
-      // Append at the end of the row so it lands under the price in
-      // Torn's tile layout without needing to know the exact DOM shape.
-      row.appendChild(overlay);
+      // Append inside the single-item tile. With display:block in CSS
+      // the overlay sits on its own line below the item's existing
+      // name/price/stock rows without spilling into the next tile.
+      tile.appendChild(overlay);
     }
   }
 
