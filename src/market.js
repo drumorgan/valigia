@@ -78,8 +78,19 @@ async function fetchOneSellPrice(playerId, itemId) {
  *   { floorQty, listingCount } or null if unknown / no listings, and
  *   fetchedAt is the ms timestamp of the data source (cache row's
  *   updated_at, or Date.now() for a fresh Torn fetch).
+ * @param {object} [options]
+ * @param {number} [options.staleMs] - per-call override of the staleness
+ *   threshold. The 4h default is fine for Travel profit math, but the
+ *   Watchlist matcher needs a much tighter window so the surfaced prices
+ *   still reflect listings the user can actually buy right now.
+ * @param {number} [options.maxRefresh] - per-call cap on Torn API fetches.
+ *   The 30-call default protects the rate limit for the broad travel
+ *   sweep; callers with a smaller, user-curated list (like the
+ *   Watchlist) can raise it without risking saturation.
  */
-export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
+export async function fetchAllSellPrices(playerId, itemIds, onPrice, options = {}) {
+  const staleMs = Number.isFinite(options.staleMs) ? options.staleMs : STALE_MS;
+  const maxRefresh = Number.isFinite(options.maxRefresh) ? options.maxRefresh : MAX_REFRESH_PER_VISIT;
   const now = Date.now();
 
   // 1. Read all cached sell prices from Supabase (single query)
@@ -119,7 +130,7 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
       if (row.price == null && age >= NULL_STALE_MS) {
         // Null price — re-check sooner (listings may have appeared)
         nullPriceIds.push(itemId);
-      } else if (age >= STALE_MS) {
+      } else if (age >= staleMs) {
         staleIds.push({ itemId, price: row.price || 0 });
       }
     } else {
@@ -137,7 +148,7 @@ export async function fetchAllSellPrices(playerId, itemIds, onPrice) {
   const staleIdsByValue = staleIds.map(s => s.itemId);
 
   // 3. Priority: missing → null-priced (re-check) → stale-by-value. Up to cap per visit.
-  const toRefresh = [...missingIds, ...nullPriceIds, ...staleIdsByValue].slice(0, MAX_REFRESH_PER_VISIT);
+  const toRefresh = [...missingIds, ...nullPriceIds, ...staleIdsByValue].slice(0, maxRefresh);
   const freshPrices = [];
   let apiSuccessCount = 0;
   let apiFailCount = 0;

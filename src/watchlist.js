@@ -22,17 +22,16 @@ const WATCHLIST_FN_URL = `${supabaseUrl}/functions/v1/watchlist`;
 // Showing a 2-hour-old bazaar price as a "current match" would be a lie.
 const BAZAAR_MAX_AGE_MS = 10 * 60 * 1000;
 
-// Item Market rows older than this are considered stale. Mirrors the
-// STALE_MS threshold market.js uses before re-fetching from Torn. The
-// Item Market churns constantly — by the time a price is a few hours
-// old the listing at that price is almost certainly gone, so surfacing
-// it as a "current match" misleads the user (they click through and
-// the price they saw is nowhere on the listings page). Dashboard loads
-// now refresh sell_prices for every watchlisted item, so a match that
-// disappears here will re-appear within minutes if the price still
-// holds; otherwise it's been bought and the watchlist correctly
-// reflects that it's no longer actionable.
-const MARKET_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+// Item Market rows older than this are considered stale. Tighter than
+// market.js STALE_MS because the Watchlist surfaces "buy this right now"
+// deals — a price even an hour old is often wrong (the listing at that
+// price has been bought, the floor has jumped, and a user who clicks
+// through finds nothing at the advertised price). Dashboard loads
+// force-refresh every watchlisted item on a 10-minute staleness window,
+// so the typical age here is near zero; this 1-hour ceiling is the
+// safety net for the case where that refresh failed (rate-limit, Torn
+// outage, etc.) — we'd rather show no match than a stale one.
+const MARKET_MAX_AGE_MS = 60 * 60 * 1000;
 
 // `abroad_prices` alone is too sparse — it only has rows for destinations
 // users have PDA-scraped recently. The Travel tab shows a superset by

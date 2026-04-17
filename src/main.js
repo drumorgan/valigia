@@ -277,27 +277,44 @@ async function startDashboard(playerId) {
   ]).then(() => renderTable()).catch(() => {});
 
   // Fetch live sell prices for every abroad item AND every watchlisted
-  // item. Including watchlist items here is what keeps the Watchlist
-  // matches card truthful: without this, a Lucky-Quarter-style alert
-  // outside the abroad list only gets its sell_prices row refreshed when
-  // someone happens to scrape the Torn Item Market via the PDA userscript.
-  // The cache-aware fetcher skips any row that's already fresh, so the
-  // extra items rarely burn API calls.
+  // item. Two separate calls because their staleness budgets differ: the
+  // Travel table's profit math is fine with a 4-hour-old floor (abroad
+  // sell prices move slowly), but the Watchlist matches card has to be
+  // truthful against what the Item Market is showing *right now* — an
+  // hour-old $1.4M floor for Gold Noble Coin is worse than useless when
+  // the current floor has since jumped to $2.3M and the alert no longer
+  // fires. Watchlist items get a 10-minute staleness window, and the
+  // per-call cap is raised to match MAX_ALERTS_PER_PLAYER (50) so a user
+  // with a full watchlist still gets every alert verified on login.
   const abroadIds = getItemIdsForPriceFetch();
   const abroadIdSet = new Set(abroadIds);
   const watchlistAlerts = await watchlistAlertsPromise;
-  const watchlistOnlyIds = (watchlistAlerts || [])
+  const watchlistIds = (watchlistAlerts || [])
     .map((a) => Number(a.item_id))
-    .filter((id) => Number.isFinite(id) && !abroadIdSet.has(id));
-  const itemIds = [...abroadIds, ...watchlistOnlyIds];
-  if (itemIds.length > 0) {
-    // onSellPrice mutates the travel-table's price map and re-renders the
-    // table; skip it for watchlist-only items so we don't trigger a
-    // no-op render for each one as it resolves.
-    await fetchAllSellPrices(playerId, itemIds, (itemId, price, depth, fetchedAt) => {
-      if (abroadIdSet.has(itemId)) onSellPrice(itemId, price, depth, fetchedAt);
-    });
-  }
+    .filter((id) => Number.isFinite(id));
+  const watchlistIdSet = new Set(watchlistIds);
+  const abroadOnlyIds = abroadIds.filter((id) => !watchlistIdSet.has(id));
+  const WATCHLIST_STALE_MS = 10 * 60 * 1000;
+
+  // Run both fetches in parallel — they hit disjoint item sets and disjoint
+  // cache rows, so there's no contention. onSellPrice only fires for IDs
+  // present in the Travel table to avoid spurious re-renders for
+  // watchlist-only items.
+  await Promise.allSettled([
+    abroadOnlyIds.length > 0
+      ? fetchAllSellPrices(playerId, abroadOnlyIds, onSellPrice)
+      : Promise.resolve(),
+    watchlistIds.length > 0
+      ? fetchAllSellPrices(
+          playerId,
+          watchlistIds,
+          (itemId, price, depth, fetchedAt) => {
+            if (abroadIdSet.has(itemId)) onSellPrice(itemId, price, depth, fetchedAt);
+          },
+          { staleMs: WATCHLIST_STALE_MS, maxRefresh: 50 },
+        )
+      : Promise.resolve(),
+  ]);
 
   // Show bazaar deal scanner button + community stats
   const bazaarContainer = document.getElementById('bazaar-container');
