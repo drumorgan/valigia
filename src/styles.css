@@ -2634,14 +2634,16 @@ tr.row--negative td {
   border-color: var(--accent);
 }
 
-/* iPadOS Safari defaults placeholder text to a color that's nearly
-   invisible against --bg. Force a legible muted tone. */
+/* iPadOS Safari renders the default placeholder in a tone close to
+   var(--text), invisible against var(--bg). Force a legible muted color.
+   Use a literal hex (not a CSS variable) — older Safari versions don't
+   resolve var() inside ::placeholder and silently drop the rule. */
 .wl-input::placeholder {
-  color: var(--muted);
+  color: #8a8fa0;
   opacity: 1;
 }
 .wl-input::-webkit-input-placeholder {
-  color: var(--muted);
+  color: #8a8fa0;
   opacity: 1;
 }
 
