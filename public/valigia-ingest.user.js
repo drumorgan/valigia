@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.6
+// @version      0.6.7
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + paint current Item Market prices on every row so arbitrage is obvious at a glance.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -24,10 +24,11 @@
   // Outside PDA the placeholder stays literal, and the script aborts cleanly.
   const TORN_API_KEY = '###PDA-APIKEY###';
 
-  // Stamped on success toasts so you can tell at a glance which userscript
-  // version is loaded in PDA. Bumping this in the @version header above
-  // means bumping it here too.
-  const SCRIPT_VERSION = '0.6.6';
+  // Mirror of the @version header above. Not shown in toasts (they should
+  // stay short), but kept here so anything needing the version at runtime
+  // — future diagnostic panels, log() traces, edge-function telemetry —
+  // has a single source to read from. Bump alongside @version.
+  const SCRIPT_VERSION = '0.6.7';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -810,12 +811,10 @@
 
     const result = await postIngestRows(INGEST_SELL_URL, upsertRows);
     if (result.ok) {
-      toast('Item Market: ' + result.count + ' prices collected \u00B7 thanks! (v' + SCRIPT_VERSION + ')', 'success');
+      toast('Item Market: ' + result.count + ' prices', 'success');
       pingActivity('item_market');
     } else {
-      // Include the attempted row count so a stray "failed" toast can be
-      // correlated with the scrape that triggered it.
-      toast('market upsert failed (' + upsertRows.length + ' rows) - ' + (result.error || 'unknown'), 'error');
+      toast('Market upsert failed (' + upsertRows.length + ')', 'error');
     }
   }
 
@@ -935,10 +934,10 @@
 
     const result = await postIngestRows(INGEST_BAZAAR_URL, rows);
     if (result.ok) {
-      toast('Bazaar: ' + result.count + ' prices collected \u00B7 thanks! (v' + SCRIPT_VERSION + ')', 'success');
+      toast('Bazaar: ' + result.count + ' prices', 'success');
       pingActivity('bazaar');
     } else {
-      toast('bazaar upsert failed - ' + (result.error || 'unknown'), 'error');
+      toast('Bazaar upsert failed', 'error');
     }
   }
 
@@ -1721,13 +1720,12 @@
         const status = result.status;
         const body = result.body;
         if (status >= 200 && status < 300 && body && body.ok) {
-          toast(destination + ': ' + body.stored + ' prices collected \u00B7 thanks! (v' + SCRIPT_VERSION + ')', 'success');
+          toast(destination + ': ' + body.stored + ' prices', 'success');
         } else {
-          const msg = (body && body.error) || ('HTTP ' + status);
-          toast('ingest failed - ' + msg, 'error');
+          toast('Ingest failed', 'error');
         }
-      } catch (err) {
-        toast('network error - ' + (err && err.message || err), 'error');
+      } catch (_err) {
+        toast('Network error', 'error');
       }
     })();
 
