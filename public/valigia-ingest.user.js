@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.4.0
+// @version      0.4.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices straight into the community cache, (3) any bazaar — push fresh bazaar listings + owner so the bazaar scanner learns new sources for free.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -780,11 +780,6 @@
       return;
     }
 
-    // Capture the first row's name + floor for the toast BEFORE stripping
-    // _name (which isn't a real sell_prices column).
-    const first = rows[0];
-    const firstName = first._name || ('#' + first.item_id);
-    const firstPrice = '$' + Math.round(first.price).toLocaleString('en-US');
     const upsertRows = rows.map(function (r) {
       const { _name, ...rest } = r;
       return rest;
@@ -792,8 +787,7 @@
 
     const result = await supabaseUpsert(SELL_PRICES_URL, upsertRows);
     if (result.ok) {
-      toast('market: refreshed ' + result.count +
-            ' \u00B7 ' + firstName + ' ' + firstPrice, 'success');
+      toast('Item Market: ' + result.count + ' prices collected \u00B7 thanks!', 'success');
       pingActivity('item_market');
     } else {
       toast('market upsert failed - ' + (result.error || 'unknown'), 'error');
@@ -907,7 +901,7 @@
 
     const result = await supabaseUpsert(BAZAAR_PRICES_URL, rows);
     if (result.ok) {
-      toast('bazaar ' + ownerId + ': logged ' + result.count + ' items', 'success');
+      toast('Bazaar: ' + result.count + ' prices collected \u00B7 thanks!', 'success');
       pingActivity('bazaar');
     } else {
       toast('bazaar upsert failed - ' + (result.error || 'unknown'), 'error');
@@ -977,7 +971,7 @@
         const status = result.status;
         const body = result.body;
         if (status >= 200 && status < 300 && body && body.ok) {
-          toast(destination + ': stored ' + body.stored + ' items', 'success');
+          toast(destination + ': ' + body.stored + ' prices collected \u00B7 thanks!', 'success');
         } else {
           const msg = (body && body.error) || ('HTTP ' + status);
           toast('ingest failed - ' + msg, 'error');
