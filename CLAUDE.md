@@ -372,10 +372,18 @@ no matches. Abroad venue is skipped in the userscript banner (a per-page
 YATA fetch would add latency for a surface where the user is focused on
 Market/Bazaar anyway); the web app remains the matching surface for
 abroad. The banner resolves `player_id` via one Torn `user/?selections=basic`
-call, cached in `localStorage` keyed by a hash of the API key so it survives
-key rotation. All three runners use a single shared `rowContainer()`
-heuristic that tolerates Torn's migration from `<table>` to div-based
-layouts.
+call (routed through `GM_xmlhttpRequest` so PDA's webview CORS doesn't
+block it), cached in `localStorage` keyed by a hash of the API key so
+it survives key rotation.
+
+The bazaar runner additionally paints a **per-row Item Market overlay**
+next to each listing: gross market price, net sell (after the 5% market
+fee), and the resulting flip-profit margin. Profitable rows get a green
+left-border accent; loss rows are dimmed. Readers can spot a
+mispriced bazaar item at a glance without opening another tab.
+
+All three runners use a single shared `rowContainer()` heuristic that
+tolerates Torn's migration from `<table>` to div-based layouts.
 
 ### Why direct anon upserts for sell / bazaar, but an edge function for travel?
 
