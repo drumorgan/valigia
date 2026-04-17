@@ -376,11 +376,16 @@ call (routed through `GM_xmlhttpRequest` so PDA's webview CORS doesn't
 block it), cached in `localStorage` keyed by a hash of the API key so
 it survives key rotation.
 
-The bazaar runner additionally paints a **per-row Item Market overlay**
-next to each listing: gross market price, net sell (after the 5% market
-fee), and the resulting flip-profit margin. Profitable rows get a green
-left-border accent; loss rows are dimmed. Readers can spot a
-mispriced bazaar item at a glance without opening another tab.
+The bazaar runner additionally injects a **Bazaar Deals bar** at the
+top of the page (same visual language as the Watchlist Matches bar).
+For every scraped listing whose bazaar price is below the current Item
+Market net-sell (market × 0.95 to account for the 5% sale fee), the
+bar lists the item name, bazaar price, market net-sell, and profit
+delta, sorted by margin. Every row deep-links to the Item Market
+search for that item so a flip is one tap away. Hidden entirely when
+there are zero flippable listings. Earlier versions (0.6.2–0.6.9)
+tried a per-row overlay inside each tile but Torn's bazaar DOM varied
+too much across layouts — the single top bar is the stable replacement.
 
 All three runners use a single shared `rowContainer()` heuristic that
 tolerates Torn's migration from `<table>` to div-based layouts.

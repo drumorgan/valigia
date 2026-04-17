@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.9
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + paint current Item Market prices on every row so arbitrage is obvious at a glance.
+// @version      0.7.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.6.9';
+  const SCRIPT_VERSION = '0.7.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -927,10 +927,10 @@
       };
     });
 
-    // Paint per-row Item Market prices + arbitrage margins in parallel
-    // with the upsert. Fire-and-forget: overlay is best-effort, never
-    // blocks the ingest path.
-    paintBazaarMarketOverlay(items).catch(function (e) { log('overlay error', e); });
+    // Surface any flippable listings in a top-of-page bar (mirrors the
+    // Watchlist Matches bar's UX). Fire-and-forget: any failure is
+    // silent so the primary ingest path is never blocked.
+    injectBazaarDealsBar(items).catch(function (e) { log('deals bar error', e); });
 
     const result = await postIngestRows(INGEST_BAZAAR_URL, rows);
     if (result.ok) {
@@ -1499,144 +1499,209 @@
     host.insertBefore(bar, host.firstChild);
   }
 
-  // -- Bazaar → Item Market arbitrage overlay ------------------------------
-  // Paints each bazaar row with the current Item Market price, the net
-  // sell price (minus Torn's 5% market fee), and the profit margin if
-  // you bought this listing and flipped it on the market. Makes it
-  // obvious when a bazaar item is underpriced vs. the broader market.
+  // -- Bazaar Deals bar ----------------------------------------------------
+  // A top-of-page collapsed bar (visual twin of the Watchlist Matches
+  // bar) that surfaces every bazaar listing priced below its Item
+  // Market floor. We used to inject a per-row overlay into each tile,
+  // but Torn's bazaar DOM varies so much across layouts that the
+  // overlay ended up truncated, squeezed between flex items, or
+  // stacked into the wrong row. A single bar at the top sidesteps all
+  // of that — one known-good injection point, one clean list.
   //
-  // Shared `sell_prices` read — same trust surface the watchlist banner
-  // uses, no extra auth needed.
+  // Hidden entirely when there are zero profitable listings. Every
+  // row is a deep-link into the Item Market for that item so the
+  // player can list their flip in one tap.
 
-  const BAZAAR_OVERLAY_CLASS = 'valigia-bazaar-overlay';
-  const BAZAAR_OVERLAY_STYLE_ID = 'valigia-bazaar-overlay-styles';
-  // Item market charges a 5% fee on sales. A flipping opportunity is
-  // only real if net-sell > bazaar buy.
+  const BAZAAR_DEALS_BAR_ID = 'valigia-bazaar-deals-bar';
+  // Torn takes a 5% fee on item market sales — a flip is only real
+  // when net-sell (market * 0.95) exceeds the bazaar buy price.
   const MARKET_FEE_RATE = 0.05;
 
-  function injectBazaarOverlayStyles() {
-    if (document.getElementById(BAZAAR_OVERLAY_STYLE_ID)) return;
+  function injectBazaarDealsStyles() {
+    if (document.getElementById('valigia-bazaar-deals-styles')) return;
     const css = [
-      '.' + BAZAAR_OVERLAY_CLASS + ' {',
+      '#' + BAZAAR_DEALS_BAR_ID + ' {',
       '  all: initial;',
       '  display: block;',
-      '  box-sizing: border-box;',
-      '  width: 100%;',
-      // If the overlay ends up inside a flex-row parent anyway (e.g. a
-      // Torn layout variant we didn\'t anticipate), these force it to
-      // take the full row and wrap below instead of being squeezed as a
-      // third flex item.
-      '  flex: 0 0 100%;',
-      '  order: 99;',
-      '  margin: 4px 0 0;',
-      '  padding: 3px 6px;',
-      '  font: 11px/1.35 ui-monospace, Menlo, Consolas, monospace;',
+      '  margin: 8px auto 12px;',
+      '  max-width: 1100px;',
+      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
       '  color: #c8cdd8;',
-      '  background: rgba(22,26,34,0.92);',
+      '  background: #161a22;',
+      '  border: 1px solid #252a35;',
+      '  border-left: 3px solid #4ae8a0;',
+      '  border-radius: 4px;',
+      '  box-sizing: border-box;',
+      '  overflow: hidden;',
+      '}',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-head {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '  padding: 8px 12px;',
+      '  cursor: pointer;',
+      '  user-select: none;',
+      '}',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-title {',
+      '  color: #4ae8a0;',
+      '  font-weight: 700;',
+      '  font-size: 12px;',
+      '  letter-spacing: 0.12em;',
+      '  text-transform: uppercase;',
+      '}',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-count {',
+      '  background: #4ae8a0;',
+      '  color: #0d0f14;',
+      '  font-weight: 700;',
+      '  font-size: 11px;',
+      '  padding: 1px 7px;',
+      '  border-radius: 999px;',
+      '}',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-caret {',
+      '  margin-left: auto;',
+      '  color: #4ae8a0;',
+      '  font-size: 11px;',
+      '  transition: transform 150ms;',
+      '}',
+      '#' + BAZAAR_DEALS_BAR_ID + '.vgl-bd-open .vgl-bd-caret {',
+      '  transform: rotate(180deg);',
+      '}',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-body {',
+      '  display: none;',
+      '  padding: 4px 10px 10px;',
+      '  gap: 4px;',
+      '  flex-direction: column;',
+      '}',
+      '#' + BAZAAR_DEALS_BAR_ID + '.vgl-bd-open .vgl-bd-body {',
+      '  display: flex;',
+      '}',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-row {',
+      '  display: grid;',
+      '  grid-template-columns: minmax(0,1.6fr) auto auto auto auto;',
+      '  align-items: center;',
+      '  gap: 10px;',
+      '  padding: 6px 8px;',
       '  border: 1px solid #252a35;',
       '  border-radius: 3px;',
-      // Allow wrap so long tile values like "$12.4M" + "$11.8M" + delta
-      // can break onto a second line instead of being clipped by the
-      // tile width. Words are short (formatMoneyCompact); rare wraps
-      // give us a 2-line overlay rather than truncated info.
-      '  white-space: normal;',
-      '  overflow-wrap: anywhere;',
-      '  position: relative;',
-      '  z-index: 5;',
+      '  background: rgba(74,232,160,0.04);',
+      '  color: #c8cdd8;',
       '  text-decoration: none;',
-      '  cursor: pointer;',
+      '  font-size: 12px;',
       '}',
-      // Profit row: green left-border AND a faint green background tint
-      // so the eye picks it out from a sea of losses without reading
-      // the +/- sign.
-      '.' + BAZAAR_OVERLAY_CLASS + '--profit {',
-      '  border-left: 3px solid #4ae8a0;',
-      '  background: rgba(74,232,160,0.10);',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-row:active {',
+      '  background: rgba(74,232,160,0.12);',
       '}',
-      // Loss row: red left-border AND a faint red background tint.
-      // Previously a gray dimmed look made losses easy to miss when
-      // every visible item happened to be a loss.
-      '.' + BAZAAR_OVERLAY_CLASS + '--loss {',
-      '  border-left: 3px solid #e8824a;',
-      '  background: rgba(232,130,74,0.08);',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-item { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-baz { color: #c8cdd8; white-space: nowrap; }',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-arrow { color: #8a8fa0; }',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-mkt { color: #e8c84a; font-weight: 700; white-space: nowrap; }',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-gain { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
+      // Narrow viewports: stack so nothing clips.
+      '@media (max-width: 560px) {',
+      '  #' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-row {',
+      '    grid-template-columns: 1fr auto;',
+      '    row-gap: 2px;',
+      '  }',
+      '  #' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-item { grid-column: 1 / -1; }',
       '}',
-      '.' + BAZAAR_OVERLAY_CLASS + ':hover {',
-      '  filter: brightness(1.15);',
-      '}',
-      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-label { color: #8a8fa0; }',
-      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-mkt { color: #e8c84a; font-weight: 700; }',
-      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-net { color: #c8cdd8; }',
-      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-gain { color: #4ae8a0; font-weight: 700; margin-left: 4px; }',
-      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-miss { color: #e8824a; font-weight: 700; margin-left: 4px; }',
     ].join('\n');
     const el = document.createElement('style');
-    el.id = BAZAAR_OVERLAY_STYLE_ID;
+    el.id = 'valigia-bazaar-deals-styles';
     el.textContent = css;
     document.head.appendChild(el);
   }
 
-  /**
-   * Given the list of bazaar rows we already scraped (with item_id +
-   * price), fetch their current Item Market sell prices and inject an
-   * overlay badge next to each listing. Silent no-op on any failure —
-   * the underlying scrape + upsert flow continues regardless.
-   */
-  /**
-   * Find the smallest ancestor of `img` that contains just this one item
-   * (not the whole 3-up bazaar row). Walks up until the parent starts
-   * including other item images — the last single-item ancestor is the
-   * tile we want. The generic scraper uses the broader rowContainer(),
-   * which is the right shape for price extraction but wrong for our
-   * overlay (an appended child would spill into the next row visually).
-   */
-  function itemTileFor(img) {
-    let el = img.parentElement;
-    while (el && el.parentElement) {
-      const parent = el.parentElement;
-      const parentImgs = parent.querySelectorAll('img[src*="/images/items/"]');
-      if (parentImgs.length > 1) return el; // parent has siblings = row
-      el = parent;
+  function buildBazaarDealsBar(deals) {
+    const bar = document.createElement('div');
+    bar.id = BAZAAR_DEALS_BAR_ID;
+
+    const head = document.createElement('div');
+    head.className = 'vgl-bd-head';
+    const title = document.createElement('span');
+    title.className = 'vgl-bd-title';
+    title.textContent = 'Bazaar Deals';
+    const count = document.createElement('span');
+    count.className = 'vgl-bd-count';
+    count.textContent = String(deals.length);
+    const caret = document.createElement('span');
+    caret.className = 'vgl-bd-caret';
+    caret.textContent = '\u25BE';
+    head.appendChild(title);
+    head.appendChild(count);
+    head.appendChild(caret);
+
+    const body = document.createElement('div');
+    body.className = 'vgl-bd-body';
+    for (const d of deals) {
+      const row = document.createElement('a');
+      row.className = 'vgl-bd-row';
+      row.href = 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + d.item_id;
+      row.target = '_top';
+      row.rel = 'noopener';
+
+      const name = document.createElement('span');
+      name.className = 'vgl-bd-item';
+      name.textContent = d.name;
+
+      const baz = document.createElement('span');
+      baz.className = 'vgl-bd-baz';
+      baz.textContent = formatMoneyCompact(d.bazaarPrice);
+
+      const arrow = document.createElement('span');
+      arrow.className = 'vgl-bd-arrow';
+      arrow.textContent = '\u2192';
+
+      const mkt = document.createElement('span');
+      mkt.className = 'vgl-bd-mkt';
+      mkt.textContent = formatMoneyCompact(d.netSell);
+
+      const gain = document.createElement('span');
+      gain.className = 'vgl-bd-gain';
+      gain.textContent = '+' + formatMoneyCompact(d.profit) +
+        ' (' + (d.profitPct >= 100 ? Math.round(d.profitPct) : d.profitPct.toFixed(d.profitPct >= 10 ? 0 : 1)) + '%)';
+
+      row.appendChild(name);
+      row.appendChild(baz);
+      row.appendChild(arrow);
+      row.appendChild(mkt);
+      row.appendChild(gain);
+      body.appendChild(row);
     }
-    return img.parentElement;
+
+    head.addEventListener('click', function () {
+      bar.classList.toggle('vgl-bd-open');
+    });
+
+    bar.appendChild(head);
+    bar.appendChild(body);
+    return bar;
   }
 
   /**
-   * Within a single-item tile, find the element whose own (direct) text
-   * contains the `$XXX,XXX` price. Torn's bazaar tiles lay the image-column
-   * and the text-column side by side as flex row items; appending our
-   * overlay directly to the tile drops it as a third flex sibling and
-   * squeezes it into a narrow vertical strip. Anchoring the overlay to the
-   * price element's parent instead lands it inside the text-column, where
-   * children stack vertically and our block-level overlay reads cleanly.
-   *
-   * Matches on DIRECT text children only (not descendants) so a price
-   * element that also contains sibling spans for the `↑2%` / `↓2%` change
-   * indicator still gets picked up — the direct text is still "$XXX,XXX",
-   * even though the element isn't a leaf.
+   * Top-level entry. Reads sell_prices for the scraped bazaar items,
+   * filters for flippable ones (bazaar < net-sell), and injects the
+   * bar at the top of the page. Silent no-op on zero flips or any
+   * failure along the way so the ingest path is never blocked.
    */
-  function findPriceAnchor(tile) {
-    const walker = document.createTreeWalker(tile, NodeFilter.SHOW_ELEMENT);
-    let node;
-    while ((node = walker.nextNode())) {
-      let directText = '';
-      for (const child of node.childNodes) {
-        if (child.nodeType === 3) directText += child.nodeValue || '';
-      }
-      if (/\$\s*\d[\d,.]*/.test(directText)) return node;
-    }
-    return null;
-  }
+  async function injectBazaarDealsBar(scrapedItems) {
+    // Remove any prior instance so SPA nav doesn't stack duplicates.
+    const existing = document.getElementById(BAZAAR_DEALS_BAR_ID);
+    if (existing) existing.remove();
 
-  async function paintBazaarMarketOverlay(scrapedItems) {
     if (!Array.isArray(scrapedItems) || scrapedItems.length === 0) return;
     const ids = [...new Set(scrapedItems.map(function (r) { return r.item_id; }))];
     if (ids.length === 0) return;
 
-    const sellRows = await fetchJSON(
-      SELL_PRICES_URL +
-      '?item_id=in.(' + ids.join(',') + ')' +
-      '&select=item_id,price,updated_at'
-    );
+    // Warm the items catalog in parallel with the sell-prices read so
+    // the bar has real names for every row.
+    const [sellRows] = await Promise.all([
+      fetchJSON(
+        SELL_PRICES_URL +
+        '?item_id=in.(' + ids.join(',') + ')' +
+        '&select=item_id,price'
+      ),
+      ensureItemCatalog(),
+    ]);
     if (!Array.isArray(sellRows) || sellRows.length === 0) return;
 
     const marketByItem = new Map();
@@ -1644,72 +1709,38 @@
       if (r.price != null) marketByItem.set(Number(r.item_id), Number(r.price));
     }
 
-    injectBazaarOverlayStyles();
-
-    const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
-    const seenTiles = new Set();
-    const scrapedByItem = new Map();
-    for (const it of scrapedItems) scrapedByItem.set(Number(it.item_id), it);
-
-    for (const img of imgs) {
-      const src = img.getAttribute('src') || '';
-      const idMatch = src.match(/\/images\/items\/(\d+)\//);
-      if (!idMatch) continue;
-      const itemId = Number(idMatch[1]);
-      const tile = itemTileFor(img);
-      if (!tile || seenTiles.has(tile)) continue;
-      seenTiles.add(tile);
-
-      // Skip if we already painted this tile on an earlier dispatch.
-      if (tile.querySelector('.' + BAZAAR_OVERLAY_CLASS)) continue;
-
-      const bazaarEntry = scrapedByItem.get(itemId);
-      const marketPrice = marketByItem.get(itemId);
-      if (!bazaarEntry || !Number.isFinite(marketPrice)) continue;
-
-      const bazaarPrice = Number(bazaarEntry.price);
+    const deals = [];
+    for (const it of scrapedItems) {
+      const marketPrice = marketByItem.get(Number(it.item_id));
+      if (!Number.isFinite(marketPrice)) continue;
+      const bazaarPrice = Number(it.price);
+      if (!Number.isFinite(bazaarPrice) || bazaarPrice <= 0) continue;
       const netSell = marketPrice * (1 - MARKET_FEE_RATE);
       const profit = netSell - bazaarPrice;
-      const profitPct = bazaarPrice > 0 ? (profit / bazaarPrice) * 100 : 0;
-
-      // Anchor as <a> so a tap on the overlay opens the Item Market for
-      // this exact item — flipping the listing is one tap away. target
-      // _top so the link replaces the whole webview (PDA's iframe shape).
-      const overlay = document.createElement('a');
-      overlay.href = 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + itemId;
-      overlay.target = '_top';
-      overlay.rel = 'noopener';
-      overlay.className = BAZAAR_OVERLAY_CLASS +
-        (profit > 0 ? ' ' + BAZAAR_OVERLAY_CLASS + '--profit'
-                    : ' ' + BAZAAR_OVERLAY_CLASS + '--loss');
-
-      const profitClass = profit > 0 ? 'vgl-bz-gain' : 'vgl-bz-miss';
-      const profitSign = profit > 0 ? '+' : '';
-      const pctStr = profitPct >= 100
-        ? Math.round(profitPct)
-        : profitPct.toFixed(profitPct >= 10 || profitPct <= -10 ? 0 : 1);
-
-      const formatted = [
-        '<span class="vgl-bz-label">Mkt </span>',
-        '<span class="vgl-bz-mkt">' + formatMoneyCompact(marketPrice) + '</span>',
-        '<span class="vgl-bz-label"> \u00B7 net </span>',
-        '<span class="vgl-bz-net">' + formatMoneyCompact(netSell) + '</span>',
-        '<span class="' + profitClass + '"> ' + profitSign + formatMoneyCompact(profit) +
-          ' (' + profitSign + pctStr + '%)</span>',
-      ].join('');
-      overlay.innerHTML = formatted;
-
-      // Anchor the overlay next to the price text so it lives in the
-      // tile's text-column (flex-column layout, children stack nicely).
-      // Fallback to appending to the tile if the price-search misses
-      // — the CSS belt-and-braces forces full-width either way.
-      const priceAnchor = findPriceAnchor(tile);
-      if (priceAnchor && priceAnchor.parentElement) {
-        priceAnchor.parentElement.appendChild(overlay);
-      } else {
-        tile.appendChild(overlay);
-      }
+      if (profit <= 0) continue; // only flippable rows
+      deals.push({
+        item_id: Number(it.item_id),
+        name: itemNameFor(it.item_id),
+        bazaarPrice: bazaarPrice,
+        netSell: netSell,
+        profit: profit,
+        profitPct: (profit / bazaarPrice) * 100,
+      });
     }
+    if (deals.length === 0) return;
+
+    // Best margins first — most actionable deal at the top of the list.
+    deals.sort(function (a, b) { return b.profitPct - a.profitPct; });
+
+    injectBazaarDealsStyles();
+    const bar = buildBazaarDealsBar(deals);
+
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(bar, host.firstChild);
   }
 
   // -- Main ----------------------------------------------------------------
