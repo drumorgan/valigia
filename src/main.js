@@ -11,6 +11,9 @@ import { prescanBazaarPool, findBestBazaarRun } from './bazaar-scanner.js';
 import { recordSnapshots, loadForecastData } from './stock-forecast.js';
 import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
+  renderMatchesCard, renderWatchlistTab, invalidateWatchlistCache,
+} from './watchlist-ui.js';
+import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
   setBestBazaarRun, getStaleItemIdsForCategory
@@ -23,11 +26,23 @@ const CATEGORY_REFRESH_AGE_MS = 5 * 60 * 1000;
 
 const screenContainer = document.getElementById('screen-container');
 const headerEl = document.getElementById('app-header');
+const tabNav = document.getElementById('tab-nav');
 
 // When knownItems was last sourced from YATA. A live fetch sets this to
 // Date.now(); a cached fetch preserves YATA's original timestamp so we
 // re-attempt the live call as soon as the user engages a category filter.
 let yataFetchedAt = 0;
+
+// Tab state. The Travel tab is the full dashboard (controls + table +
+// best-run + bazaar). Switching tabs hides the Travel DOM and renders the
+// Watchlist DOM in its place — we don't rebuild Travel from scratch,
+// because re-fetching YATA + running a pre-scan on every tab switch would
+// be wasteful and the user would lose their scroll/sort state.
+let currentTab = 'travel';
+const TAB_CONTAINER_IDS = {
+  travel: 'tab-travel-host',
+  watchlist: 'tab-watchlist-host',
+};
 
 // ── Boot ───────────────────────────────────────────────────────
 async function boot() {
@@ -123,6 +138,8 @@ async function loadPdaScoutCount() {
 // ── Login Screen ───────────────────────────────────────────────
 function showLoginScreen() {
   clearPlayerHeader();
+  hideTabNav();
+  invalidateWatchlistCache();
   renderLoginScreen(screenContainer, (result) => {
     showPlayerHeader(result.name, result.level);
     showToast(`Welcome, ${result.name}!`, 'success');
@@ -168,11 +185,16 @@ async function detectPlayerTravel(playerId) {
 
 // ── Dashboard ──────────────────────────────────────────────────
 async function startDashboard(playerId) {
+  showTabNav();
   screenContainer.innerHTML = `
-    <div id="controls-bar"></div>
-    <div id="best-run-container"></div>
-    <div id="table-container"></div>
-    <div id="bazaar-container"></div>
+    <div id="${TAB_CONTAINER_IDS.travel}" class="tab-host tab-host--active">
+      <div id="watchlist-matches-card"></div>
+      <div id="controls-bar"></div>
+      <div id="best-run-container"></div>
+      <div id="table-container"></div>
+      <div id="bazaar-container"></div>
+    </div>
+    <div id="${TAB_CONTAINER_IDS.watchlist}" class="tab-host" hidden></div>
   `;
 
   const controlsBar = document.getElementById('controls-bar');
@@ -252,6 +274,37 @@ async function startDashboard(playerId) {
   prescanBazaarPool(playerId).then(() => findBestBazaarRun(playerId)).then(deal => {
     if (deal) setBestBazaarRun(deal);
   });
+
+  // Watchlist matches card + tab badge. The card lives above the controls,
+  // so it's the first thing a user with active alerts sees on login. The
+  // tab badge reflects the same count so unvisited matches are obvious.
+  // Fire-and-forget: both surfaces hide themselves if anything fails.
+  refreshWatchlistSurfaces();
+}
+
+// ── Watchlist matches surfacing ───────────────────────────────
+async function refreshWatchlistSurfaces() {
+  const card = document.getElementById('watchlist-matches-card');
+  const badge = document.getElementById('tab-watchlist-badge');
+  if (!card) return;
+  try {
+    await renderMatchesCard(card);
+    // Derive the tab badge from the card's rendered content — we keep a
+    // single source of truth (watchlist-ui.js owns cache) rather than
+    // re-querying here.
+    const matchCountEl = card.querySelector('.wl-card-badge');
+    if (badge) {
+      const count = matchCountEl ? matchCountEl.textContent.trim() : '';
+      if (count && count !== '0') {
+        badge.textContent = count;
+        badge.hidden = false;
+      } else {
+        badge.hidden = true;
+      }
+    }
+  } catch {
+    // Silent — the card's own error path hides itself.
+  }
 }
 
 // ── Category filter refresh ───────────────────────────────────
@@ -312,6 +365,57 @@ function renderYataOfflineBanner(tableContainer, cachedAt) {
     </span>
   `;
   tableContainer.parentNode.insertBefore(banner, tableContainer);
+}
+
+// ── Tab switching ─────────────────────────────────────────────
+function showTabNav() {
+  if (tabNav) tabNav.hidden = false;
+}
+function hideTabNav() {
+  if (tabNav) tabNav.hidden = true;
+  currentTab = 'travel';
+}
+
+async function switchTab(nextTab) {
+  if (nextTab === currentTab) return;
+  currentTab = nextTab;
+
+  // Update nav-button styling
+  if (tabNav) {
+    tabNav.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.classList.toggle('tab-btn--active', btn.dataset.tab === nextTab);
+    });
+  }
+
+  const travelHost = document.getElementById(TAB_CONTAINER_IDS.travel);
+  const watchlistHost = document.getElementById(TAB_CONTAINER_IDS.watchlist);
+  if (!travelHost || !watchlistHost) return;
+
+  if (nextTab === 'travel') {
+    travelHost.hidden = false;
+    travelHost.classList.add('tab-host--active');
+    watchlistHost.hidden = true;
+    watchlistHost.classList.remove('tab-host--active');
+    // The underlying sell/bazaar/abroad tables may have changed while the
+    // user was on the Watchlist tab — re-render matches so the card stays
+    // truthful.
+    invalidateWatchlistCache();
+    refreshWatchlistSurfaces();
+  } else if (nextTab === 'watchlist') {
+    travelHost.hidden = true;
+    travelHost.classList.remove('tab-host--active');
+    watchlistHost.hidden = false;
+    watchlistHost.classList.add('tab-host--active');
+    await renderWatchlistTab(watchlistHost);
+  }
+}
+
+if (tabNav) {
+  tabNav.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn || !btn.dataset.tab) return;
+    switchTab(btn.dataset.tab);
+  });
 }
 
 // ── Header ─────────────────────────────────────────────────────
