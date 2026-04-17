@@ -29,6 +29,7 @@ interface BazaarRow {
   price: number | null;
   quantity: number | null;
   miss_count: number;
+  checked_at: string | null;
 }
 
 // ── Auth: dual-path observer resolution ─────────────────────────
@@ -141,7 +142,26 @@ function normalizeRow(raw: unknown): BazaarRow | { skip: string } {
     return { skip: `invalid miss_count for ${item_id}@${bazaar_owner_id}: ${r.miss_count}` };
   }
 
-  return { item_id, bazaar_owner_id, price, quantity, miss_count };
+  // Optional client-provided checked_at. The scanner's Phase-2 discovery
+  // seeds new bazaars with epoch (1970) so they sort to the top of the
+  // least-recently-checked rotation and get checked next scan. Without
+  // accepting this, server-side now() would stamp them "fresh" and they'd
+  // never be prioritized. Allow any valid ISO timestamp; abuse potential
+  // is bounded (past = earlier re-check, future = forever "fresh" but
+  // still subject to miss_count pruning).
+  let checked_at: string | null = null;
+  if (r.checked_at != null) {
+    if (typeof r.checked_at !== 'string') {
+      return { skip: `invalid checked_at for ${item_id}@${bazaar_owner_id}: ${r.checked_at}` };
+    }
+    const parsed = Date.parse(r.checked_at);
+    if (!Number.isFinite(parsed)) {
+      return { skip: `unparseable checked_at for ${item_id}@${bazaar_owner_id}: ${r.checked_at}` };
+    }
+    checked_at = new Date(parsed).toISOString();
+  }
+
+  return { item_id, bazaar_owner_id, price, quantity, miss_count, checked_at };
 }
 
 // ── Handler ─────────────────────────────────────────────────────
@@ -192,7 +212,7 @@ serve(async (req) => {
       observer_player_id: number;
     }> = [];
     const skipped: string[] = [];
-    const checked_at = new Date().toISOString();
+    const serverNow = new Date().toISOString();
 
     for (const raw of body.rows as unknown[]) {
       const norm = normalizeRow(raw);
@@ -206,7 +226,7 @@ serve(async (req) => {
         price: norm.price,
         quantity: norm.quantity,
         miss_count: norm.miss_count,
-        checked_at,
+        checked_at: norm.checked_at ?? serverNow,
         observer_player_id: auth.player_id,
       });
     }

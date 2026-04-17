@@ -23,6 +23,7 @@
 
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
+import { ingestSellPrices, ingestBazaarPrices } from './ingest.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
 
 const DISCOVER_BUDGET = 8;    // API calls for discovering new bazaar sources
@@ -227,10 +228,18 @@ async function discoverBazaars(items, pool, marketPrices, playerId, onProgress) 
     }
   }
   if (seedRows.length > 0) {
+    // Seed newly-discovered pairs with epoch checked_at so they sort to the
+    // top of the staleness rotation and get checked next scan. Via ingest
+    // edge function (Layer 2 — observer-attributed). Non-fatal on error.
     try {
-      await supabase
-        .from('bazaar_prices')
-        .upsert(seedRows, { onConflict: 'item_id,bazaar_owner_id', ignoreDuplicates: true });
+      await ingestBazaarPrices(seedRows.map(r => ({
+        item_id: r.item_id,
+        bazaar_owner_id: r.bazaar_owner_id,
+        price: null,
+        quantity: null,
+        miss_count: 0,
+        checked_at: r.checked_at,
+      })));
     } catch { /* non-fatal */ }
   }
 
@@ -378,18 +387,17 @@ async function writeBazaarPool(results) {
 
   try {
     // Upsert hits: fresh price + quantity, reset miss_count to 0.
+    // Writes go through the ingest-bazaar-prices edge function (Layer 2 —
+    // observer-attributed). checked_at is stamped server-side.
     if (hits > 0) {
       const rows = results.map(r => ({
         item_id: r.item_id,
         bazaar_owner_id: r.bazaar_owner_id,
         price: r.price,
         quantity: r.quantity,
-        checked_at: now,
         miss_count: 0,
       }));
-      await supabase
-        .from('bazaar_prices')
-        .upsert(rows, { onConflict: 'item_id,bazaar_owner_id' });
+      await ingestBazaarPrices(rows);
     }
 
     // Increment miss_count for expected-but-missing pairs (still under threshold).
@@ -401,12 +409,9 @@ async function writeBazaarPool(results) {
         bazaar_owner_id: p.bazaar_owner_id,
         price: null,
         quantity: null,
-        checked_at: now,
         miss_count: p.miss_count + 1,
       }));
-      await supabase
-        .from('bazaar_prices')
-        .upsert(rows, { onConflict: 'item_id,bazaar_owner_id' });
+      await ingestBazaarPrices(rows);
     }
 
     // Prune pairs that have now missed MAX_MISS_COUNT times in a row.
@@ -635,12 +640,10 @@ export async function scanBazaarDeals(playerId, onProgress) {
     verifiedItems.set(candidate.itemId, freshPrice);
 
     if (freshPrice != null) {
-      // Update Supabase cache so main table benefits too
+      // Update Supabase cache so main table benefits too — via ingest
+      // edge function (Layer 2 — observer-attributed). Non-fatal on error.
       try {
-        await supabase.from('sell_prices').upsert(
-          { item_id: candidate.itemId, price: freshPrice, updated_at: new Date().toISOString() },
-          { onConflict: 'item_id' }
-        );
+        await ingestSellPrices([{ item_id: candidate.itemId, price: freshPrice }]);
       } catch { /* non-fatal */ }
 
       // Recalculate deal with verified price
@@ -882,12 +885,10 @@ export async function findBestBazaarRun(playerId) {
         : null;
       if (!freshPrice) continue;
 
-      // Write fresh price back — benefits the travel table too.
+      // Write fresh price back — benefits the travel table too. Via ingest
+      // edge function (Layer 2 — observer-attributed). Non-fatal on error.
       try {
-        await supabase.from('sell_prices').upsert(
-          { item_id: c.itemId, price: freshPrice, updated_at: new Date().toISOString() },
-          { onConflict: 'item_id' }
-        );
+        await ingestSellPrices([{ item_id: c.itemId, price: freshPrice }]);
       } catch { /* non-fatal */ }
 
       const netSell = freshPrice * 0.95;

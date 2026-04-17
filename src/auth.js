@@ -16,7 +16,7 @@ const SET_KEY_URL = `${supabaseUrl}/functions/v1/set-api-key`;
 const AUTO_LOGIN_URL = `${supabaseUrl}/functions/v1/auto-login`;
 
 /** Read stored session bundle, or null. */
-function getSession() {
+export function getSession() {
   const raw = localStorage.getItem(SESSION_STORAGE_KEY);
   if (!raw) return null;
   try {
