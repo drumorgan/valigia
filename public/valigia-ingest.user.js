@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.6.1
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + owner + show Watchlist matches so you spot a deal the moment you open a bazaar.
+// @version      0.6.2
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + paint current Item Market prices on every row so arbitrage is obvious at a glance.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -921,6 +921,11 @@
       };
     });
 
+    // Paint per-row Item Market prices + arbitrage margins in parallel
+    // with the upsert. Fire-and-forget: overlay is best-effort, never
+    // blocks the ingest path.
+    paintBazaarMarketOverlay(items).catch(function (e) { log('overlay error', e); });
+
     const result = await postIngestRows(INGEST_BAZAAR_URL, rows);
     if (result.ok) {
       toast('Bazaar: ' + result.count + ' prices collected \u00B7 thanks!', 'success');
@@ -990,12 +995,17 @@
       }
     } catch (_) { /* ignore corrupt cache */ }
 
+    // Use GM_xmlhttpRequest (not plain fetch) so PDA's webview CORS
+    // behaviour doesn't block the call. api.torn.com is in @connect.
     try {
-      const res = await fetch(
-        'https://api.torn.com/user/?selections=basic&key=' + encodeURIComponent(TORN_API_KEY)
-      );
-      if (!res.ok) return null;
-      const data = await res.json();
+      const res = await gmRequest({
+        method: 'GET',
+        url: 'https://api.torn.com/user/?selections=basic&key=' +
+             encodeURIComponent(TORN_API_KEY),
+        headers: { 'Accept': 'application/json' },
+      });
+      let data = null;
+      try { data = JSON.parse(res.responseText); } catch (_) { /* ignore */ }
       if (data && data.player_id) {
         try {
           localStorage.setItem(
@@ -1005,20 +1015,33 @@
         } catch (_) { /* ignore quota / disabled storage */ }
         return data.player_id;
       }
-    } catch (_) { /* network / CORS — skip silently */ }
+      log('resolvePlayerId: unexpected response', res.status, res.responseText);
+    } catch (err) {
+      log('resolvePlayerId: request failed', err);
+    }
     return null;
   }
 
   async function fetchJSON(url) {
-    const res = await fetch(url, {
-      headers: {
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
-        'Accept': 'application/json',
-      },
-    });
-    if (!res.ok) return null;
-    try { return await res.json(); } catch (_) { return null; }
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: url,
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) {
+        log('fetchJSON non-2xx', res.status, url);
+        return null;
+      }
+      try { return JSON.parse(res.responseText); } catch (_) { return null; }
+    } catch (err) {
+      log('fetchJSON failed', err, url);
+      return null;
+    }
   }
 
   /**
@@ -1362,6 +1385,132 @@
       document.querySelector('#mainContainer') ||
       document.body;
     host.insertBefore(bar, host.firstChild);
+  }
+
+  // -- Bazaar → Item Market arbitrage overlay ------------------------------
+  // Paints each bazaar row with the current Item Market price, the net
+  // sell price (minus Torn's 5% market fee), and the profit margin if
+  // you bought this listing and flipped it on the market. Makes it
+  // obvious when a bazaar item is underpriced vs. the broader market.
+  //
+  // Shared `sell_prices` read — same trust surface the watchlist banner
+  // uses, no extra auth needed.
+
+  const BAZAAR_OVERLAY_CLASS = 'valigia-bazaar-overlay';
+  const BAZAAR_OVERLAY_STYLE_ID = 'valigia-bazaar-overlay-styles';
+  // Item market charges a 5% fee on sales. A flipping opportunity is
+  // only real if net-sell > bazaar buy.
+  const MARKET_FEE_RATE = 0.05;
+
+  function injectBazaarOverlayStyles() {
+    if (document.getElementById(BAZAAR_OVERLAY_STYLE_ID)) return;
+    const css = [
+      '.' + BAZAAR_OVERLAY_CLASS + ' {',
+      '  all: initial;',
+      '  display: inline-block;',
+      '  margin-top: 4px;',
+      '  padding: 2px 6px;',
+      '  font: 11px/1.3 ui-monospace, Menlo, Consolas, monospace;',
+      '  color: #c8cdd8;',
+      '  background: rgba(22,26,34,0.9);',
+      '  border: 1px solid #252a35;',
+      '  border-radius: 3px;',
+      '  white-space: nowrap;',
+      '}',
+      '.' + BAZAAR_OVERLAY_CLASS + '--profit {',
+      '  border-left: 2px solid #4ae8a0;',
+      '}',
+      '.' + BAZAAR_OVERLAY_CLASS + '--loss {',
+      '  border-left: 2px solid #8a8fa0;',
+      '  opacity: 0.75;',
+      '}',
+      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-label { color: #8a8fa0; }',
+      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-mkt { color: #e8c84a; font-weight: 700; }',
+      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-net { color: #c8cdd8; }',
+      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-gain { color: #4ae8a0; font-weight: 700; margin-left: 4px; }',
+      '.' + BAZAAR_OVERLAY_CLASS + ' .vgl-bz-miss { color: #8a8fa0; margin-left: 4px; }',
+    ].join('\n');
+    const el = document.createElement('style');
+    el.id = BAZAAR_OVERLAY_STYLE_ID;
+    el.textContent = css;
+    document.head.appendChild(el);
+  }
+
+  /**
+   * Given the list of bazaar rows we already scraped (with item_id +
+   * price), fetch their current Item Market sell prices and inject an
+   * overlay badge next to each listing. Silent no-op on any failure —
+   * the underlying scrape + upsert flow continues regardless.
+   */
+  async function paintBazaarMarketOverlay(scrapedItems) {
+    if (!Array.isArray(scrapedItems) || scrapedItems.length === 0) return;
+    const ids = [...new Set(scrapedItems.map(function (r) { return r.item_id; }))];
+    if (ids.length === 0) return;
+
+    const sellRows = await fetchJSON(
+      SELL_PRICES_URL +
+      '?item_id=in.(' + ids.join(',') + ')' +
+      '&select=item_id,price,updated_at'
+    );
+    if (!Array.isArray(sellRows) || sellRows.length === 0) return;
+
+    const marketByItem = new Map();
+    for (const r of sellRows) {
+      if (r.price != null) marketByItem.set(Number(r.item_id), Number(r.price));
+    }
+
+    injectBazaarOverlayStyles();
+
+    // Walk the same image selector the scraper uses so we hit every
+    // row Torn has rendered. Each row gets at most one overlay, tagged
+    // on the DOM so repeat dispatches don't stack duplicates.
+    const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
+    const seenRows = new Set();
+    const scrapedByItem = new Map();
+    for (const it of scrapedItems) scrapedByItem.set(Number(it.item_id), it);
+
+    for (const img of imgs) {
+      const src = img.getAttribute('src') || '';
+      const idMatch = src.match(/\/images\/items\/(\d+)\//);
+      if (!idMatch) continue;
+      const itemId = Number(idMatch[1]);
+      const row = rowContainer(img);
+      if (!row || seenRows.has(row)) continue;
+      seenRows.add(row);
+
+      // Skip if we already painted this row on an earlier dispatch.
+      if (row.querySelector('.' + BAZAAR_OVERLAY_CLASS)) continue;
+
+      const bazaarEntry = scrapedByItem.get(itemId);
+      const marketPrice = marketByItem.get(itemId);
+      if (!bazaarEntry || !Number.isFinite(marketPrice)) continue;
+
+      const bazaarPrice = Number(bazaarEntry.price);
+      const netSell = marketPrice * (1 - MARKET_FEE_RATE);
+      const profit = netSell - bazaarPrice;
+      const profitPct = bazaarPrice > 0 ? (profit / bazaarPrice) * 100 : 0;
+
+      const overlay = document.createElement('span');
+      overlay.className = BAZAAR_OVERLAY_CLASS +
+        (profit > 0 ? ' ' + BAZAAR_OVERLAY_CLASS + '--profit'
+                    : ' ' + BAZAAR_OVERLAY_CLASS + '--loss');
+
+      const formatted = [
+        '<span class="vgl-bz-label">Mkt </span>',
+        '<span class="vgl-bz-mkt">' + formatMoney(marketPrice) + '</span>',
+        '<span class="vgl-bz-label"> · net </span>',
+        '<span class="vgl-bz-net">' + formatMoney(netSell) + '</span>',
+        profit > 0
+          ? '<span class="vgl-bz-gain">+' + formatMoney(profit) +
+            ' (' + (profitPct >= 100 ? Math.round(profitPct) : profitPct.toFixed(1)) + '%)</span>'
+          : '<span class="vgl-bz-miss">' + formatMoney(profit) + '</span>',
+      ].join('');
+      overlay.innerHTML = formatted;
+
+      // Append at the end of the row so it lands under the price in
+      // Torn's tile layout without needing to know the exact DOM shape.
+      row.appendChild(overlay);
+    }
   }
 
   // -- Main ----------------------------------------------------------------
