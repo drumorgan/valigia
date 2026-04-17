@@ -363,9 +363,18 @@ installed PDA.
 
 The travel runner also paints a per-row overlay (`Market Price · $margin ·
 margin%`) with a green BEST badge on the highest-margin in-stock row.
-The Item Market and Bazaar runners are write-only (no in-page UI beyond
-the toast). All three use a single shared `rowContainer()` heuristic
-that tolerates Torn's migration from `<table>` to div-based layouts.
+The Item Market and Bazaar runners additionally inject a collapsed
+**Watchlist Matches bar** at the top of the page — styled to match the
+Valigia web card (green border, triangle expand, one row per hit with
+direct deep-links back into Torn). Hidden entirely when the player has
+no matches. Abroad venue is skipped in the userscript banner (a per-page
+YATA fetch would add latency for a surface where the user is focused on
+Market/Bazaar anyway); the web app remains the matching surface for
+abroad. The banner resolves `player_id` via one Torn `user/?selections=basic`
+call, cached in `localStorage` keyed by a hash of the API key so it survives
+key rotation. All three runners use a single shared `rowContainer()`
+heuristic that tolerates Torn's migration from `<table>` to div-based
+layouts.
 
 ### Why direct anon upserts for sell / bazaar, but an edge function for travel?
 

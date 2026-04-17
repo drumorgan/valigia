@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.4.1
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices straight into the community cache, (3) any bazaar — push fresh bazaar listings + owner so the bazaar scanner learns new sources for free.
+// @version      0.5.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + owner + show Watchlist matches so you spot a deal the moment you open a bazaar.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -11,6 +11,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      vtslzplzlxdptpvxtanz.supabase.co
+// @connect      api.torn.com
 // @updateURL    https://valigia.girovagabondo.com/valigia-ingest.user.js
 // @downloadURL  https://valigia.girovagabondo.com/valigia-ingest.user.js
 // ==/UserScript==
@@ -757,6 +758,11 @@
   }
 
   async function runItemMarket() {
+    // Kick the watchlist-matches banner in parallel with the scrape.
+    // Fire-and-forget: any failure is silent so the primary scraper
+    // flow isn't blocked on a (potentially slow) Torn key validation.
+    injectWatchlistBar();
+
     // Poll briefly for listings to hydrate - the Item Market page is SPA-ish.
     const start = Date.now();
     let rows = [];
@@ -855,6 +861,11 @@
   }
 
   async function runBazaar() {
+    // Watchlist banner kicks off in parallel. Even on an own-bazaar visit
+    // (no ownerId, early return below) we still want to surface matches
+    // — so this runs before the ownerId guard.
+    injectWatchlistBar();
+
     const ownerId = detectBazaarOwnerId();
     if (!ownerId) {
       log('Bazaar: no userId in URL (own bazaar?) - skipping.');
@@ -906,6 +917,416 @@
     } else {
       toast('bazaar upsert failed - ' + (result.error || 'unknown'), 'error');
     }
+  }
+
+  // -- Watchlist matches banner --------------------------------------------
+  // A collapsed green bar injected at the top of the Item Market and
+  // Bazaar pages that surfaces this player's active Watchlist matches.
+  // Tapping the triangle expands it into a Valigia-styled list with
+  // direct deep-links back into Torn. Hidden entirely on zero matches.
+  //
+  // Trust/data path:
+  //   1. Resolve player_id once (cached per api_key hash in localStorage)
+  //      via a single Torn /user/?selections=basic call.
+  //   2. Fetch watchlist_alerts + sell_prices + bazaar_prices via anon
+  //      SELECT — all three are public-read, same surface the web app
+  //      and existing scrapers already use.
+  //   3. Compute matches client-side, mirroring src/watchlist.js. Abroad
+  //      venue is skipped here (it'd require a per-page YATA fetch); the
+  //      web app remains the surface for abroad matches.
+  //
+  // Scope: runs only on Market + Bazaar. Travel is intentionally excluded
+  // — the travel page already shows abroad prices inline, so a banner
+  // would duplicate information the user is actively looking at.
+
+  const WATCHLIST_BAR_ID = 'valigia-watchlist-bar';
+  const WATCHLIST_ALERTS_URL = SUPABASE_REST_URL + '/watchlist_alerts';
+  const PLAYER_ID_CACHE_KEY = 'valigia_pda_player_id_v1';
+
+  // Bazaar rows older than this are dropped — matches the web app's
+  // 10-minute threshold so the bar doesn't claim a stale deal.
+  const WATCHLIST_BAZAAR_MAX_AGE_MS = 10 * 60 * 1000;
+
+  // Tiny non-crypto hash of the api_key so we can key the player_id cache
+  // by it — lets the cache invalidate automatically when the user swaps
+  // to a different Torn API key without leaking the key itself.
+  function hashApiKey(key) {
+    let h = 0;
+    for (let i = 0; i < key.length; i++) {
+      h = (h * 31 + key.charCodeAt(i)) | 0;
+    }
+    return String(h);
+  }
+
+  async function resolvePlayerId() {
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return null;
+    const keyHash = hashApiKey(TORN_API_KEY);
+    try {
+      const raw = localStorage.getItem(PLAYER_ID_CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (cached && cached.hash === keyHash && cached.player_id) {
+          return cached.player_id;
+        }
+      }
+    } catch (_) { /* ignore corrupt cache */ }
+
+    try {
+      const res = await fetch(
+        'https://api.torn.com/user/?selections=basic&key=' + encodeURIComponent(TORN_API_KEY)
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data && data.player_id) {
+        try {
+          localStorage.setItem(
+            PLAYER_ID_CACHE_KEY,
+            JSON.stringify({ hash: keyHash, player_id: data.player_id })
+          );
+        } catch (_) { /* ignore quota / disabled storage */ }
+        return data.player_id;
+      }
+    } catch (_) { /* network / CORS — skip silently */ }
+    return null;
+  }
+
+  async function fetchJSON(url) {
+    const res = await fetch(url, {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+        'Accept': 'application/json',
+      },
+    });
+    if (!res.ok) return null;
+    try { return await res.json(); } catch (_) { return null; }
+  }
+
+  /**
+   * Read alerts for this player, then look up live market/bazaar prices
+   * for the alerted items and compute the match list. Returns [] on any
+   * failure so callers can treat "no matches" and "fetch failed"
+   * identically — a silent no-op is the right failure mode for a banner.
+   */
+  async function fetchWatchlistMatches(playerId) {
+    if (!playerId) return [];
+
+    const alerts = await fetchJSON(
+      WATCHLIST_ALERTS_URL +
+      '?player_id=eq.' + encodeURIComponent(playerId) +
+      '&select=item_id,max_price,venues'
+    );
+    if (!Array.isArray(alerts) || alerts.length === 0) return [];
+
+    const idList = alerts.map(function (a) { return a.item_id; }).join(',');
+    if (!idList) return [];
+
+    // Parallel reads — same pattern as src/watchlist.js. Abroad skipped.
+    const inClause = 'in.(' + idList + ')';
+    const [sellRows, bazaarRows] = await Promise.all([
+      fetchJSON(
+        SELL_PRICES_URL +
+        '?item_id=' + inClause +
+        '&select=item_id,price,updated_at'
+      ),
+      fetchJSON(
+        BAZAAR_PRICES_URL +
+        '?item_id=' + inClause +
+        '&select=item_id,price,quantity,bazaar_owner_id,checked_at'
+      ),
+    ]);
+
+    const sellByItem = new Map();
+    if (Array.isArray(sellRows)) {
+      for (const r of sellRows) sellByItem.set(r.item_id, r);
+    }
+    const bazaarByItem = new Map();
+    if (Array.isArray(bazaarRows)) {
+      for (const r of bazaarRows) {
+        const existing = bazaarByItem.get(r.item_id);
+        if (!existing || r.price < existing.price) {
+          const observedAt = r.checked_at ? new Date(r.checked_at).getTime() : 0;
+          if (Date.now() - observedAt <= WATCHLIST_BAZAAR_MAX_AGE_MS) {
+            bazaarByItem.set(r.item_id, r);
+          }
+        }
+      }
+    }
+
+    const matches = [];
+    for (const a of alerts) {
+      const venues = new Set(a.venues || ['market', 'bazaar']);
+      const maxPrice = Number(a.max_price);
+
+      if (venues.has('market')) {
+        const s = sellByItem.get(a.item_id);
+        if (s && Number(s.price) <= maxPrice) {
+          const price = Number(s.price);
+          matches.push({
+            item_id: a.item_id,
+            venue: 'market',
+            venue_label: 'Item Market',
+            price: price,
+            max_price: maxPrice,
+            savings: maxPrice - price,
+            savings_pct: ((maxPrice - price) / maxPrice) * 100,
+            observed_at: s.updated_at ? new Date(s.updated_at).getTime() : 0,
+            link: 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + a.item_id,
+            extra: {},
+          });
+        }
+      }
+      if (venues.has('bazaar')) {
+        const b = bazaarByItem.get(a.item_id);
+        if (b && Number(b.price) <= maxPrice) {
+          const price = Number(b.price);
+          matches.push({
+            item_id: a.item_id,
+            venue: 'bazaar',
+            venue_label: 'Bazaar',
+            price: price,
+            max_price: maxPrice,
+            savings: maxPrice - price,
+            savings_pct: ((maxPrice - price) / maxPrice) * 100,
+            observed_at: b.checked_at ? new Date(b.checked_at).getTime() : 0,
+            link: 'https://www.torn.com/bazaar.php?userId=' + b.bazaar_owner_id,
+            extra: { owner_id: b.bazaar_owner_id, quantity: b.quantity },
+          });
+        }
+      }
+    }
+    matches.sort(function (a, b) { return b.savings_pct - a.savings_pct; });
+    return matches;
+  }
+
+  // -- Banner styles + DOM -------------------------------------------------
+
+  function injectWatchlistStyles() {
+    if (document.getElementById('valigia-watchlist-styles')) return;
+    const css = [
+      '#' + WATCHLIST_BAR_ID + ' {',
+      '  all: initial;',
+      '  display: block;',
+      '  margin: 8px auto 12px;',
+      '  max-width: 1100px;',
+      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  color: #c8cdd8;',
+      '  background: #161a22;',
+      '  border: 1px solid #252a35;',
+      '  border-left: 3px solid #4ae8a0;',
+      '  border-radius: 4px;',
+      '  box-sizing: border-box;',
+      '  overflow: hidden;',
+      '}',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-head {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '  padding: 8px 12px;',
+      '  cursor: pointer;',
+      '  user-select: none;',
+      '}',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-title {',
+      '  color: #4ae8a0;',
+      '  font-weight: 700;',
+      '  font-size: 12px;',
+      '  letter-spacing: 0.12em;',
+      '  text-transform: uppercase;',
+      '}',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-count {',
+      '  background: #4ae8a0;',
+      '  color: #0d0f14;',
+      '  font-weight: 700;',
+      '  font-size: 11px;',
+      '  padding: 1px 7px;',
+      '  border-radius: 999px;',
+      '}',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-caret {',
+      '  margin-left: auto;',
+      '  color: #4ae8a0;',
+      '  font-size: 11px;',
+      '  transition: transform 150ms;',
+      '}',
+      '#' + WATCHLIST_BAR_ID + '.vgl-wl-open .vgl-wl-caret {',
+      '  transform: rotate(180deg);',
+      '}',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-body {',
+      '  display: none;',
+      '  padding: 4px 10px 10px;',
+      '  gap: 4px;',
+      '  flex-direction: column;',
+      '}',
+      '#' + WATCHLIST_BAR_ID + '.vgl-wl-open .vgl-wl-body {',
+      '  display: flex;',
+      '}',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-row {',
+      '  display: grid;',
+      '  grid-template-columns: minmax(0,1.4fr) auto auto minmax(0,1fr) auto auto;',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '  padding: 6px 8px;',
+      '  border: 1px solid #252a35;',
+      '  border-radius: 3px;',
+      '  background: rgba(74,232,160,0.04);',
+      '  color: #c8cdd8;',
+      '  text-decoration: none;',
+      '  font-size: 12px;',
+      '}',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-row:active {',
+      '  background: rgba(74,232,160,0.12);',
+      '}',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-item { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-venue { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 6px; border-radius: 2px; white-space: nowrap; }',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-venue--market { background: rgba(232,200,74,0.18); color: #e8c84a; }',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-venue--bazaar { background: rgba(74,232,160,0.18); color: #4ae8a0; }',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-price { color: #e8c84a; font-weight: 700; white-space: nowrap; }',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-save { color: #8a8fa0; white-space: nowrap; }',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-save strong { color: #4ae8a0; font-weight: 700; }',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-age { color: #8a8fa0; font-size: 10px; white-space: nowrap; }',
+      '#' + WATCHLIST_BAR_ID + ' .vgl-wl-arrow { color: #e8c84a; font-weight: 700; }',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-watchlist-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function formatMoney(n) {
+    if (n == null) return '—';
+    const sign = n < 0 ? '-' : '';
+    return sign + '$' + Math.abs(Math.round(n)).toLocaleString('en-US');
+  }
+
+  function formatAge(ms) {
+    if (!ms) return '';
+    const diff = Date.now() - ms;
+    if (diff < 60000) return 'just now';
+    const mins = Math.floor(diff / 60000);
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    return Math.floor(hrs / 24) + 'd ago';
+  }
+
+  // Resolve the item id → name map we already maintain in the travel
+  // runner's cache. Falls back to "Item #N" if we haven't seen it.
+  function itemNameFor(itemId) {
+    try {
+      const raw = localStorage.getItem('valigia_item_id_map');
+      if (raw) {
+        const nameToId = JSON.parse(raw);
+        for (const name in nameToId) {
+          if (Number(nameToId[name]) === Number(itemId)) return name;
+        }
+      }
+    } catch (_) { /* ignore */ }
+    return 'Item #' + itemId;
+  }
+
+  function buildWatchlistBar(matches) {
+    const bar = document.createElement('div');
+    bar.id = WATCHLIST_BAR_ID;
+
+    const head = document.createElement('div');
+    head.className = 'vgl-wl-head';
+    const title = document.createElement('span');
+    title.className = 'vgl-wl-title';
+    title.textContent = 'Watchlist Matches';
+    const count = document.createElement('span');
+    count.className = 'vgl-wl-count';
+    count.textContent = String(matches.length);
+    const caret = document.createElement('span');
+    caret.className = 'vgl-wl-caret';
+    caret.textContent = '▾';
+    head.appendChild(title);
+    head.appendChild(count);
+    head.appendChild(caret);
+
+    const body = document.createElement('div');
+    body.className = 'vgl-wl-body';
+    for (const m of matches) {
+      const row = document.createElement('a');
+      row.className = 'vgl-wl-row';
+      row.href = m.link;
+      row.target = '_top';
+      row.rel = 'noopener';
+
+      const name = document.createElement('span');
+      name.className = 'vgl-wl-item';
+      name.textContent = itemNameFor(m.item_id);
+
+      const venue = document.createElement('span');
+      venue.className = 'vgl-wl-venue vgl-wl-venue--' + m.venue;
+      venue.textContent = m.venue_label;
+
+      const price = document.createElement('span');
+      price.className = 'vgl-wl-price';
+      price.textContent = formatMoney(m.price);
+
+      const save = document.createElement('span');
+      save.className = 'vgl-wl-save';
+      const saveStrong = document.createElement('strong');
+      saveStrong.textContent = formatMoney(m.savings);
+      save.appendChild(document.createTextNode('saves '));
+      save.appendChild(saveStrong);
+      save.appendChild(document.createTextNode(
+        Number.isFinite(m.savings_pct) ? ' (' + Math.round(m.savings_pct) + '%)' : ''
+      ));
+
+      const age = document.createElement('span');
+      age.className = 'vgl-wl-age';
+      age.textContent = formatAge(m.observed_at);
+
+      const arrow = document.createElement('span');
+      arrow.className = 'vgl-wl-arrow';
+      arrow.textContent = '→';
+
+      row.appendChild(name);
+      row.appendChild(venue);
+      row.appendChild(price);
+      row.appendChild(save);
+      row.appendChild(age);
+      row.appendChild(arrow);
+      body.appendChild(row);
+    }
+
+    head.addEventListener('click', function () {
+      bar.classList.toggle('vgl-wl-open');
+    });
+
+    bar.appendChild(head);
+    bar.appendChild(body);
+    return bar;
+  }
+
+  /**
+   * Top-level entry point. Safe to call on every page load — it no-ops
+   * silently when there are no matches, and removes any prior bar before
+   * injecting a fresh one so SPA navs don't stack duplicates.
+   */
+  async function injectWatchlistBar() {
+    // Idempotent: tear down any previous instance before fetching.
+    const existing = document.getElementById(WATCHLIST_BAR_ID);
+    if (existing) existing.remove();
+
+    const playerId = await resolvePlayerId();
+    if (!playerId) return;
+
+    const matches = await fetchWatchlistMatches(playerId);
+    if (matches.length === 0) return;
+
+    injectWatchlistStyles();
+    const bar = buildWatchlistBar(matches);
+
+    // Torn's content layout varies across pages and PDA skins. Try a
+    // couple of well-known containers, fall back to body so we never
+    // disappear silently.
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(bar, host.firstChild);
   }
 
   // -- Main ----------------------------------------------------------------
