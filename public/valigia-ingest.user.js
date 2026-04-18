@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.7.3
+// @version      0.7.4
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.7.3';
+  const SCRIPT_VERSION = '0.7.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -838,66 +838,29 @@
     return null;
   }
 
-  // "locked" as a near-word: preceded by start-of-string or a non-alpha
-  // char, followed by a non-alpha char or end-of-string. Matches
-  // "locked", "Locked", "is-locked", "locked___abc" (CSS modules),
-  // "Locked listing"; does NOT match "blocked", "unlocked", "block",
-  // "clock", "blockade". A naive `\blocked\b` would mis-handle both
-  // `blocked` (correctly rejects) AND `locked___abc` (wrongly rejects,
-  // because `_` is a \w char). This pattern gets both right.
-  const LOCKED_RE = /(?:^|[^a-z])locked(?=[^a-z]|$)/i;
-
   /**
-   * Is this bazaar tile a "locked" placeholder?
+   * Is the tile's item image a padlock glyph?
    *
-   * Owners routinely park items at $1 as visual placeholders — Torn
-   * overlays a padlock on the tile and the listing isn't buyable. Left
-   * unfiltered these pollute bazaar_prices with a $1 floor for every
-   * item they touch and surface as 60,000%-margin "deals" in the
-   * on-page Bazaar Deals bar.
+   * Torn overlays a padlock on bazaar tiles the owner has parked as $1
+   * placeholders. Earlier versions tried to sniff class names, aria
+   * attributes, and inner text for "lock"/"locked" — but every CSS
+   * selector we tried (substring `[class*="lock"]`, word-boundary
+   * regex, etc.) either missed tiles or false-positived on common
+   * tokens like `block`, `clock`, and `unlocked` that Torn uses
+   * liberally. The result was real listings vanishing from the Deals
+   * bar AND the bazaar pool.
    *
-   * Detection is best-effort because Torn's bazaar DOM shifts across
-   * layouts. Every rule below uses near-word matching on "lock" /
-   * "locked" so we don't false-positive on the many unrelated tokens
-   * that merely contain "lock" as a substring — `block`, `clock`,
-   * `unlocked`, `blockquote`, etc. Torn's UI uses `block` heavily, so
-   * a naive `[class*="lock"]` selector drops real listings. Price $1
-   * is still treated as locked at the caller as a final safety net.
+   * This minimal version only checks the item image's own src for a
+   * padlock filename. The $1 price gate at the caller handles every
+   * other locked tile — a real bazaar never lists a buyable item at
+   * $1, so dropping $1 rows at scrape time is both accurate and
+   * DOM-independent.
    */
-  function isLockedListing(row, img) {
+  function isLockedListing(img) {
     try {
-      // 1. The tile's own item image was swapped for a lock glyph.
-      //    Match lock/padlock as a filename token — "/lock.png",
-      //    "/padlock-icon.svg" — so we don't trip on paths like
-      //    "/images/blocklist/..." or "/images/clock/...".
       const imgSrc = img.getAttribute('src') || '';
-      if (/\/(?:padlock|lock)[._-]|\/(?:padlock|lock)\.[a-z]+$/i.test(imgSrc)) return true;
-
-      // 2. A sibling/descendant img is a lock glyph.
-      if (row.querySelector(
-        'img[src*="/padlock"], img[src*="/lock."], img[src*="/lock-"], img[src*="/lock_"]'
-      )) return true;
-
-      // 3. Explicit lock-state attributes — narrowly targeted.
-      if (row.querySelector('[data-locked]')) return true;
-      if (row.querySelector('[aria-label*="locked" i], [title*="locked" i]')) return true;
-
-      // 4. Class / innerText containing "locked" as a whole word. \b
-      //    requires a word-boundary on both sides, so "blocked",
-      //    "unlocked", "blockade", "clockwise" do NOT match. CSS-module
-      //    suffixes like "locked___abc" still match because the
-      //    underscores split the word.
-      const className = typeof row.className === 'string' ? row.className : '';
-      if (LOCKED_RE.test(className)) return true;
-      const descendantClassed = row.querySelectorAll('[class]');
-      for (let i = 0; i < descendantClassed.length; i++) {
-        const cn = descendantClassed[i].className;
-        if (typeof cn === 'string' && LOCKED_RE.test(cn)) return true;
-      }
-      const text = row.innerText || '';
-      if (LOCKED_RE.test(text)) return true;
-    } catch (_) { /* defensive: any DOM hiccup falls through to the $1 filter */ }
-    return false;
+      return /\/padlock|\/lock[._-]/i.test(imgSrc);
+    } catch (_) { return false; }
   }
 
   function scrapeBazaarItems() {
@@ -915,19 +878,17 @@
       if (!row || seenRows.has(row)) continue;
       seenRows.add(row);
 
-      // Skip locked placeholders before anything else — these pollute the
-      // shared pool AND produce absurd "deals" in the bar.
-      if (isLockedListing(row, img)) continue;
+      // Skip tiles whose image is a padlock glyph. The real work is done
+      // by the $1 price gate below — a real bazaar never lists a buyable
+      // item at $1, so dropping $1 rows is both DOM-independent and the
+      // canonical "this is locked" signal.
+      if (isLockedListing(img)) continue;
 
       const text = (row.innerText || '').trim();
       const priceMatch = text.match(/\$\s*([\d,\.]+)/);
       if (!priceMatch) continue;
       const price = parseMoney(priceMatch[1]);
-      if (!Number.isFinite(price) || price <= 0) continue;
-      // $1 fallback for locked tiles our DOM sniff missed. No real bazaar
-      // listing prices a buyable item at $1 — anything that scrapes at $1
-      // is a placeholder and gets dropped rather than polluting the pool.
-      if (price <= 1) continue;
+      if (!Number.isFinite(price) || price <= 1) continue;
 
       const withoutPrice = text.replace(/\$\s*[\d,\.]+/g, ' ');
       const intTokens = withoutPrice.match(/(?<![\w.])\d[\d,]*(?![\w.])/g) || [];
@@ -1218,7 +1179,11 @@
       }
       if (venues.has('bazaar')) {
         const b = bazaarByItem.get(a.item_id);
-        if (b && Number(b.price) <= maxPrice) {
+        // Drop $1 locked placeholders. bazaar_prices still carries
+        // rows written before the scraper's $1 filter landed, and
+        // surfacing them as a "bazaar match" means the user clicks
+        // through to a bazaar only to find the listing is unbuyable.
+        if (b && Number(b.price) > 1 && Number(b.price) <= maxPrice) {
           const price = Number(b.price);
           matches.push({
             item_id: a.item_id,
