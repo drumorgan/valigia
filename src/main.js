@@ -17,7 +17,7 @@ import { setAbroadSnapshot, listAlerts } from './watchlist.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
-  setBestBazaarRun, getStaleItemIdsForCategory
+  setBestBazaarRun, getStaleItemIdsForCategory, getTopTravelCandidateIds
 } from './ui.js';
 
 // Category chip clicks top up any sell prices in that category older than
@@ -315,6 +315,21 @@ async function startDashboard(playerId) {
         )
       : Promise.resolve(),
   ]);
+
+  // Live-verify the top few travel candidates. The cache-aware sweep
+  // above can leave a 1-3h-old sell price sitting on the row that's
+  // about to headline Best Run Right Now — accurate enough for the
+  // table body but stale enough to mis-rank the winner or mis-state
+  // its margin. The bazaar Best Run already does this (see
+  // CLAUDE.md's "only pool entries within 10 min" note); the travel
+  // card deserves the same treatment. Fire-and-forget: onSellPrice
+  // re-renders the table (and the card) as each fresh price lands.
+  // Three candidates covers the top pick plus a couple fallbacks in
+  // case the winner's fresh price unseats it.
+  const topTravelIds = getTopTravelCandidateIds(3);
+  if (topTravelIds.length > 0) {
+    refreshSellPrices(playerId, topTravelIds, onSellPrice).catch(() => {});
+  }
 
   // Show bazaar deal scanner button + community stats
   const bazaarContainer = document.getElementById('bazaar-container');

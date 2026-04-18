@@ -859,6 +859,38 @@ const MAX_UNCERTAINTY_MINS = 45;
 // and "leave in 4h 12m" is a useful signal if the cadence is reliable
 // enough to be worth committing to at all.
 
+/**
+ * Return the top N travel candidate item IDs the Best Run card is
+ * currently considering, sorted by profit/hr desc. Callers use this to
+ * force-refresh the handful of sell_prices rows whose freshness matters
+ * most for the headline pick — the ordinary cache-aware sweep can leave
+ * a 1–3h-old sell price in place, which is fine for the table body but
+ * stale enough to mis-rank the winner.
+ *
+ * Filters match renderBestRunCard's — positive margin, stock > 0,
+ * real metrics — so a call here is a true preview of what would be
+ * headlined right now.
+ */
+export function getTopTravelCandidateIds(limit = 3) {
+  const rows = buildRows();
+  const candidates = rows.filter(r =>
+    r.metrics &&
+    r.metrics.marginPerItem > 0 &&
+    r.metrics.effectiveSlots > 0 &&
+    (r.quantity == null || r.quantity > 0)
+  );
+  candidates.sort((a, b) => (b.metrics.profitPerHour || 0) - (a.metrics.profitPerHour || 0));
+  const seen = new Set();
+  const ids = [];
+  for (const c of candidates) {
+    if (seen.has(c.itemId)) continue;
+    seen.add(c.itemId);
+    ids.push(c.itemId);
+    if (ids.length >= limit) break;
+  }
+  return ids;
+}
+
 function renderBestRunCard(rows) {
   const container = document.getElementById('best-run-container');
   if (!container) return;
