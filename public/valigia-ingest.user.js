@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.7.2
+// @version      0.7.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.7.2';
+  const SCRIPT_VERSION = '0.7.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -838,6 +838,15 @@
     return null;
   }
 
+  // "locked" as a near-word: preceded by start-of-string or a non-alpha
+  // char, followed by a non-alpha char or end-of-string. Matches
+  // "locked", "Locked", "is-locked", "locked___abc" (CSS modules),
+  // "Locked listing"; does NOT match "blocked", "unlocked", "block",
+  // "clock", "blockade". A naive `\blocked\b` would mis-handle both
+  // `blocked` (correctly rejects) AND `locked___abc` (wrongly rejects,
+  // because `_` is a \w char). This pattern gets both right.
+  const LOCKED_RE = /(?:^|[^a-z])locked(?=[^a-z]|$)/i;
+
   /**
    * Is this bazaar tile a "locked" placeholder?
    *
@@ -845,21 +854,48 @@
    * overlays a padlock on the tile and the listing isn't buyable. Left
    * unfiltered these pollute bazaar_prices with a $1 floor for every
    * item they touch and surface as 60,000%-margin "deals" in the
-   * on-page Bazaar Deals bar (screenshot: Bottle of Beer $1 -> $618).
+   * on-page Bazaar Deals bar.
    *
    * Detection is best-effort because Torn's bazaar DOM shifts across
-   * layouts. We look for any of the usual lock signals — lock-named
-   * image, lock-themed class / data / aria attribute, or an explicit
-   * "locked" string — and fall back to a $1-price gate at the caller.
+   * layouts. Every rule below uses near-word matching on "lock" /
+   * "locked" so we don't false-positive on the many unrelated tokens
+   * that merely contain "lock" as a substring — `block`, `clock`,
+   * `unlocked`, `blockquote`, etc. Torn's UI uses `block` heavily, so
+   * a naive `[class*="lock"]` selector drops real listings. Price $1
+   * is still treated as locked at the caller as a final safety net.
    */
   function isLockedListing(row, img) {
     try {
-      const imgSrc = (img.getAttribute('src') || '').toLowerCase();
-      if (imgSrc.indexOf('lock') !== -1 || imgSrc.indexOf('padlock') !== -1) return true;
-      if (row.querySelector('img[src*="lock" i], img[src*="padlock" i]')) return true;
-      if (row.querySelector('[class*="lock" i], [class*="Lock" i], [data-locked], [aria-label*="lock" i], [title*="lock" i]')) return true;
-      const text = (row.innerText || '').toLowerCase();
-      if (text.indexOf('locked') !== -1) return true;
+      // 1. The tile's own item image was swapped for a lock glyph.
+      //    Match lock/padlock as a filename token — "/lock.png",
+      //    "/padlock-icon.svg" — so we don't trip on paths like
+      //    "/images/blocklist/..." or "/images/clock/...".
+      const imgSrc = img.getAttribute('src') || '';
+      if (/\/(?:padlock|lock)[._-]|\/(?:padlock|lock)\.[a-z]+$/i.test(imgSrc)) return true;
+
+      // 2. A sibling/descendant img is a lock glyph.
+      if (row.querySelector(
+        'img[src*="/padlock"], img[src*="/lock."], img[src*="/lock-"], img[src*="/lock_"]'
+      )) return true;
+
+      // 3. Explicit lock-state attributes — narrowly targeted.
+      if (row.querySelector('[data-locked]')) return true;
+      if (row.querySelector('[aria-label*="locked" i], [title*="locked" i]')) return true;
+
+      // 4. Class / innerText containing "locked" as a whole word. \b
+      //    requires a word-boundary on both sides, so "blocked",
+      //    "unlocked", "blockade", "clockwise" do NOT match. CSS-module
+      //    suffixes like "locked___abc" still match because the
+      //    underscores split the word.
+      const className = typeof row.className === 'string' ? row.className : '';
+      if (LOCKED_RE.test(className)) return true;
+      const descendantClassed = row.querySelectorAll('[class]');
+      for (let i = 0; i < descendantClassed.length; i++) {
+        const cn = descendantClassed[i].className;
+        if (typeof cn === 'string' && LOCKED_RE.test(cn)) return true;
+      }
+      const text = row.innerText || '';
+      if (LOCKED_RE.test(text)) return true;
     } catch (_) { /* defensive: any DOM hiccup falls through to the $1 filter */ }
     return false;
   }
