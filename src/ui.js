@@ -864,10 +864,27 @@ function renderBestRunCard(rows) {
   if (!container) return;
 
   // Candidate 1: best travel run (positive margin, live price, stock).
+  //
+  // "Stock" here means CURRENT stock, not the forecaster's arrival-time
+  // projection. stock-forecast.js optimistically substitutes etaQty with
+  // the next-restock size when nowQty=0 and a refill is expected
+  // mid-flight (src/stock-forecast.js:632), so effectiveSlots stays > 0
+  // even when the destination is currently sold out. That's the right
+  // math for the table row (user can see the "leave in ~X" hint and
+  // decide), but the card is literally labelled "Best Run Right Now" —
+  // headlining a shelf that requires the user to time a future restock
+  // contradicts the word "now". Fresh first-party scrapes (via PDA,
+  // merged over YATA in log-sync.js) surface a true nowQty=0 within
+  // seconds; requiring nowQty>0 here is how we honour that data.
+  //
+  // r.quantity==null means YATA didn't report a stock figure and we
+  // never got a scrape — in that case we don't block on unknown-stock;
+  // the other filters still apply.
   const travelCandidates = rows.filter(r =>
     r.metrics &&
     r.metrics.marginPerItem > 0 &&
-    r.metrics.effectiveSlots > 0
+    r.metrics.effectiveSlots > 0 &&
+    (r.quantity == null || r.quantity > 0)
   );
   const bestTravel = travelCandidates.length > 0
     ? travelCandidates.slice().sort(
