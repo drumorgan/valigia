@@ -207,6 +207,12 @@ function matchesForAlert(alert, context) {
     for (const row of rows) {
       if (row.price == null) continue;
       const price = Number(row.price);
+      // Drop $1 locked placeholders. bazaar_prices still carries rows
+      // written before the scraper's $1 filter landed, and surfacing
+      // them as a "bazaar match" means the user clicks through to a
+      // bazaar only to find the listing is unbuyable. A real bazaar
+      // never prices a buyable item at $1, so a flat floor is safe.
+      if (price <= 1) continue;
       if (price > maxPrice) continue;
       const observedAt = row.checked_at ? new Date(row.checked_at).getTime() : 0;
       if (Date.now() - observedAt > BAZAAR_MAX_AGE_MS) continue;
