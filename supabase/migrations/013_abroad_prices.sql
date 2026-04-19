@@ -18,6 +18,15 @@
 -- both Japan and South Africa), hence destination is part of the PK
 -- rather than a tiebreaker.
 
+-- Defensive: if a previous run of 001 is still live on this database
+-- without 003 having been applied (e.g. a dev snapshot restored from
+-- pre-rewrite), the old permissive anon INSERT/UPDATE policies from 001
+-- would still be attached. Cascade-drop guarantees we start from a
+-- clean slate before re-creating the table with service-role-only
+-- writes. On the live/normal sequence (001 → 003 → 013) the table
+-- is already gone, so this is a harmless no-op.
+drop table if exists abroad_prices cascade;
+
 create table abroad_prices (
   item_id            integer not null,
   destination        text    not null,

@@ -274,7 +274,17 @@ async function startDashboard(playerId) {
   Promise.all([
     recordSnapshots(items),
     loadForecastData(items),
-  ]).then(() => renderTable()).catch(() => {});
+  ]).then(() => renderTable()).catch((err) => {
+    // iPad has no DevTools, so a silent catch here would mean an RLS or
+    // permissions regression leaves forecasting broken for hours with no
+    // visible signal. Surface as a warning — the Travel table still works
+    // without forecasts, it just loses the ETA column and arrival-time
+    // profit math.
+    showToast(
+      `Stock forecast unavailable: ${err?.message || 'unknown error'}`,
+      'warning'
+    );
+  });
 
   // Fetch live sell prices for every abroad item AND every watchlisted
   // item. Two separate calls because their staleness budgets differ: the
