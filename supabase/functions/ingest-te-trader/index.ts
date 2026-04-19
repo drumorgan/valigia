@@ -333,8 +333,26 @@ serve(async (req) => {
     const gate = await checkRateLimit(supabase, player_id, 'te-trader', 10_000);
     if (!gate.allowed) return gate.response;
 
-    // Step 3 — resolve handle. If the caller passed a player id, look up
-    // the Torn name to use as the TE slug.
+    // Step 3 — look up the submitter's own Torn name. We need this for two
+    // reasons: (a) to resolve a player-id submission to a TE handle, and
+    // (b) to detect self-submission (trader scraping their OWN page), in
+    // which case we opportunistically pin torn_player_id on the trader row.
+    // That's the only reliable way to back-fill the id column for pages
+    // submitted by URL/handle where the submitter didn't know it — when
+    // the trader themselves eventually logs into Valigia, their self-
+    // refresh lands here and stamps the id.
+    const selfRes = await fetch(
+      `https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(apiKey)}`,
+    );
+    const selfData = await selfRes.json();
+    if (selfData?.error) {
+      return json({ error: 'torn_rejected_stored_key', torn_code: selfData.error.code }, 401);
+    }
+    const submitterName = typeof selfData?.name === 'string' ? selfData.name : '';
+
+    // Step 4 — resolve handle. If the caller passed a player id, look up
+    // the Torn name to use as the TE slug (separate Torn call because the
+    // submitter's key can query any player, not just themselves).
     let handle: string;
     let resolvedPlayerId: number | null = null;
     if (parsed.kind === 'handle') {
@@ -353,22 +371,40 @@ serve(async (req) => {
       resolvedPlayerId = parsed.id;
     }
 
-    // Step 4 — scrape TE.
+    // Self-submission check: if the submitter's Torn name matches the
+    // resolved handle (case-insensitive — Torn names are unique case-
+    // insensitively), stamp their player_id on the trader row. This makes
+    // the "trader logs in → their id gets back-filled" flow work for any
+    // trader page originally submitted by URL/handle.
+    if (!resolvedPlayerId
+        && submitterName
+        && submitterName.toLowerCase() === handle.toLowerCase()) {
+      resolvedPlayerId = player_id;
+    }
+
+    // Read any existing trader row up front. We need the prior
+    // torn_player_id to preserve it across upserts by non-owner submitters
+    // (otherwise a stranger refreshing the page would clobber the id back
+    // to null) and the prior consecutive_fails for the failure path's
+    // increment.
+    const { data: existingTrader } = await supabase
+      .from('te_traders')
+      .select('torn_player_id, consecutive_fails')
+      .eq('handle', handle)
+      .maybeSingle();
+    const effectivePlayerId = resolvedPlayerId ?? existingTrader?.torn_player_id ?? null;
+
+    // Step 5 — scrape TE.
     const scrape = await scrapeTEPage(handle);
     if (!scrape.ok || scrape.rows.length === 0) {
-      // Record the failure so the background refresher backs off. Read
-      // the existing count so the upsert bumps it atomically rather than
-      // resetting to the column default on conflict.
-      const { data: existing } = await supabase
-        .from('te_traders')
-        .select('consecutive_fails')
-        .eq('handle', handle)
-        .maybeSingle();
-      const nextFails = (existing?.consecutive_fails ?? 0) + 1;
+      // Record the failure so the background refresher backs off. Preserve
+      // the existing torn_player_id if any — a failing refresh shouldn't
+      // undo identity that was previously pinned.
+      const nextFails = (existingTrader?.consecutive_fails ?? 0) + 1;
       await supabase.from('te_traders').upsert(
         {
           handle,
-          torn_player_id: resolvedPlayerId,
+          torn_player_id: effectivePlayerId,
           submitted_by: player_id,
           last_scraped_at: new Date().toISOString(),
           last_scrape_ok: false,
@@ -389,7 +425,7 @@ serve(async (req) => {
       );
     }
 
-    // Step 5 — resolve names to item ids via Torn's item catalog.
+    // Step 6 — resolve names to item ids via Torn's item catalog.
     const catalog = await getItemCatalog(apiKey);
     if (!catalog) return json({ error: 'items_catalog_unavailable' }, 502);
 
@@ -419,13 +455,14 @@ serve(async (req) => {
       );
     }
 
-    // Step 6 — upsert trader + prices, prune items that disappeared from
-    // the trader's page since last scrape.
+    // Step 7 — upsert trader + prices, prune items that disappeared from
+    // the trader's page since last scrape. Use effectivePlayerId so a
+    // stranger refreshing the page keeps the previously-pinned id intact.
     const now = new Date().toISOString();
     const { error: tErr } = await supabase.from('te_traders').upsert(
       {
         handle,
-        torn_player_id: resolvedPlayerId,
+        torn_player_id: effectivePlayerId,
         submitted_by: player_id,
         last_scraped_at: now,
         last_scrape_ok: true,
