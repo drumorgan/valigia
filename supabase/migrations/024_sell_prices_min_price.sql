@@ -31,7 +31,7 @@
 alter table sell_prices
   add column if not exists min_price bigint;
 
--- Same range + shape as the existing price CHECK (migration 019
+-- Same range + shape as the existing price CHECK (migration 021
 -- rls_hardening). NOT VALID so existing NULL-backfilled rows don't
 -- need validation, and future writes enforce it.
 alter table sell_prices

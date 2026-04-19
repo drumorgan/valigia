@@ -1,6 +1,6 @@
 -- Valigia — fix the bazaar_prices prune DELETE policy.
 --
--- Migration 019 narrowed the anon DELETE policy to USING (miss_count >= 3)
+-- Migration 021 (rls_hardening) narrowed the anon DELETE policy to USING (miss_count >= 3)
 -- on the assumption that MAX_MISS_COUNT = 3 meant rows are deletable once
 -- their stored miss_count reaches 3. That misread the scanner's flow.
 --

@@ -85,7 +85,7 @@ async function boot() {
  * Trust: every counted player_id is Torn-validated at write time —
  * travel rows are fanned out from ingest-travel-shop, Item Market and
  * Bazaar rows come from the record-pda-activity edge function. See
- * migration 018_pda_activity_log.sql.
+ * migration 019_pda_activity_log.sql.
  *
  * Silently hides on any failure — vanity metric, not load-blocking.
  */

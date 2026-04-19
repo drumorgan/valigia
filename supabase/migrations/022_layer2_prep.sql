@@ -1,6 +1,7 @@
 -- Valigia — Layer 2 schema prep: fix listing_count range + add observer attribution.
 --
--- Part 1 fixes a bug introduced in migration 019. That migration's
+-- Part 1 fixes a bug introduced in migration 021 (rls_hardening). That
+-- migration's
 -- sell_prices_listing_count_range CHECK required listing_count >= 1, but
 -- src/market.js legitimately writes listing_count = 0 for items that have
 -- no active Item Market listings ("niche item nobody is selling right

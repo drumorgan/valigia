@@ -121,7 +121,7 @@ function unauthorized(): Response {
 }
 
 // ── Row validation ──────────────────────────────────────────────
-// Per-row validation mirrors the migration 019/020 CHECK constraints so we
+// Per-row validation mirrors the migration 021/022 CHECK constraints so we
 // reject bad rows with a clear error before Postgres does. Returns either a
 // clean SellRow or a { skip } token with a reason the caller can surface.
 function normalizeRow(raw: unknown): SellRow | { skip: string } {
@@ -140,7 +140,7 @@ function normalizeRow(raw: unknown): SellRow | { skip: string } {
     return { skip: `invalid price for ${item_id}: ${r.price}` };
   }
 
-  // min_price = absolute cheapest listing (regardless of qty) — migration 020.
+  // min_price = absolute cheapest listing (regardless of qty) — migration 022.
   // Feeds the Watchlist matcher. Same range as price.
   const minPriceRaw = r.min_price;
   const min_price =

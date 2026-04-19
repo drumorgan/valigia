@@ -29,7 +29,7 @@
 -- ⚠ Re-running this migration on an already-live DB will cascade-drop
 -- every trigger attached to abroad_prices. Currently that means
 --   - trg_emit_restock_event  (migration 018_restock_events.sql)
---   - trg_emit_snapshot       (migration 023_snapshot_from_abroad_prices.sql)
+--   - trg_emit_snapshot       (migration 025_snapshot_from_abroad_prices.sql)
 -- Re-apply both migrations in that order after re-running this one, or
 -- the restock-event log and yata_snapshots mirror will stop updating
 -- from PDA scrapes (the web app path keeps working either way).
