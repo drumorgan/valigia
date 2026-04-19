@@ -97,6 +97,8 @@ editor; Supabase does not auto-apply them).
 | `restock_events` | Append-only log of observed positive stock deltas. Fed by the client's `recordSnapshots()` and an AFTER-UPDATE trigger on `abroad_prices`. 30-day read window powers restock cadence estimation in `stock-forecast.js`. Migration 018. |
 | `watchlist_alerts` | Per-player price-drop watchlist (`player_id + item_id` composite key, `max_price` threshold, `venues` array). Writes go exclusively through the `watchlist` edge function (session-token gated); reads are public. Migration 019. |
 | `ingest_rate_limits` | Per-`(player_id, endpoint)` gate enforcing a minimum interval between ingest writes. Service-role only (no RLS policies). The `ingest_rate_check()` RPC does an atomic check-and-set with a row-level `FOR UPDATE` lock, returning `false` if the caller's last write was too recent. Migration 027. |
+| `te_traders` | Catalog of TornExchange trader pages we scrape (handle PK, optional `torn_player_id`, `submitted_by`, `last_scraped_at`, `last_scrape_ok`, `consecutive_fails`, `item_count`). Writes via the `ingest-te-trader` edge fn only; reads public. Migration 028. |
+| `te_buy_prices` | Per-trader standing buy-offers (`handle + item_id` composite key). `buy_price` is what the trader advertises they'll pay per unit. The Sell tab's inventory matcher picks the highest across all traders per item_id. Migration 028. |
 
 **RPC functions** (granted to anon + authenticated):
 - `record_scan(found_deal boolean)` — atomic increment after each scan
@@ -297,6 +299,8 @@ valigia.girovagabondo.com/
 │   ├── bazaar-ui.js         — scan button, runners-up, community stats
 │   ├── watchlist.js         — alert CRUD + 3-venue match resolver
 │   ├── watchlist-ui.js      — Watchlist tab + matches card
+│   ├── te-traders.js        — TornExchange trader pool data layer
+│   ├── sell-ui.js           — Sell tab (inventory → best TE buyer matcher)
 │   ├── styles.css
 │   └── data/
 │       ├── abroad-items.js      — static destination/type metadata
@@ -311,6 +315,7 @@ valigia.girovagabondo.com/
 │   │   ├── auto-login/           — decrypt key for session
 │   │   ├── ingest-travel-shop/   — validates PDA userscript travel scrapes, upserts abroad_prices
 │   │   ├── watchlist/            — session-gated CRUD on watchlist_alerts
+│   │   ├── ingest-te-trader/     — session-gated TornExchange page scraper → te_traders + te_buy_prices
 │   │   └── _shared/              — cors + crypto helpers
 │   └── migrations/
 │       ├── 001_initial_schema.sql
@@ -339,7 +344,8 @@ valigia.girovagabondo.com/
 │       ├── 024_sell_prices_min_price.sql
 │       ├── 025_snapshot_from_abroad_prices.sql
 │       ├── 026_yata_snapshots_dedup_index.sql
-│       └── 027_ingest_rate_limits.sql
+│       ├── 027_ingest_rate_limits.sql
+│       └── 028_te_traders.sql
 ├── .env
 ├── vite.config.js
 └── .github/
@@ -485,6 +491,23 @@ tolerates Torn's migration from `<table>` to div-based layouts.
   tab with an add-alert form + full match list. Writes flow through the
   session-gated `watchlist` edge function; reads are public. No push or
   email alerts yet — matches only appear on page load.
+- **Sell tab (TornExchange)** — Submit any TornExchange trader page
+  (full URL, bare handle, or numeric Torn player id) and the
+  `ingest-te-trader` edge function scrapes their standing buy-offers
+  with a desktop UA. Prices land in `te_buy_prices`; the submitting
+  player is attributed via `te_traders.submitted_by`. The Sell tab
+  pulls the logged-in player's Torn inventory (`user/?selections=inventory`)
+  and for each item shows the best (highest) buy-offer across all
+  traders in the pool, sorted by total trader-pays for the full stack.
+  Every match row deep-links to the trader's TE page so the user can
+  message them in-game. On login, if the player's Torn name or id
+  matches a known trader, the backend opportunistically re-scrapes
+  their own page (subject to a 15-minute staleness gate) so the pool
+  stays fresh for every other Valigia user. The scraper tries three
+  parsing strategies (embedded JSON hydration → `<table>` rows →
+  loose tag scan) and echoes a `debug_sample` of raw HTML on failure
+  for remote iteration. Rate-limited to one scrape per submitter per
+  10 s via `ingest_rate_check`.
 
 ### Known Limitations
 - **Slots** — Auto-detect misses faction perks; user overrides manually.
@@ -500,6 +523,7 @@ tolerates Torn's migration from `<table>` to div-based layouts.
 - `abroad_prices` — First-party travel-shop scrapes from PDA (service-role writes via ingest-travel-shop)
 - `yata_snapshots` — YATA abroad-price history (fallback data source)
 - `community_stats` — Single-row spin counter
+- `te_traders` + `te_buy_prices` — TornExchange trader pool (service-role writes via ingest-te-trader)
 - `watchlist_alerts` — Per-player price-drop alerts (service-role writes via `watchlist` edge fn)
 
 -----

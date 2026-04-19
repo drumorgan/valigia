@@ -2821,3 +2821,324 @@ tr.row--negative td {
   border-color: var(--negative);
 }
 .wl-del-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Sell tab ──────────────────────────────────────────────────
+   Visual language mirrors the Watchlist tab (intro block + card
+   sections) so users coming from one find the other familiar. Uses
+   the green positive accent for the match rows because "someone
+   wants to buy this" is the same kind of win as a verified bazaar
+   deal. */
+
+.sell-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.sell-intro .sell-heading {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.4rem;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+}
+
+.sell-intro .sell-sub {
+  color: var(--muted);
+  font-size: 0.88rem;
+  max-width: 40rem;
+  line-height: 1.5;
+}
+
+.sell-add {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.sell-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.sell-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sell-field-label {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.sell-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.95rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 3px;
+  width: 100%;
+}
+
+.sell-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.sell-input::placeholder { color: #8a8fa0; opacity: 1; }
+.sell-input::-webkit-input-placeholder { color: #8a8fa0; opacity: 1; }
+
+.sell-submit {
+  background: var(--accent);
+  color: #0d0f14;
+  border: none;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.55rem 1.1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  height: fit-content;
+}
+
+.sell-submit:hover:not(:disabled) { background: #f2d45b; }
+.sell-submit:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.sell-add-status {
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.82rem;
+  padding: 0.4rem 0;
+}
+.sell-add-status[hidden] { display: none; }
+.sell-add-status--ok { color: var(--positive); }
+.sell-add-status--err { color: var(--warning); }
+
+.sell-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.sell-section-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.sell-mini-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: 'Syne', sans-serif;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.3rem 0.65rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.sell-mini-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.sell-loading,
+.sell-empty {
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.88rem;
+  padding: 0.8rem 0.2rem;
+  line-height: 1.5;
+}
+
+/* Match rows */
+
+.sell-matches-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.sell-match-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sell-match-row {
+  display: grid;
+  grid-template-columns:
+    auto                     /* qty */
+    minmax(6rem, 2fr)        /* item */
+    auto                     /* arrow */
+    minmax(4rem, 1fr)        /* trader */
+    auto                     /* price */
+    auto                     /* total */
+    auto                     /* age */
+    auto;                    /* cta */
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.55rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--positive);
+  border-radius: 3px;
+  text-decoration: none;
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.9rem;
+  transition: border-color 120ms, background 120ms;
+}
+
+.sell-match-row:hover {
+  background: rgba(74, 232, 160, 0.05);
+  border-color: var(--positive);
+}
+
+.sell-match-qty { color: var(--muted); }
+.sell-match-item { font-weight: 700; color: var(--text); }
+.sell-match-arrow { color: var(--muted); }
+.sell-match-trader { color: var(--accent); }
+.sell-match-price { color: var(--positive); white-space: nowrap; }
+.sell-match-unit { color: var(--muted); font-size: 0.75rem; margin-left: 0.1rem; }
+.sell-match-total { color: var(--text); white-space: nowrap; }
+.sell-match-age { color: var(--muted); font-size: 0.78rem; }
+.sell-match-cta { color: var(--positive); font-size: 0.78rem; letter-spacing: 0.04em; }
+
+@media (max-width: 640px) {
+  .sell-match-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "qty item price"
+      "trader trader trader"
+      "total total age";
+    row-gap: 0.3rem;
+  }
+  .sell-match-row .sell-match-qty    { grid-area: qty; }
+  .sell-match-row .sell-match-item   { grid-area: item; }
+  .sell-match-row .sell-match-price  { grid-area: price; text-align: right; }
+  .sell-match-row .sell-match-trader { grid-area: trader; font-size: 0.82rem; }
+  .sell-match-row .sell-match-total  { grid-area: total; }
+  .sell-match-row .sell-match-age    { grid-area: age; text-align: right; }
+  .sell-match-row .sell-match-arrow,
+  .sell-match-row .sell-match-cta    { display: none; }
+}
+
+/* No-offer fold-out */
+
+.sell-no-offers {
+  margin-top: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+}
+
+.sell-no-offers summary {
+  padding: 0.5rem 0.8rem;
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.sell-nomatch-body {
+  padding: 0 0.8rem 0.6rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.sell-nomatch-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  color: var(--muted);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.sell-nomatch-label {
+  color: var(--warning);
+  font-size: 0.78rem;
+}
+
+/* Trader pool list */
+
+.sell-traders-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sell-trader-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) auto auto auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.5rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.88rem;
+}
+
+.sell-trader-name {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 700;
+}
+.sell-trader-name:hover { text-decoration: underline; }
+
+.sell-trader-ok { color: var(--muted); font-size: 0.82rem; }
+.sell-trader-fail { color: var(--warning); font-size: 0.82rem; }
+.sell-trader-age { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+
+.sell-trader-refresh {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: 'Syne', sans-serif;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.sell-trader-refresh:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.sell-trader-refresh:disabled { opacity: 0.4; cursor: not-allowed; }
+
+@media (max-width: 540px) {
+  .sell-trader-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 0.25rem;
+  }
+  .sell-trader-row .sell-trader-age { grid-column: 1 / -1; }
+  .sell-trader-row .sell-trader-refresh { grid-column: 1 / -1; justify-self: stretch; }
+}
