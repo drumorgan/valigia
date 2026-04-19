@@ -42,13 +42,26 @@ async function loadInventory(playerId) {
   // key access too low). We must NOT conflate that with "you actually
   // own nothing" — the renderer shows different copy for each.
   if (!data) return null;
-  if (!Array.isArray(data.inventory)) return [];
-  // Torn returns an array of { ID, name, type, quantity, ... }. Normalise
-  // to our lower-case field names and drop anything without a positive
-  // quantity (unequipped weapon slots, etc.).
-  inventoryCache = data.inventory
+
+  // Torn's `inventory` selection has come back in at least two shapes
+  // across versions: an array of { ID, name, type, quantity } rows, and
+  // an object keyed by slot id whose values have the same fields.
+  // Accept either — otherwise a schema wobble looks like an empty
+  // inventory to the user.
+  let rows;
+  if (Array.isArray(data.inventory)) {
+    rows = data.inventory;
+  } else if (data.inventory && typeof data.inventory === 'object') {
+    rows = Object.values(data.inventory);
+  } else {
+    rows = [];
+  }
+
+  inventoryCache = rows
     .map((row) => ({
-      item_id: Number(row?.ID),
+      // Torn mixes casing across selections: ID in old versions, id in
+      // newer ones. Accept both so we don't silently drop every row.
+      item_id: Number(row?.ID ?? row?.id),
       name: String(row?.name || ''),
       quantity: Number(row?.quantity || 0),
       type: String(row?.type || ''),
