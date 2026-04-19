@@ -35,10 +35,15 @@ export function invalidateSellCache() {
 
 async function loadInventory(playerId) {
   if (inventoryCache) return inventoryCache;
+  // Torn removed the v1 `inventory` selection — it now returns
+  // {"inventory":"The inventory selection is no longer available"}.
+  // The replacement lives at GET /v2/user/inventory, which torn-proxy
+  // routes to when we pass v2: true.
   const data = await callTornApi({
     section: 'user',
     selections: 'inventory',
     player_id: playerId,
+    v2: true,
   });
   // callTornApi returns null when Torn rejects the call (e.g. code 16,
   // key access too low). We must NOT conflate that with "you actually
