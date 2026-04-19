@@ -3142,3 +3142,31 @@ tr.row--negative td {
   .sell-trader-row .sell-trader-age { grid-column: 1 / -1; }
   .sell-trader-row .sell-trader-refresh { grid-column: 1 / -1; justify-self: stretch; }
 }
+
+/* Debug fold-out that surfaces a raw Torn response when the inventory
+   parser yields nothing. Visible only when we actually have a sample. */
+.sell-debug {
+  margin-top: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+}
+.sell-debug summary {
+  padding: 0.45rem 0.8rem;
+  color: var(--warning);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.sell-debug-body {
+  margin: 0;
+  padding: 0.6rem 0.8rem 0.8rem 0.8rem;
+  color: var(--text);
+  font-family: 'Syne Mono', monospace;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

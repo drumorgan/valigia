@@ -22,11 +22,13 @@ import { showToast } from './ui.js';
 // Cached per tab-lifetime so flipping Travel ↔ Sell doesn't re-fetch.
 // Invalidate on submit/refresh so new data lands immediately.
 let inventoryCache = null;         // Array<{ item_id, name, quantity }>
+let inventoryRawSample = null;     // first ~4 KB of the raw response when parse yields []
 let bestBuyersCache = null;        // Map<item_id, { handle, buy_price, ... }>
 let tradersCache = null;           // Array of te_traders rows
 
 export function invalidateSellCache() {
   inventoryCache = null;
+  inventoryRawSample = null;
   bestBuyersCache = null;
   tradersCache = null;
 }
@@ -67,6 +69,21 @@ async function loadInventory(playerId) {
       type: String(row?.type || ''),
     }))
     .filter((r) => Number.isInteger(r.item_id) && r.item_id > 0 && r.quantity > 0);
+
+  // If the parser produced nothing despite Torn returning data, cache a
+  // snippet of the raw response so the renderer can surface it in a
+  // debug <details>. No DevTools on iPad means this is the only way we
+  // get to see what actually came back.
+  if (inventoryCache.length === 0) {
+    try {
+      const snippet = JSON.stringify(data).slice(0, 4000);
+      inventoryRawSample = snippet;
+    } catch {
+      inventoryRawSample = '[unserialisable response]';
+    }
+  } else {
+    inventoryRawSample = null;
+  }
   return inventoryCache;
 }
 
@@ -266,7 +283,22 @@ async function renderMatchesBody(container, playerId) {
     return;
   }
   if (inventory.length === 0) {
-    body.innerHTML = `<div class="sell-empty">Your Torn inventory is empty — nothing to sell.</div>`;
+    // If we captured a raw-response sample, surface it in a collapsed
+    // details block so the user can expand it on iPad (no DevTools) and
+    // paste it back for parser iteration. Hidden unless we actually
+    // have a sample — a genuinely empty inventory shouldn't offer noise.
+    const debugBlock = inventoryRawSample
+      ? `
+        <details class="sell-debug">
+          <summary>Raw inventory response (for debugging)</summary>
+          <pre class="sell-debug-body">${escapeHtml(inventoryRawSample)}</pre>
+        </details>
+      `
+      : '';
+    body.innerHTML = `
+      <div class="sell-empty">Your Torn inventory is empty — nothing to sell.</div>
+      ${debugBlock}
+    `;
     return;
   }
 
