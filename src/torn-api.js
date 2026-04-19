@@ -8,6 +8,14 @@ import { showToast } from './ui.js';
 
 const PROXY_URL = `${supabaseUrl}/functions/v1/torn-proxy`;
 
+// Default per-request timeout. The torn-proxy edge function has its own
+// upstream timeout, but a stuck browser socket (dropped connection, flaky
+// cell tower) can keep fetch() pending forever with no user signal. 20 s
+// is long enough to absorb a legitimately slow Torn response and short
+// enough that a user on the login screen doesn't sit staring at
+// "Validating…" with no clue what's happening.
+const DEFAULT_TIMEOUT_MS = 20_000;
+
 // Once a critical error (like code 16) is shown, suppress further toasts
 // so the important message isn't overwritten by subsequent failures.
 let criticalErrorShown = false;
@@ -22,9 +30,13 @@ let criticalErrorShown = false;
  * @param {number} [params.player_id] - Torn player ID (post-login)
  * @param {number} [params.log] - log type filter (e.g. 6501)
  * @param {number} [params.from] - Unix timestamp for log start
+ * @param {number} [params.timeoutMs] - override DEFAULT_TIMEOUT_MS
  * @returns {object|null} Parsed JSON or null on error
  */
 export async function callTornApi(params) {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...body } = params;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(PROXY_URL, {
       method: 'POST',
@@ -32,7 +44,8 @@ export async function callTornApi(params) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${supabaseAnonKey}`,
       },
-      body: JSON.stringify(params),
+      body: JSON.stringify(body),
+      signal: controller.signal,
     });
 
     if (!res.ok) {
@@ -70,7 +83,13 @@ export async function callTornApi(params) {
 
     return data;
   } catch (err) {
-    showToast(`Network error: ${err.message}`);
+    if (err?.name === 'AbortError') {
+      showToast('Torn API timed out — try again.', 'warning');
+    } else {
+      showToast(`Network error: ${err.message}`);
+    }
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
