@@ -18,6 +18,16 @@ import { getSession } from './auth.js';
 const INGEST_SELL_URL = `${supabaseUrl}/functions/v1/ingest-sell-prices`;
 const INGEST_BAZAAR_URL = `${supabaseUrl}/functions/v1/ingest-bazaar-prices`;
 
+// Rate-limit retry policy. The ingest-* edge functions gate writes at 500ms
+// per-player (migration 027). The dashboard's three sell-price refresh
+// paths (abroad, watchlist, top-travel) all end with one batched
+// ingestSellPrices() each, and they race — any two finishing within 500ms
+// of each other get 429'd. Rather than serialise the callers we retry
+// automatically using the server-advertised retry_after_ms. Three
+// attempts covers back-to-back bursts up to ~1.5s apart without
+// masking a real outage.
+const INGEST_RETRY_ATTEMPTS = 3;
+
 function authBody() {
   const session = getSession();
   if (!session) return null;
@@ -31,28 +41,52 @@ async function postIngest(url, rows) {
   const auth = authBody();
   if (!auth) return { ok: false, error: 'no_session' };
 
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${supabaseAnonKey}`,
-      },
-      body: JSON.stringify({ ...auth, rows }),
-    });
-    if (!res.ok) {
+  let lastBody = null;
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < INGEST_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+        },
+        body: JSON.stringify({ ...auth, rows }),
+      });
+      if (res.ok) return { ok: true, status: res.status };
+
       let body = {};
       try { body = await res.json(); } catch { /* ignore */ }
+      lastBody = body;
+      lastStatus = res.status;
+
+      // 429 = per-player ingest rate limiter (migration 027). The server
+      // tells us exactly how long to wait via retry_after_ms; add a small
+      // jitter so two racing callers don't wake up at the exact same
+      // instant and re-collide on the next gate check.
+      if (res.status === 429 && attempt < INGEST_RETRY_ATTEMPTS - 1) {
+        const retryMs = Number(body?.retry_after_ms) > 0
+          ? Number(body.retry_after_ms)
+          : 500;
+        const jitter = Math.floor(Math.random() * 120);
+        await new Promise((r) => setTimeout(r, retryMs + jitter));
+        continue;
+      }
+
       return {
         ok: false,
         status: res.status,
         error: body.error || `HTTP ${res.status}`,
       };
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
     }
-    return { ok: true, status: res.status };
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) };
   }
+  return {
+    ok: false,
+    status: lastStatus,
+    error: lastBody?.error || `HTTP ${lastStatus}`,
+  };
 }
 
 /**
