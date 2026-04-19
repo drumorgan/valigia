@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.7.7
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor.
+// @version      0.8.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
 // @match        https://www.torn.com/bazaar.php*
+// @match        https://www.torn.com/item.php*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
@@ -28,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.7.7';
+  const SCRIPT_VERSION = '0.8.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1907,6 +1908,388 @@
     await Promise.all([ingestPromise, overlayPromise]);
   }
 
+  // -- Item page (item.php) ------------------------------------------------
+  // Torn's own Items page (item.php) lists every item the player owns,
+  // broken up into category tabs (Flowers / Plushies / Drugs / ...). The
+  // Torn API's v1 `user/?selections=inventory` path has been deprecated
+  // ("The inventory selection is no longer available") and the v2
+  // replacement has had flaky rollout on PDA — but the page itself is
+  // right there in the browser, so we scrape it directly.
+  //
+  // What this runner does:
+  //   1. Scrape the currently-visible category tab for { item_id, name, qty }.
+  //   2. Merge into a per-player localStorage cache so multiple tabs
+  //      accumulate across a single page visit (and so the web-app Sell
+  //      tab can read the same inventory without another Torn call).
+  //   3. Query te_buy_prices for every item_id in the cache and find the
+  //      single highest buy-offer per item (anon SELECT — public data).
+  //   4. Inject a green "Best Sell Opportunities" bar at the top of the
+  //      page, summarising the rows whose best offer × qty is largest.
+  //
+  // The bar updates live: a MutationObserver watches the items list for
+  // tab-switch-induced DOM swaps and re-runs the scrape, so a player who
+  // clicks through Flowers → Plushies → Drugs sees the bar grow each time.
+
+  const ITEM_PAGE_BAR_ID = 'valigia-sell-opportunities-bar';
+  const INVENTORY_CACHE_KEY_PREFIX = 'valigia_pda_inventory_v1_';
+  // Inventory rows older than this are dropped when we reload the cache —
+  // stale data from an old session shouldn't be quoted as "your stack".
+  const INVENTORY_TTL_MS = 24 * 60 * 60 * 1000;
+  const TE_BUY_PRICES_URL = SUPABASE_REST_URL + '/te_buy_prices';
+
+  function inventoryCacheKey(playerId) {
+    return INVENTORY_CACHE_KEY_PREFIX + String(playerId || 'anon');
+  }
+
+  function loadInventoryCache(playerId) {
+    try {
+      const raw = localStorage.getItem(inventoryCacheKey(playerId));
+      if (!raw) return new Map();
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return new Map();
+      const cutoff = Date.now() - INVENTORY_TTL_MS;
+      const map = new Map();
+      for (const [k, v] of Object.entries(parsed)) {
+        if (!v || typeof v !== 'object') continue;
+        const id = Number(k);
+        const qty = Number(v.quantity);
+        const ts = Number(v.observed_at);
+        if (!Number.isInteger(id) || id <= 0) continue;
+        if (!Number.isFinite(qty) || qty <= 0) continue;
+        if (!Number.isFinite(ts) || ts < cutoff) continue;
+        map.set(id, {
+          item_id: id,
+          name: typeof v.name === 'string' ? v.name : '',
+          quantity: qty,
+          observed_at: ts,
+        });
+      }
+      return map;
+    } catch (_) {
+      return new Map();
+    }
+  }
+
+  function saveInventoryCache(playerId, map) {
+    try {
+      const out = {};
+      for (const [id, row] of map) out[id] = row;
+      localStorage.setItem(inventoryCacheKey(playerId), JSON.stringify(out));
+    } catch (_) { /* quota etc. — non-fatal, bar still works this session */ }
+  }
+
+  // Scrape the currently-visible category's item rows. Uses the same
+  // /images/items/{id}/ selector other runners rely on, plus the shared
+  // rowContainer() heuristic to tolerate Torn's <tr>/<div> drift.
+  function scrapeItemPageRows() {
+    const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
+    const rows = new Map();
+    const seenRows = new Set();
+    for (const img of imgs) {
+      const src = img.getAttribute('src') || '';
+      const idMatch = src.match(/\/images\/items\/(\d+)\//);
+      if (!idMatch) continue;
+      const item_id = Number(idMatch[1]);
+
+      const row = rowContainer(img);
+      if (!row || seenRows.has(row)) continue;
+      seenRows.add(row);
+
+      // Skip the left sidebar's item-icon row (category tabs, equipped
+      // preview) — those have images but no "x{N}" count next to them.
+      const text = (row.innerText || '').trim();
+      const qtyMatch = text.match(/\bx\s*([\d,]+)\b/i);
+      if (!qtyMatch) continue;
+      const quantity = Number(qtyMatch[1].replace(/,/g, ''));
+      if (!Number.isInteger(quantity) || quantity <= 0) continue;
+
+      const altName = (img.getAttribute('alt') || '').trim();
+      // Fall back to the text before the "xN" if alt is empty. Keep it
+      // short — a row can have follow-on text like "Send", "Destroy",
+      // prices, etc., and we only want the name.
+      const nameFromText = text.split(/\bx\s*[\d,]+\b/i)[0]
+        .replace(/\s+/g, ' ')
+        .trim();
+      const name = altName || nameFromText.slice(0, 60);
+      if (!name) continue;
+
+      rows.set(item_id, { item_id, name, quantity, observed_at: Date.now() });
+    }
+    return rows;
+  }
+
+  async function fetchTeBuyPricesFor(itemIds) {
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return new Map();
+    const url = TE_BUY_PRICES_URL +
+      '?select=handle,item_id,item_name,buy_price,updated_at' +
+      '&item_id=in.(' + itemIds.join(',') + ')';
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: url,
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) return new Map();
+      const rows = JSON.parse(res.responseText || '[]');
+      // Collapse to best (highest) buy_price per item_id. Freshness is a
+      // tiebreak so a newly-scraped trader wins ties over an old one.
+      const best = new Map();
+      for (const r of rows) {
+        if (!r || typeof r.item_id !== 'number' || typeof r.buy_price !== 'number') continue;
+        const existing = best.get(r.item_id);
+        if (
+          !existing
+          || r.buy_price > existing.buy_price
+          || (r.buy_price === existing.buy_price && (r.updated_at || '') > (existing.updated_at || ''))
+        ) {
+          best.set(r.item_id, r);
+        }
+      }
+      return best;
+    } catch (_) {
+      return new Map();
+    }
+  }
+
+  function injectItemPageStyles() {
+    if (document.getElementById('valigia-itempage-styles')) return;
+    const st = document.createElement('style');
+    st.id = 'valigia-itempage-styles';
+    st.textContent = `
+      #${ITEM_PAGE_BAR_ID} {
+        font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+        background: #0d0f14;
+        color: #c8cdd8;
+        border: 1px solid #252a35;
+        border-left: 3px solid #4ae8a0;
+        border-radius: 4px;
+        margin: 8px 0;
+        overflow: hidden;
+      }
+      #${ITEM_PAGE_BAR_ID} summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 10px 12px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+      }
+      #${ITEM_PAGE_BAR_ID} summary::-webkit-details-marker { display: none; }
+      #${ITEM_PAGE_BAR_ID} summary::before {
+        content: '▸';
+        color: #4ae8a0;
+        transition: transform 120ms ease;
+      }
+      #${ITEM_PAGE_BAR_ID}[open] summary::before { transform: rotate(90deg); }
+      #${ITEM_PAGE_BAR_ID} .v-ip-title {
+        font-weight: 700;
+        color: #4ae8a0;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        font-size: 11px;
+      }
+      #${ITEM_PAGE_BAR_ID} .v-ip-count {
+        font-weight: 400;
+        color: #5a6070;
+        margin-left: auto;
+        font-size: 11px;
+      }
+      #${ITEM_PAGE_BAR_ID} .v-ip-total {
+        color: #4ae8a0;
+        font-weight: 700;
+      }
+      #${ITEM_PAGE_BAR_ID} .v-ip-rows {
+        border-top: 1px solid #252a35;
+        max-height: 60vh;
+        overflow-y: auto;
+      }
+      #${ITEM_PAGE_BAR_ID} .v-ip-row {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: 8px 10px;
+        padding: 8px 12px;
+        border-bottom: 1px solid #1a1e27;
+        text-decoration: none;
+        color: #c8cdd8;
+        font-size: 12px;
+      }
+      #${ITEM_PAGE_BAR_ID} .v-ip-row:last-child { border-bottom: 0; }
+      #${ITEM_PAGE_BAR_ID} .v-ip-row:hover { background: rgba(74, 232, 160, 0.05); }
+      #${ITEM_PAGE_BAR_ID} .v-ip-qty { color: #5a6070; font-variant-numeric: tabular-nums; }
+      #${ITEM_PAGE_BAR_ID} .v-ip-item { font-weight: 700; color: #c8cdd8; }
+      #${ITEM_PAGE_BAR_ID} .v-ip-trader { color: #e8c84a; font-size: 11px; }
+      #${ITEM_PAGE_BAR_ID} .v-ip-price { color: #4ae8a0; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      #${ITEM_PAGE_BAR_ID} .v-ip-unit { color: #5a6070; font-size: 10px; }
+      #${ITEM_PAGE_BAR_ID} .v-ip-stack { color: #c8cdd8; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: 11px; }
+    `;
+    document.head.appendChild(st);
+  }
+
+  function fmtMoney(n) {
+    if (!Number.isFinite(n)) return '—';
+    return '$' + Math.round(n).toLocaleString('en-US');
+  }
+
+  function buildItemPageBar(matches) {
+    injectItemPageStyles();
+
+    const totalPay = matches.reduce((s, m) => s + m.total, 0);
+
+    const details = document.createElement('details');
+    details.id = ITEM_PAGE_BAR_ID;
+
+    const summary = document.createElement('summary');
+    summary.innerHTML = `
+      <span class="v-ip-title">Best sell opportunities</span>
+      <span class="v-ip-total">${fmtMoney(totalPay)}</span>
+      <span class="v-ip-count">${matches.length} item${matches.length === 1 ? '' : 's'}</span>
+    `;
+    details.appendChild(summary);
+
+    const rowsEl = document.createElement('div');
+    rowsEl.className = 'v-ip-rows';
+    for (const m of matches) {
+      const a = document.createElement('a');
+      a.className = 'v-ip-row';
+      a.href = 'https://tornexchange.com/prices/' + encodeURIComponent(m.offer.handle) + '/';
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.innerHTML = `
+        <span class="v-ip-qty">${m.item.quantity.toLocaleString('en-US')}×</span>
+        <span class="v-ip-item">${escapeHtml(m.offer.item_name || m.item.name)} <span class="v-ip-trader">→ ${escapeHtml(m.offer.handle)}</span></span>
+        <span class="v-ip-price">${fmtMoney(m.offer.buy_price)}<span class="v-ip-unit">/ea</span></span>
+        <span class="v-ip-stack">${fmtMoney(m.total)}</span>
+      `;
+      rowsEl.appendChild(a);
+    }
+    details.appendChild(rowsEl);
+
+    return details;
+  }
+
+  // Lightweight HTML escape — other runners use a shared one but it's not
+  // exported in this script, so keep a local copy to avoid reshuffling.
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  async function renderItemPageBar(playerId) {
+    const inventory = loadInventoryCache(playerId);
+    if (inventory.size === 0) {
+      const existing = document.getElementById(ITEM_PAGE_BAR_ID);
+      if (existing) existing.remove();
+      return;
+    }
+
+    const ids = Array.from(inventory.keys());
+    const offers = await fetchTeBuyPricesFor(ids);
+
+    const matches = [];
+    for (const [id, row] of inventory) {
+      const offer = offers.get(id);
+      if (!offer) continue;
+      matches.push({ item: row, offer, total: offer.buy_price * row.quantity });
+    }
+    matches.sort((a, b) => b.total - a.total);
+
+    const prev = document.getElementById(ITEM_PAGE_BAR_ID);
+    if (matches.length === 0) {
+      if (prev) prev.remove();
+      return;
+    }
+    const bar = buildItemPageBar(matches);
+    if (prev) prev.replaceWith(bar);
+    else {
+      const host =
+        document.querySelector('#mainContainer .content-wrapper') ||
+        document.querySelector('.content-wrapper') ||
+        document.querySelector('#mainContainer') ||
+        document.body;
+      host.insertBefore(bar, host.firstChild);
+    }
+  }
+
+  // Debounced scrape + render. A category-tab click re-renders Torn's
+  // items list, which fires a flurry of MutationObserver callbacks —
+  // collapse them into one scrape.
+  let itemPageScheduled = null;
+  function scheduleItemPageScan(playerId, reason) {
+    if (itemPageScheduled) clearTimeout(itemPageScheduled);
+    itemPageScheduled = setTimeout(async function () {
+      itemPageScheduled = null;
+      try {
+        const fresh = scrapeItemPageRows();
+        if (fresh.size === 0) {
+          // Could just be mid-swap — try once more after a short beat.
+          log('item.php: empty scrape reason=' + reason);
+          return;
+        }
+        const cache = loadInventoryCache(playerId);
+        for (const [id, row] of fresh) cache.set(id, row);
+        saveInventoryCache(playerId, cache);
+        await renderItemPageBar(playerId);
+      } catch (e) {
+        log('item.php scan error:', e);
+      }
+    }, 350);
+  }
+
+  async function runItemPage() {
+    const playerId = await resolvePlayerId();
+    if (!playerId) return;
+
+    // First pass on whatever is currently rendered. Render the bar from
+    // any pre-existing cache too — category tabs the player already
+    // visited this session stay useful until TTL expires.
+    scheduleItemPageScan(playerId, 'initial');
+
+    // Watch the document for item-list swaps. We attach broadly (body)
+    // and filter in the callback to keep the wiring simple — Torn's
+    // DOM shape has varied enough across skins that a more targeted
+    // selector has a habit of breaking. Observer disconnects on page
+    // navigation via the lastDispatchedUrl guard below.
+    const observer = new MutationObserver(function (mutations) {
+      // Only re-scrape when at least one mutation touched a node that
+      // contains an item image — otherwise minor UI bits (hamburger
+      // expand, notification badge) would re-fire for nothing.
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node && node.nodeType === 1) {
+            if (node.matches && (node.matches('img[src*="/images/items/"]') ||
+                node.querySelector && node.querySelector('img[src*="/images/items/"]'))) {
+              scheduleItemPageScan(playerId, 'mutation');
+              return;
+            }
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    // Tear down if the PDA dispatcher fires again for a different URL
+    // (e.g. user navigates to the Item Market). The existing
+    // scheduleDispatch() flow doesn't explicitly cancel observers, but
+    // hashchange is its main trigger and a hashchange → different page
+    // → rowContainer wouldn't find item images anyway.
+    window.addEventListener('hashchange', function once() {
+      observer.disconnect();
+      window.removeEventListener('hashchange', once);
+    });
+
+    // Not pinging the scout counter here — record-pda-activity's
+    // ALLOWED_PAGE_TYPES is currently {travel, item_market, bazaar}
+    // and expanding it belongs in its own change. This runner's value
+    // to the player is immediate (the bar + the cached inventory);
+    // the scouts counter is vanity.
+  }
+
   // -- Dispatch ------------------------------------------------------------
   // Route the current page to the right runner. The PDA-APIKEY placeholder
   // check stays as the single gate: only run inside Torn PDA. Outside PDA
@@ -1917,6 +2300,7 @@
     if (/\/page\.php\?.*sid=travel\b/i.test(url)) return 'travel';
     if (/\/page\.php\?.*sid=ItemMarket\b/i.test(url)) return 'itemmarket';
     if (/\/bazaar\.php/i.test(url)) return 'bazaar';
+    if (/\/item\.php/i.test(url)) return 'itempage';
     return null;
   }
 
@@ -1930,6 +2314,7 @@
       case 'travel':     return runTravel();
       case 'itemmarket': return runItemMarket();
       case 'bazaar':     return runBazaar();
+      case 'itempage':   return runItemPage();
       default:
         log('Unmatched page - skipping. url=' + location.href);
     }

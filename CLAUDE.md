@@ -357,7 +357,7 @@ valigia.girovagabondo.com/
 
 ## PDA Userscript (`public/valigia-ingest.user.js`)
 
-A single userscript that runs inside Torn PDA across three page types. PDA
+A single userscript that runs inside Torn PDA across four page types. PDA
 substitutes `###PDA-APIKEY###` with the installed user's Torn key at
 runtime; the script refuses to run if that placeholder is still literal
 (i.e. outside PDA).
@@ -375,6 +375,9 @@ installed PDA.
 | `page.php?sid=travel*` | `runTravel()` | `abroad_prices` + overlay | `ingest-travel-shop` edge fn (key-validated upsert) |
 | `page.php?sid=ItemMarket*` | `runItemMarket()` | `sell_prices` | Direct PostgREST anon upsert |
 | `bazaar.php*` | `runBazaar()` | `bazaar_prices` | Direct PostgREST anon upsert |
+| `item.php*` | `runItemPage()` | localStorage only (private) | Reads `te_buy_prices` via anon SELECT |
+
+The Items-page runner is a pure-read surface: it scrapes the current category's inventory rows (name + quantity), merges them into a per-player `localStorage` cache so multiple tab visits accumulate across a session, and queries `te_buy_prices` for the highest buy-offer per item_id. A green collapsed **Best Sell Opportunities bar** at the top of the page summarises the rows sorted by total trader-pays. A MutationObserver re-runs the scrape whenever Torn swaps the items list (category tab clicks, search filtering) so the bar grows live as the player browses tabs. Inventory never leaves the player's own browser — this is the workaround for Torn having deprecated the v1 `user/?selections=inventory` selection.
 
 The travel runner also paints a per-row overlay (`Market Price · $margin ·
 margin%`) with a green BEST badge on the highest-margin in-stock row.
