@@ -229,6 +229,14 @@ async function startDashboard(playerId, playerName) {
   renderControls(controlsBar, () => renderTable());
   renderShimmerTable(tableContainer);
 
+  // Restore the last-selected tab as soon as the three tab hosts exist.
+  // Doing this up-front (rather than after the async data pipeline
+  // finishes) means a YATA/Torn hiccup on the Travel tab can't strand
+  // the user back on Travel after a refresh. Fire-and-forget — the
+  // target tab owns its own render.
+  const storedTab = getStoredTab();
+  if (storedTab !== 'travel') switchTab(storedTab);
+
   // Resolve item IDs (one-time Torn API call, cached in localStorage)
   await resolveItemIds(playerId);
 
@@ -373,14 +381,6 @@ async function startDashboard(playerId, playerName) {
   // tab badge reflects the same count so unvisited matches are obvious.
   // Fire-and-forget: both surfaces hide themselves if anything fails.
   refreshWatchlistSurfaces();
-
-  // Restore the last-selected tab. We only do this AFTER the Travel
-  // dashboard's DOM is built and its async data is in flight, so when the
-  // user switches back to Travel the data is already there. Using the
-  // sentinel 'travel' as the default means this is a no-op for users who
-  // never left the default.
-  const storedTab = getStoredTab();
-  if (storedTab !== 'travel') switchTab(storedTab);
 }
 
 // ── TE self-refresh on login ─────────────────────────────────
