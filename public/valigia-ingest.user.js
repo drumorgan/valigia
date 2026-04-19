@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.1
+// @version      0.8.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.8.1';
+  const SCRIPT_VERSION = '0.8.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -468,6 +468,29 @@
     return { ok: false, error: lastError, raw: lastRaw, retried: true };
   }
 
+  // -- Friendly ingest-error text -----------------------------------------
+  // The edge functions echo Torn's literal error wording on a rejected
+  // key (e.g. "Torn API rejected key: Incorrect key" for code 2). That's
+  // technically accurate but un-actionable on iPad where PDA is the only
+  // place the key lives — the user doesn't always realise "the key"
+  // means the one they pasted into PDA's Script Manager, not the one
+  // stored on Valigia's server. Translate the common failures into a
+  // one-line instruction the user can act on without leaving the toast.
+  function friendlyIngestError(label, rowCount, result) {
+    const raw = (result && result.error) || 'unknown';
+    const lower = String(raw).toLowerCase();
+    if (lower.indexOf('incorrect key') !== -1 || lower.indexOf('invalid key') !== -1) {
+      return label + ': Torn rejected your API key. Update it in PDA Settings \u2192 Script Manager \u2192 Valigia.';
+    }
+    if (lower.indexOf('access level') !== -1 || lower.indexOf('key access') !== -1) {
+      return label + ': API key is missing a permission. Re-create a Custom Key from the Valigia login screen.';
+    }
+    if (lower.indexOf('rate_limited') !== -1 || lower.indexOf('rate limit') !== -1) {
+      return label + ': rate-limited by Valigia \u2014 scrape again in a few seconds.';
+    }
+    return label + ' (' + rowCount + '): ' + raw;
+  }
+
   // -- Per-item profit math ------------------------------------------------
   // The overlay only displays per-item values, so we only compute them.
   // Net sell is after Torn's 5% item-market fee. Returns null when inputs
@@ -849,7 +872,7 @@
       toast('Item Market: ' + result.count + ' prices', 'success');
       pingActivity('item_market');
     } else {
-      toast('Market (' + upsertRows.length + '): ' + (result.error || 'unknown'), 'error');
+      toast(friendlyIngestError('Market', upsertRows.length, result), 'error');
     }
   }
 
@@ -1003,7 +1026,7 @@
       toast('Bazaar: ' + result.count + ' prices', 'success');
       pingActivity('bazaar');
     } else {
-      toast('Bazaar (' + rows.length + '): ' + (result.error || 'unknown'), 'error');
+      toast(friendlyIngestError('Bazaar', rows.length, result), 'error');
     }
   }
 
