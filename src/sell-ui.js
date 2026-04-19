@@ -38,7 +38,11 @@ async function loadInventory(playerId) {
     selections: 'inventory',
     player_id: playerId,
   });
-  if (!data || !Array.isArray(data.inventory)) return [];
+  // callTornApi returns null when Torn rejects the call (e.g. code 16,
+  // key access too low). We must NOT conflate that with "you actually
+  // own nothing" — the renderer shows different copy for each.
+  if (!data) return null;
+  if (!Array.isArray(data.inventory)) return [];
   // Torn returns an array of { ID, name, type, quantity, ... }. Normalise
   // to our lower-case field names and drop anything without a positive
   // quantity (unequipped weapon slots, etc.).
@@ -163,12 +167,12 @@ export async function renderSellTab(container, playerId) {
       <form class="sell-add" id="sell-add-form">
         <div class="sell-add-row">
           <label class="sell-field">
-            <span class="sell-field-label">TE page URL, handle, or player ID</span>
+            <span class="sell-field-label">TornExchange page URL or handle</span>
             <input
               type="text"
               id="sell-input"
               class="sell-input"
-              placeholder="https://tornexchange.com/prices/OldGoat/ — or OldGoat — or 2345678"
+              placeholder="https://tornexchange.com/prices/OldGoat/ — or just OldGoat"
               autocomplete="off"
               spellcheck="false"
             />
@@ -235,7 +239,20 @@ async function renderMatchesBody(container, playerId) {
     body.innerHTML = `<div class="sell-empty">Could not load inventory: ${escapeHtml(err?.message || 'unknown error')}</div>`;
     return;
   }
-  if (!inventory || inventory.length === 0) {
+  // null = Torn rejected the call (usually code 16 — the stored key
+  // predates the `inventory` scope). Tell the user exactly what to do;
+  // "empty inventory" copy would be misleading here.
+  if (inventory === null) {
+    body.innerHTML = `
+      <div class="sell-empty">
+        Valigia couldn't read your inventory. Your Torn API key is missing
+        the <code>inventory</code> permission — log out, then log back in
+        and use the "Create a Custom Key on Torn" link to make a new one.
+      </div>
+    `;
+    return;
+  }
+  if (inventory.length === 0) {
     body.innerHTML = `<div class="sell-empty">Your Torn inventory is empty — nothing to sell.</div>`;
     return;
   }
