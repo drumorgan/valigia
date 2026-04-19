@@ -116,7 +116,12 @@ function wireTypeahead(root) {
   function render(query) {
     currentResults = filterItemSuggestions(query);
     if (currentResults.length === 0) {
-      list.innerHTML = `<li class="wl-typeahead-empty">No items match "${query}"</li>`;
+      // textContent (not innerHTML) — `query` is user input and would
+      // otherwise be an XSS sink when someone types `<img onerror=…>`.
+      const li = document.createElement('li');
+      li.className = 'wl-typeahead-empty';
+      li.textContent = `No items match "${query}"`;
+      list.replaceChildren(li);
       list.hidden = false;
       return;
     }
