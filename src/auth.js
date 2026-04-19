@@ -152,7 +152,12 @@ export async function handleLogin(apiKey) {
   const playerId = userData.player_id;
 
   // Step 2: encrypt and store key server-side; server returns a session token.
+  // 15 s timeout — if set-api-key hangs past this, the login button stays
+  // disabled forever and the user has no path to recover. AbortController +
+  // a visible toast keeps the UI honest.
   let sessionToken = null;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
   try {
     const res = await fetch(SET_KEY_URL, {
       method: 'POST',
@@ -164,6 +169,7 @@ export async function handleLogin(apiKey) {
         player_id: playerId,
         api_key: key,
       }),
+      signal: controller.signal,
     });
 
     const result = await res.json();
@@ -173,8 +179,14 @@ export async function handleLogin(apiKey) {
     }
     sessionToken = result.session_token;
   } catch (err) {
-    showToast(`Key storage error: ${err.message}`);
+    if (err?.name === 'AbortError') {
+      showToast('Login timed out — please try again.', 'warning');
+    } else {
+      showToast(`Key storage error: ${err.message}`);
+    }
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   // Step 3: save session bundle locally. Also sweep the legacy key so a
