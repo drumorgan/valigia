@@ -25,6 +25,14 @@
 -- clean slate before re-creating the table with service-role-only
 -- writes. On the live/normal sequence (001 → 003 → 013) the table
 -- is already gone, so this is a harmless no-op.
+--
+-- ⚠ Re-running this migration on an already-live DB will cascade-drop
+-- every trigger attached to abroad_prices. Currently that means
+--   - trg_emit_restock_event  (migration 018_restock_events.sql)
+--   - trg_emit_snapshot       (migration 023_snapshot_from_abroad_prices.sql)
+-- Re-apply both migrations in that order after re-running this one, or
+-- the restock-event log and yata_snapshots mirror will stop updating
+-- from PDA scrapes (the web app path keeps working either way).
 drop table if exists abroad_prices cascade;
 
 create table abroad_prices (
