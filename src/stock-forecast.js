@@ -105,9 +105,11 @@ export async function recordSnapshots(items) {
   // for items in this batch and insert only the rows where quantity or
   // buy_price has changed.
   //
-  // Race condition accepted: if two users load simultaneously and both see
-  // "no row yet" they'll each insert — one duplicate, not a regression.
-  // The next prune sweep catches it, or it dedups out when one changes.
+  // Concurrent-write safety: the DB guarantees dedup via migration 026's
+  // unique index on (item_id, destination, snapped_minute). The client-side
+  // read below is kept as a payload-shrinking optimization, not a correctness
+  // requirement — two racing dashboard loads collapse into one row at the
+  // index level (see the upsert(..., { ignoreDuplicates: true }) below).
   const itemIds = [...new Set(rows.map(r => r.item_id))];
   const latestMap = new Map(); // "itemId|destination" -> { quantity, buy_price }
   try {
@@ -144,8 +146,18 @@ export async function recordSnapshots(items) {
   // hid a silent RLS/permission failure during initial rollout. Surface
   // the real Postgres message to the user once per session so the UI is
   // an honest diagnostic surface (we're iPad-only, no DevTools).
+  //
+  // upsert with ignoreDuplicates: true lets migration 026's unique index
+  // on (item_id, destination, snapped_minute) quietly discard concurrent
+  // writes that land in the same minute bucket, instead of failing the
+  // whole batch with a 23505 conflict.
   try {
-    const { error } = await supabase.from('yata_snapshots').insert(changed);
+    const { error } = await supabase
+      .from('yata_snapshots')
+      .upsert(changed, {
+        onConflict: 'item_id,destination,snapped_minute',
+        ignoreDuplicates: true,
+      });
     if (error) {
       reportSnapshotError(`Stock history write failed: ${error.message}`);
     }
