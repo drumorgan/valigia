@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.7.4
+// @version      0.7.5
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.7.4';
+  const SCRIPT_VERSION = '0.7.5';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -814,7 +814,7 @@
       toast('Item Market: ' + result.count + ' prices', 'success');
       pingActivity('item_market');
     } else {
-      toast('Market upsert failed (' + upsertRows.length + ')', 'error');
+      toast('Market (' + upsertRows.length + '): ' + (result.error || 'unknown'), 'error');
     }
   }
 
@@ -968,7 +968,7 @@
       toast('Bazaar: ' + result.count + ' prices', 'success');
       pingActivity('bazaar');
     } else {
-      toast('Bazaar upsert failed', 'error');
+      toast('Bazaar (' + rows.length + '): ' + (result.error || 'unknown'), 'error');
     }
   }
 
