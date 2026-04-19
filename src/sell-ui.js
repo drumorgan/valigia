@@ -15,6 +15,7 @@ import {
   submitTrader, listTraders, refreshStaleTrader,
 } from './te-traders.js';
 import { showToast } from './ui.js';
+import { openPdaInstallModal } from './pda-install-modal.js';
 
 let tradersCache = null;
 
@@ -85,13 +86,26 @@ export async function renderSellTab(container, _playerId) {
         <h2 class="sell-heading">Sell</h2>
         <p class="sell-sub">
           TornExchange traders advertise standing buy-offers for items.
-          Submit a trader's page and we'll keep a shared pool of their
-          prices so every Valigia user can find the best buyer. For the
-          inventory matcher itself, open <strong>torn.com/item.php</strong>
-          inside Torn PDA with the Valigia userscript installed — it
-          surfaces a "Best Sell Opportunities" bar at the top of your
-          Items page using this same pool.
+          Submit a trader's page below and we'll keep a shared pool of
+          their prices so every Valigia user can find the best buyer.
         </p>
+      </div>
+
+      <div class="sell-cta">
+        <div class="sell-cta-body">
+          <div class="sell-cta-title">See your inventory &rarr; best buyer in-game</div>
+          <p class="sell-cta-text">
+            The inventory matcher runs inside <strong>Torn PDA</strong>,
+            not here. Install the Valigia userscript, open
+            <strong>torn.com/item.php</strong>, and every stack you own
+            gets tagged with its best TornExchange buyer at the top of
+            the page. Click through each category (Flowers, Plushies,
+            Drugs, &hellip;) and the bar grows as you go.
+          </p>
+        </div>
+        <button type="button" id="sell-install-pda" class="sell-cta-btn">
+          Install PDA overlay
+        </button>
       </div>
 
       <form class="sell-add" id="sell-add-form">
@@ -126,6 +140,9 @@ export async function renderSellTab(container, _playerId) {
 
   const form = container.querySelector('#sell-add-form');
   form.addEventListener('submit', (e) => handleSubmit(e, container));
+
+  const installBtn = container.querySelector('#sell-install-pda');
+  if (installBtn) installBtn.addEventListener('click', () => openPdaInstallModal());
 
   container.querySelector('#sell-refresh-traders').addEventListener('click', () => {
     invalidateSellCache();

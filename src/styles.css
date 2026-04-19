@@ -2861,6 +2861,67 @@ tr.row--negative td {
   gap: 0.7rem;
 }
 
+/* PDA install CTA — lives between the intro and the submit form so it's
+   the first thing a user sees. Green left-border matches the "Best Sell
+   Opportunities" bar the userscript injects, so the visual language
+   lines up once they have it installed. */
+.sell-cta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--positive);
+  border-radius: 4px;
+  padding: 0.9rem 1rem;
+}
+
+.sell-cta-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sell-cta-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--positive);
+  margin-bottom: 0.35rem;
+}
+
+.sell-cta-text {
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.sell-cta-btn {
+  flex: 0 0 auto;
+  background: var(--positive);
+  color: #0d0f14;
+  border: none;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.6rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sell-cta-btn:hover { background: #62efb2; }
+
+@media (max-width: 640px) {
+  .sell-cta {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .sell-cta-btn { width: 100%; }
+}
+
 .sell-add-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
