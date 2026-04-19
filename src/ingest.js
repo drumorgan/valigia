@@ -43,9 +43,13 @@ async function postIngest(url, rows) {
     if (!res.ok) {
       let body = {};
       try { body = await res.json(); } catch { /* ignore */ }
-      return { ok: false, error: body.error || `HTTP ${res.status}` };
+      return {
+        ok: false,
+        status: res.status,
+        error: body.error || `HTTP ${res.status}`,
+      };
     }
-    return { ok: true };
+    return { ok: true, status: res.status };
   } catch (err) {
     return { ok: false, error: err?.message || String(err) };
   }
@@ -65,6 +69,12 @@ export async function ingestSellPrices(rows) {
 
   const result = await postIngest(INGEST_SELL_URL, rows);
   if (result.ok) return result;
+
+  // 429 is a deliberate rate-limit from the edge function (migration 027).
+  // Falling back to the direct anon upsert would bypass the gate entirely,
+  // defeating the whole point. Surface the block instead — the caller
+  // decides whether to retry. Other errors (5xx, network) still fall back.
+  if (result.status === 429) return result;
 
   const withTimestamp = rows.map(r => ({
     item_id: r.item_id,
@@ -93,6 +103,9 @@ export async function ingestBazaarPrices(rows) {
 
   const result = await postIngest(INGEST_BAZAAR_URL, rows);
   if (result.ok) return result;
+
+  // See ingestSellPrices() — 429 must NOT fall back to anon upsert.
+  if (result.status === 429) return result;
 
   const nowIso = new Date().toISOString();
   const withTimestamp = rows.map(r => ({

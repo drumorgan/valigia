@@ -1,11 +1,47 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0';
 
 // ── Inlined shared: CORS ────────────────────────────────────────
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+// ── Rate-limit gate ─────────────────────────────────────────────
+// Calls the ingest_rate_check SQL function (migration 027) to atomically
+// check-and-set the last_write_at for this (player_id, endpoint). Fails
+// open on RPC error: a DB hiccup shouldn't block legitimate writes.
+async function checkRateLimit(
+  supabase: SupabaseClient,
+  playerId: number,
+  endpoint: string,
+  minIntervalMs: number,
+): Promise<{ allowed: true } | { allowed: false; response: Response }> {
+  try {
+    const { data, error } = await supabase.rpc('ingest_rate_check', {
+      p_player_id: playerId,
+      p_endpoint: endpoint,
+      p_min_interval_ms: minIntervalMs,
+    });
+    if (error || data !== false) return { allowed: true };
+    return {
+      allowed: false,
+      response: new Response(
+        JSON.stringify({ error: 'rate_limited', retry_after_ms: minIntervalMs }),
+        {
+          status: 429,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+            'Retry-After': String(Math.max(1, Math.ceil(minIntervalMs / 1000))),
+          },
+        },
+      ),
+    };
+  } catch {
+    return { allowed: true };
+  }
+}
 
 // ── Types ───────────────────────────────────────────────────────
 interface ShopItem {
@@ -117,6 +153,12 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Step 1b — rate-limit per-player. Travel scrapes happen once per
+    // landing; a flight is at least ~10 min, so 5 s is generous and
+    // blocks tight mass-upsert loops even from a legitimate key.
+    const gate = await checkRateLimit(supabase, player_id, 'travel-shop', 5000);
+    if (!gate.allowed) return gate.response;
 
     // Step 2 — flatten shops into rows, validating each item.
     const rows: Array<{
