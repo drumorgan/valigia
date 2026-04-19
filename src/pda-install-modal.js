@@ -83,6 +83,15 @@ function markButtonSeen() {
 
 let currentBackdrop = null;
 
+// Exposed for callers that want their own "install PDA overlay" entry
+// point — e.g. the Sell tab, where the whole inventory matcher hinges
+// on the PDA script being installed. Reuses the same walkthrough the
+// header button opens.
+export function openPdaInstallModal() {
+  markButtonSeen();
+  openModal();
+}
+
 function openModal() {
   if (currentBackdrop) return; // already open
   const backdrop = document.createElement('div');
