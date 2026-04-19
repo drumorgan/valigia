@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.0
+// @version      0.8.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.8.0';
+  const SCRIPT_VERSION = '0.8.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2081,7 +2081,7 @@
       }
       #${ITEM_PAGE_BAR_ID} summary::-webkit-details-marker { display: none; }
       #${ITEM_PAGE_BAR_ID} summary::before {
-        content: '▸';
+        content: '\\25B8'; /* \u25B8 right-pointing triangle — escaped so a miscoded file doesn't mojibake the glyph */
         color: #4ae8a0;
         transition: transform 120ms ease;
       }
@@ -2160,9 +2160,13 @@
       a.href = 'https://tornexchange.com/prices/' + encodeURIComponent(m.offer.handle) + '/';
       a.target = '_blank';
       a.rel = 'noopener';
+      // \u-escape the multiplication sign and arrow. InMotion's FTP deploy
+      // serves the userscript without an explicit UTF-8 charset header and
+      // PDA's webview has been seen to render raw bytes as Latin-1, turning
+      // "x" (U+00D7) into "Ã" + garbage. Escaped forms are safe regardless.
       a.innerHTML = `
-        <span class="v-ip-qty">${m.item.quantity.toLocaleString('en-US')}×</span>
-        <span class="v-ip-item">${escapeHtml(m.offer.item_name || m.item.name)} <span class="v-ip-trader">→ ${escapeHtml(m.offer.handle)}</span></span>
+        <span class="v-ip-qty">${m.item.quantity.toLocaleString('en-US')}\u00d7</span>
+        <span class="v-ip-item">${escapeHtml(m.offer.item_name || m.item.name)} <span class="v-ip-trader">\u2192 ${escapeHtml(m.offer.handle)}</span></span>
         <span class="v-ip-price">${fmtMoney(m.offer.buy_price)}<span class="v-ip-unit">/ea</span></span>
         <span class="v-ip-stack">${fmtMoney(m.total)}</span>
       `;

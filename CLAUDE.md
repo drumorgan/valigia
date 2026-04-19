@@ -495,15 +495,16 @@ tolerates Torn's migration from `<table>` to div-based layouts.
   session-gated `watchlist` edge function; reads are public. No push or
   email alerts yet — matches only appear on page load.
 - **Sell tab (TornExchange)** — Submit any TornExchange trader page
-  (full URL, bare handle, or numeric Torn player id) and the
-  `ingest-te-trader` edge function scrapes their standing buy-offers
-  with a desktop UA. Prices land in `te_buy_prices`; the submitting
-  player is attributed via `te_traders.submitted_by`. The Sell tab
-  pulls the logged-in player's Torn inventory (`user/?selections=inventory`)
-  and for each item shows the best (highest) buy-offer across all
-  traders in the pool, sorted by total trader-pays for the full stack.
-  Every match row deep-links to the trader's TE page so the user can
-  message them in-game. On login, if the player's Torn name or id
+  (full URL or bare handle) and the `ingest-te-trader` edge function
+  scrapes their standing buy-offers with a desktop UA. Prices land in
+  `te_buy_prices`; the submitting player is attributed via
+  `te_traders.submitted_by`. The web tab itself is submit-only: it
+  renders the trader submit form plus the "Traders in the pool" list
+  with per-trader Refresh buttons. **Inventory matching lives in the
+  PDA userscript** (`item.php` runner — see "PDA Userscript" below) —
+  Torn deprecated v1 `user/?selections=inventory` and the v2 path
+  rejects our shape with "Incorrect category", so the web can't read
+  inventory directly. On login, if the player's Torn name or id
   matches a known trader, the backend opportunistically re-scrapes
   their own page (subject to a 15-minute staleness gate) so the pool
   stays fresh for every other Valigia user. The scraper tries three
