@@ -96,6 +96,7 @@ editor; Supabase does not auto-apply them).
 | `yata_snapshots` | Short-term stock-history samples that feed the depletion-slope fitter in `stock-forecast.js`. 48 h prune window. Two writers: the web app's `recordSnapshots()` (merged YATA + scrape on dashboard load) and a DB trigger on `abroad_prices` that mirrors every PDA-scrape change into here too, so a user who only uses PDA still contributes slope samples (migration 025). Concurrent writers are dedupped at the DB level via a unique index on `(item_id, destination, snapped_minute)` where `snapped_minute` rounds `snapped_at` to the minute (migration 026). |
 | `restock_events` | Append-only log of observed positive stock deltas. Fed by the client's `recordSnapshots()` and an AFTER-UPDATE trigger on `abroad_prices`. 30-day read window powers restock cadence estimation in `stock-forecast.js`. Migration 018. |
 | `watchlist_alerts` | Per-player price-drop watchlist (`player_id + item_id` composite key, `max_price` threshold, `venues` array). Writes go exclusively through the `watchlist` edge function (session-token gated); reads are public. Migration 019. |
+| `ingest_rate_limits` | Per-`(player_id, endpoint)` gate enforcing a minimum interval between ingest writes. Service-role only (no RLS policies). The `ingest_rate_check()` RPC does an atomic check-and-set with a row-level `FOR UPDATE` lock, returning `false` if the caller's last write was too recent. Migration 027. |
 
 **RPC functions** (granted to anon + authenticated):
 - `record_scan(found_deal boolean)` — atomic increment after each scan
@@ -337,7 +338,8 @@ valigia.girovagabondo.com/
 │       ├── 023_fix_prune_policy.sql
 │       ├── 024_sell_prices_min_price.sql
 │       ├── 025_snapshot_from_abroad_prices.sql
-│       └── 026_yata_snapshots_dedup_index.sql
+│       ├── 026_yata_snapshots_dedup_index.sql
+│       └── 027_ingest_rate_limits.sql
 ├── .env
 ├── vite.config.js
 └── .github/

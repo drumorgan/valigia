@@ -120,6 +120,42 @@ function unauthorized(): Response {
   });
 }
 
+// ── Rate-limit gate ─────────────────────────────────────────────
+// Calls the ingest_rate_check SQL function (migration 027) to atomically
+// check-and-set the last_write_at for this (player_id, endpoint). Fails
+// open on RPC error: a DB hiccup shouldn't block legitimate writes.
+async function checkRateLimit(
+  supabase: SupabaseClient,
+  playerId: number,
+  endpoint: string,
+  minIntervalMs: number,
+): Promise<{ allowed: true } | { allowed: false; response: Response }> {
+  try {
+    const { data, error } = await supabase.rpc('ingest_rate_check', {
+      p_player_id: playerId,
+      p_endpoint: endpoint,
+      p_min_interval_ms: minIntervalMs,
+    });
+    if (error || data !== false) return { allowed: true };
+    return {
+      allowed: false,
+      response: new Response(
+        JSON.stringify({ error: 'rate_limited', retry_after_ms: minIntervalMs }),
+        {
+          status: 429,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+            'Retry-After': String(Math.max(1, Math.ceil(minIntervalMs / 1000))),
+          },
+        },
+      ),
+    };
+  } catch {
+    return { allowed: true };
+  }
+}
+
 // ── Row validation ──────────────────────────────────────────────
 // Per-row validation mirrors the migration 021/022 CHECK constraints so we
 // reject bad rows with a clear error before Postgres does. Returns either a
@@ -203,6 +239,9 @@ serve(async (req) => {
 
     const auth = await resolveObserver(body, supabase);
     if (!auth.ok) return auth.response;
+
+    const gate = await checkRateLimit(supabase, auth.player_id, 'sell-prices', 500);
+    if (!gate.allowed) return gate.response;
 
     const normalized: Array<{
       item_id: number;
