@@ -14,6 +14,8 @@ import {
   renderMatchesCard, renderWatchlistTab, invalidateWatchlistCache,
 } from './watchlist-ui.js';
 import { setAbroadSnapshot, listAlerts } from './watchlist.js';
+import { renderSellTab, invalidateSellCache } from './sell-ui.js';
+import { listTraders, refreshStaleTrader } from './te-traders.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
@@ -44,11 +46,12 @@ let yataFetchedAt = 0;
 // the user back where they were. Only two tabs today, so a tiny string
 // key is enough — no need for a router.
 const STORAGE_ACTIVE_TAB = 'valigia_active_tab';
-const VALID_TABS = ['travel', 'watchlist'];
+const VALID_TABS = ['travel', 'watchlist', 'sell'];
 let currentTab = 'travel';
 const TAB_CONTAINER_IDS = {
   travel: 'tab-travel-host',
   watchlist: 'tab-watchlist-host',
+  sell: 'tab-sell-host',
 };
 
 function getStoredTab() {
@@ -67,7 +70,7 @@ async function boot() {
   if (result.success) {
     showPlayerHeader(result.name, result.level);
     showToast(`Welcome back, ${result.name}!`, 'success');
-    startDashboard(result.player_id);
+    startDashboard(result.player_id, result.name);
   } else {
     showLoginScreen();
   }
@@ -155,7 +158,7 @@ function showLoginScreen() {
   renderLoginScreen(screenContainer, (result) => {
     showPlayerHeader(result.name, result.level);
     showToast(`Welcome, ${result.name}!`, 'success');
-    startDashboard(result.player_id);
+    startDashboard(result.player_id, result.name);
   });
 }
 
@@ -196,8 +199,17 @@ async function detectPlayerTravel(playerId) {
 }
 
 // ── Dashboard ──────────────────────────────────────────────────
-async function startDashboard(playerId) {
+async function startDashboard(playerId, playerName) {
+  setActivePlayerId(playerId);
   showTabNav();
+
+  // Opportunistic self-refresh of TE prices: if the logged-in player
+  // matches a known trader's handle (by Torn name or by resolved
+  // torn_player_id), fire the ingest edge fn in the background so
+  // their pool entry is fresh before any other visitor reads it.
+  // Fire-and-forget; silent on failure — this is a nicety, not
+  // load-bearing for anything else on the dashboard.
+  maybeRefreshMyOwnTraderPage(playerId, playerName).catch(() => {});
   screenContainer.innerHTML = `
     <div id="${TAB_CONTAINER_IDS.travel}" class="tab-host tab-host--active">
       <div id="watchlist-matches-card"></div>
@@ -207,6 +219,7 @@ async function startDashboard(playerId) {
       <div id="bazaar-container"></div>
     </div>
     <div id="${TAB_CONTAINER_IDS.watchlist}" class="tab-host" hidden></div>
+    <div id="${TAB_CONTAINER_IDS.sell}" class="tab-host" hidden></div>
   `;
 
   const controlsBar = document.getElementById('controls-bar');
@@ -370,6 +383,41 @@ async function startDashboard(playerId) {
   if (storedTab !== 'travel') switchTab(storedTab);
 }
 
+// ── TE self-refresh on login ─────────────────────────────────
+// Threshold beyond which we bother firing the self-refresh. Tighter
+// than TRADER_STALE_MS because a logged-in trader visiting their OWN
+// page is our cheapest route to fresh prices — if they're on here,
+// freshening every 15 min is a good default.
+const SELF_REFRESH_STALE_MS = 15 * 60 * 1000;
+
+async function maybeRefreshMyOwnTraderPage(playerId, playerName) {
+  if (!playerId) return;
+  // listTraders is a plain anon read — no auth needed, cheap, and already
+  // sorted by last_scraped_at desc so the freshest rows are first.
+  let traders;
+  try { traders = await listTraders(); } catch { return; }
+  if (!Array.isArray(traders) || traders.length === 0) return;
+
+  // Prefer an ID match — stable across name changes. Fall back to case-
+  // insensitive handle match if the trader was submitted by URL/handle
+  // and the player_id never got resolved.
+  const byId = traders.find((t) => Number(t.torn_player_id) === Number(playerId));
+  const byName = !byId && playerName
+    ? traders.find((t) => t.handle.toLowerCase() === String(playerName).toLowerCase())
+    : null;
+  const match = byId || byName;
+  if (!match) return;
+
+  // Skip if refreshed recently — no need to hammer TE on every
+  // dashboard load if the trader is visiting multiple times an hour.
+  if (match.last_scraped_at) {
+    const age = Date.now() - Date.parse(match.last_scraped_at);
+    if (Number.isFinite(age) && age < SELF_REFRESH_STALE_MS) return;
+  }
+
+  await refreshStaleTrader(match.handle);
+}
+
 // ── Watchlist matches surfacing ───────────────────────────────
 async function refreshWatchlistSurfaces() {
   const card = document.getElementById('watchlist-matches-card');
@@ -482,24 +530,44 @@ async function switchTab(nextTab) {
   const watchlistHost = document.getElementById(TAB_CONTAINER_IDS.watchlist);
   if (!travelHost || !watchlistHost) return;
 
+  const sellHost = document.getElementById(TAB_CONTAINER_IDS.sell);
+
+  // Hide all hosts then reveal the one we want. Simpler than pairwise
+  // swaps once a third tab exists.
+  for (const host of [travelHost, watchlistHost, sellHost]) {
+    if (!host) continue;
+    host.hidden = true;
+    host.classList.remove('tab-host--active');
+  }
+
   if (nextTab === 'travel') {
     travelHost.hidden = false;
     travelHost.classList.add('tab-host--active');
-    watchlistHost.hidden = true;
-    watchlistHost.classList.remove('tab-host--active');
-    // The underlying sell/bazaar/abroad tables may have changed while the
-    // user was on the Watchlist tab — re-render matches so the card stays
+    // The underlying sell/bazaar/abroad tables may have changed while
+    // the user was on another tab — re-render matches so the card stays
     // truthful.
     invalidateWatchlistCache();
     refreshWatchlistSurfaces();
   } else if (nextTab === 'watchlist') {
-    travelHost.hidden = true;
-    travelHost.classList.remove('tab-host--active');
     watchlistHost.hidden = false;
     watchlistHost.classList.add('tab-host--active');
     await renderWatchlistTab(watchlistHost);
+  } else if (nextTab === 'sell') {
+    sellHost.hidden = false;
+    sellHost.classList.add('tab-host--active');
+    // Invalidate so a fresh trader added in another session shows up;
+    // the tab's own cache survives as long as the player stays on it.
+    invalidateSellCache();
+    await renderSellTab(sellHost, getActivePlayerId());
   }
 }
+
+// Player id is captured at startDashboard time and stashed here so tab
+// switches can fetch inventory without the dashboard having to thread
+// it through every listener.
+let activePlayerId = null;
+function setActivePlayerId(id) { activePlayerId = id; }
+function getActivePlayerId() { return activePlayerId; }
 
 if (tabNav) {
   tabNav.addEventListener('click', (e) => {
