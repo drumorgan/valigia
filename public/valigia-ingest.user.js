@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.7.6
+// @version      0.7.7
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from three pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -28,7 +28,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.7.6';
+  const SCRIPT_VERSION = '0.7.7';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -406,31 +406,65 @@
   // onto every row before a service-role upsert. Same pattern as
   // ingest-travel-shop — one extra Torn API round-trip per scrape, paid
   // out of the player's own 100/min budget.
+  //
+  // Retry policy: iPad cellular drops one request every few minutes. A
+  // single flake used to lose the entire scrape. We now retry up to 2
+  // times on transient failures — network/timeout errors, HTTP 5xx, and
+  // 429 rate limits — with 500ms → 1500ms backoff. 4xx responses (bad
+  // key, payload too big, validation error) are NOT retried since they
+  // are permanent; retrying would just delay the error toast.
+  const INGEST_MAX_ATTEMPTS = 3;
+  const INGEST_BACKOFF_MS = [500, 1500];
+
+  function sleep(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  function isTransientStatus(status) {
+    return status === 429 || (status >= 500 && status < 600);
+  }
+
   async function postIngestRows(ingestUrl, rows) {
     if (!Array.isArray(rows) || rows.length === 0) {
       return { ok: true, count: 0 };
     }
-    try {
-      const res = await gmRequest({
-        method: 'POST',
-        url: ingestUrl,
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
-        },
-        data: JSON.stringify({ api_key: TORN_API_KEY, rows: rows }),
-      });
-      let body = null;
-      try { body = JSON.parse(res.responseText); } catch { /* ignore */ }
-      if (res.status >= 200 && res.status < 300 && body && body.ok) {
-        return { ok: true, count: body.stored ?? rows.length };
+    let lastError = 'unknown';
+    let lastRaw = null;
+    for (let attempt = 0; attempt < INGEST_MAX_ATTEMPTS; attempt++) {
+      let transient = false;
+      try {
+        const res = await gmRequest({
+          method: 'POST',
+          url: ingestUrl,
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          },
+          data: JSON.stringify({ api_key: TORN_API_KEY, rows: rows }),
+        });
+        let body = null;
+        try { body = JSON.parse(res.responseText); } catch { /* ignore */ }
+        if (res.status >= 200 && res.status < 300 && body && body.ok) {
+          return { ok: true, count: body.stored ?? rows.length };
+        }
+        lastError = (body && body.error) || ('HTTP ' + res.status);
+        lastRaw = res.responseText;
+        if (!isTransientStatus(res.status)) {
+          return { ok: false, error: lastError, raw: lastRaw };
+        }
+        transient = true;
+      } catch (err) {
+        // Network error, timeout, DNS — all transient from our POV.
+        lastError = (err && err.message) || String(err);
+        transient = true;
       }
-      const err = (body && body.error) || ('HTTP ' + res.status);
-      return { ok: false, error: err, raw: res.responseText };
-    } catch (err) {
-      return { ok: false, error: (err && err.message) || String(err) };
+      if (transient && attempt < INGEST_MAX_ATTEMPTS - 1) {
+        log('ingest transient failure, retrying', { attempt, error: lastError });
+        await sleep(INGEST_BACKOFF_MS[attempt]);
+      }
     }
+    return { ok: false, error: lastError, raw: lastRaw, retried: true };
   }
 
   // -- Per-item profit math ------------------------------------------------
