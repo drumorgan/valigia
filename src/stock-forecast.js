@@ -430,27 +430,113 @@ function estimateNextRestock(events, nowMs) {
 }
 
 /**
- * Find the most recent monotonic-non-increasing run in the sample series.
- * This is the cheapest way to avoid a linear fit being corrupted by a
- * restock jump (quantity suddenly goes up). We walk backward from the
- * newest sample and stop as soon as we see a strictly earlier sample with
- * a smaller quantity — that's a restock event, anything before it belongs
- * to a different "run".
+ * Split a chronologically-sorted sample array into every maximal run of
+ * non-increasing quantity. A run ends (and a new one begins) at the first
+ * strictly-positive delta — that's a restock, and samples on either side
+ * belong to different "depletion cycles" of the shelf.
  *
- * Returns the segment in chronological order, or null if < 2 samples.
+ * Unlike the earlier latestDepletionSegment(), this returns EVERY run in
+ * the history window so the slope estimator can pool them. The pooled
+ * rate converges on the shelf's true steady-state depletion rate as more
+ * scrape data accumulates — the goal is "the" rate for the shelf, not a
+ * reactive per-minute reading.
+ *
+ * @param {Array<{quantity:number, snappedAt:number}>} samples - asc by snappedAt
+ * @returns {Array<Array<{quantity:number, snappedAt:number}>>}
  */
-function latestDepletionSegment(samples) {
-  if (!samples || samples.length < 2) return null;
-  // samples already sorted asc by snappedAt from Supabase `.order(...asc)`
-  const segment = [samples[samples.length - 1]];
-  for (let i = samples.length - 2; i >= 0; i--) {
-    const next = segment[0];
-    // If the earlier sample has STRICTLY LESS quantity than the later one,
-    // a restock happened between them — stop.
-    if (samples[i].quantity < next.quantity) break;
-    segment.unshift(samples[i]);
+function allDepletionSegments(samples) {
+  if (!samples || samples.length < 2) return [];
+  const segments = [];
+  let current = [samples[0]];
+  for (let i = 1; i < samples.length; i++) {
+    const prev = current[current.length - 1];
+    if (samples[i].quantity > prev.quantity) {
+      // Restock boundary — close out the current segment and start fresh.
+      if (current.length >= 2) segments.push(current);
+      current = [samples[i]];
+    } else {
+      current.push(samples[i]);
+    }
   }
-  return segment.length >= 2 ? segment : null;
+  if (current.length >= 2) segments.push(current);
+  return segments;
+}
+
+/**
+ * Least-squares linear regression of quantity vs. minutes-since-segment-
+ * start. Uses every sample in the segment, not just the endpoints, so a
+ * long run with many intermediate observations produces a slope estimate
+ * that reflects all of them rather than just whichever two happen to be
+ * first and last.
+ *
+ * @returns {number|null} slope in units/min, or null for degenerate cases
+ *   (fewer than 2 samples, or all samples at the same instant).
+ */
+function fitSegmentSlope(segment) {
+  if (!segment || segment.length < 2) return null;
+  const t0 = segment[0].snappedAt;
+  let n = 0;
+  let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+  for (const s of segment) {
+    const x = (s.snappedAt - t0) / 60_000; // minutes since segment start
+    const y = s.quantity;
+    sumX += x; sumY += y; sumXY += x * y; sumXX += x * x;
+    n++;
+  }
+  const denom = n * sumXX - sumX * sumX;
+  if (denom === 0) return null; // all samples at the same timestamp
+  return (n * sumXY - sumX * sumY) / denom;
+}
+
+/**
+ * Pool per-segment slopes into one "depletion rate" estimate for the shelf.
+ *
+ * Philosophy (from user feedback): Torn's popular shelves like Xanax-JPN
+ * have a stable steady-state emptying rate driven by buyers grabbing
+ * stacks of 29 at a time. Individual segments are noisy; the average
+ * behaviour across many segments is what we actually want the UI to
+ * show. More scrape data → tighter estimate.
+ *
+ * Weighted median (not mean): a single runaway segment — e.g. a burst
+ * where one buyer stripped 200 units in under a minute — would skew a
+ * mean toward fiction. Median is robust to that. Weight by segment
+ * sample count so longer, better-observed runs count more than a
+ * two-sample sliver.
+ *
+ * Positive-slope segments are skipped: the segment walker guarantees
+ * non-increasing runs, so a strictly-positive fit means numerical
+ * noise on a near-flat segment. A flat slope (0) is a real
+ * observation — "shelf didn't move during this window" — and stays in
+ * the pool.
+ *
+ * @returns {{slope:number, segmentCount:number, totalSamples:number, spanMins:number}|null}
+ */
+function pooledDepletionSlope(segments) {
+  const weighted = [];
+  let totalSamples = 0;
+  let spanMins = 0;
+  for (const seg of segments) {
+    const s = fitSegmentSlope(seg);
+    if (s == null || s > 0) continue;
+    weighted.push({ slope: s, weight: seg.length });
+    totalSamples += seg.length;
+    spanMins += (seg[seg.length - 1].snappedAt - seg[0].snappedAt) / 60_000;
+  }
+  if (weighted.length === 0) return null;
+  weighted.sort((a, b) => a.slope - b.slope);
+  const totalWeight = weighted.reduce((sum, x) => sum + x.weight, 0);
+  let acc = 0;
+  let pickedSlope = weighted[weighted.length - 1].slope;
+  for (const w of weighted) {
+    acc += w.weight;
+    if (acc >= totalWeight / 2) { pickedSlope = w.slope; break; }
+  }
+  return {
+    slope: pickedSlope,
+    segmentCount: weighted.length,
+    totalSamples,
+    spanMins,
+  };
 }
 
 /**
@@ -577,23 +663,21 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // back to the snapshot number if YATA didn't give us one this visit.
   const nowQty = fallbackNowQty ?? latest.quantity;
 
-  const segment = latestDepletionSegment(samples);
-  if (!segment) {
-    // Only one sample in cache, or we just restocked — no slope to extrapolate.
-    // If the shelf is empty and a restock is due before we land, project the
-    // refill; otherwise keep etaQty pinned to nowQty.
-    const eta = (nowQty === 0 && restockEtaMins != null) ? restockQty : nowQty;
-    return {
-      nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
-      timeToEmptyMins: null,
-      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
-    };
-  }
-
-  const first = segment[0];
-  const last = segment[segment.length - 1];
-  const spanMins = (last.snappedAt - first.snappedAt) / 60_000;
-  if (spanMins < 1) {
+  // Pool slopes across every depletion segment in the window. A "segment"
+  // is a run of non-increasing quantity bounded by a restock on either
+  // side — see allDepletionSegments(). For a shelf we've observed
+  // through multiple restock cycles, this fuses every cycle's rate into
+  // one steady-state estimate via a weight-by-sample-count median; for a
+  // shelf we've only seen once, it reduces to a least-squares fit on
+  // that single run (still an improvement over endpoint-to-endpoint).
+  //
+  // Returns null when no usable depletion signal exists — too few
+  // samples, a single post-restock sample, or every segment degenerate.
+  const pooled = pooledDepletionSlope(allDepletionSegments(samples));
+  if (!pooled) {
+    // If the shelf is empty and a restock is due before we land, project
+    // the refill; otherwise keep etaQty pinned to nowQty and mark low
+    // confidence.
     const eta = (nowQty === 0 && restockEtaMins != null) ? restockQty : nowQty;
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
@@ -603,7 +687,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   }
 
   // slope is quantity-per-minute; depleting shelves make it ≤ 0.
-  const slope = (last.quantity - first.quantity) / spanMins;
+  const slope = pooled.slope;
   const projected = nowQty + slope * arrivalMins;
 
   // Time-to-empty: how long until the shelf hits 0 at the current slope.
@@ -633,10 +717,16 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     etaQty = restockQty;
   }
 
-  const confidence =
-    segment.length >= MIN_SAMPLES_FOR_OK && spanMins >= MIN_SPAN_MINS_FOR_OK
-      ? 'ok'
-      : 'low';
+  // Confidence tiers off the pooled totals. Observing the shelf through
+  // more than one restock cycle means the slope is an average of
+  // multiple independent depletion runs — the most robust signal the
+  // pooled estimator produces. `totalSamples` and `spanMins` are both
+  // summed across segments, matching the intent of the original
+  // single-segment thresholds.
+  let confidence = 'low';
+  if (pooled.totalSamples >= MIN_SAMPLES_FOR_OK && pooled.spanMins >= MIN_SPAN_MINS_FOR_OK) {
+    confidence = pooled.segmentCount >= 2 ? 'high' : 'ok';
+  }
 
   return {
     nowQty, etaQty, confidence, hasHistory: true,

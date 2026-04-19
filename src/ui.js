@@ -553,10 +553,18 @@ function renderStockCell(row) {
       etaLine = `<span class="stock-eta stock-eta--low" title="No restock observations yet — will fill in as scrapes accumulate">ETA 0</span>`;
     }
   } else {
-    const confClass = f.confidence === 'ok' ? 'stock-eta--ok' : 'stock-eta--low';
-    const confTitle = f.confidence === 'ok'
-      ? 'Projected from recent depletion rate'
-      : 'Limited history — rough estimate';
+    // 'high' means the slope was pooled across >= 2 depletion cycles
+    // (shelf has been observed through at least one restock). Same
+    // visual class as 'ok' for now — the tighter signal lives in the
+    // title until/unless we want a distinct colour.
+    const confClass = (f.confidence === 'ok' || f.confidence === 'high')
+      ? 'stock-eta--ok'
+      : 'stock-eta--low';
+    const confTitle = f.confidence === 'high'
+      ? 'Pooled depletion rate — observed through multiple restock cycles'
+      : f.confidence === 'ok'
+        ? 'Projected from recent depletion rate'
+        : 'Limited history — rough estimate';
     etaLine = `<span class="stock-eta ${confClass}" title="${confTitle}">ETA ${Number(eta).toLocaleString('en-US')}</span>`;
   }
 
