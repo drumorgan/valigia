@@ -106,7 +106,7 @@ function unauthorized(): Response {
 }
 
 // ── Row validation ──────────────────────────────────────────────
-// Ranges match migration 019's CHECK constraints. price/quantity accept null
+// Ranges match migration 021's CHECK constraints. price/quantity accept null
 // because the scanner writes null rows for "checked this bazaar, item wasn't
 // there — bump miss_count" — see bazaar-scanner.js upsert of toIncrement.
 function normalizeRow(raw: unknown): BazaarRow | { skip: string } {
@@ -136,7 +136,7 @@ function normalizeRow(raw: unknown): BazaarRow | { skip: string } {
   }
 
   // miss_count is always provided by both callers (0 on hit, prev+1 on miss).
-  // Range matches the CHECK in migration 019 (0..10); the scanner caps at 3.
+  // Range matches the CHECK in migration 021 (0..10); the scanner caps at 3.
   const miss_count = Number(r.miss_count ?? 0);
   if (!Number.isInteger(miss_count) || miss_count < 0 || miss_count > 10) {
     return { skip: `invalid miss_count for ${item_id}@${bazaar_owner_id}: ${r.miss_count}` };

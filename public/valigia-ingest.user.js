@@ -1185,7 +1185,7 @@
         const s = sellByItem.get(a.item_id);
         // Match against min_price (absolute floor) — see src/watchlist.js
         // for the rationale. Falls back to price for rows that haven't
-        // been refreshed since migration 020.
+        // been refreshed since migration 024.
         const floorPrice = s && s.min_price != null
           ? Number(s.min_price)
           : (s && s.price != null ? Number(s.price) : null);

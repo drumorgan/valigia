@@ -1,7 +1,7 @@
 // Watchlist — per-player price-drop alerts across Item Market, Bazaars, and
 // abroad travel shops.
 //
-// Storage: `watchlist_alerts` (migration 019). Writes go through the
+// Storage: `watchlist_alerts` (migration 020). Writes go through the
 // `watchlist` edge function, which validates {player_id, session_token}
 // the same way auto-login does and then performs a service-role upsert.
 // Reads are public because the rows contain no secrets.
@@ -161,7 +161,7 @@ function matchesForAlert(alert, context) {
     // qty-filtered effective floor (price). A lone $219k unit under a
     // $250k alert is still a real buying opportunity even when the next
     // stack sits above the threshold. Fall back to `price` for rows
-    // that haven't been refreshed since migration 020 added min_price.
+    // that haven't been refreshed since migration 024 added min_price.
     const floorPrice = row?.min_price != null
       ? Number(row.min_price)
       : (row?.price != null ? Number(row.price) : null);
