@@ -13,6 +13,7 @@
 
 import { supabase, supabaseUrl, supabaseAnonKey } from './supabase.js';
 import { getPlayerId } from './auth.js';
+import { safeGetItem } from './storage.js';
 
 const SESSION_STORAGE_KEY = 'valigia_session';
 const WATCHLIST_FN_URL = `${supabaseUrl}/functions/v1/watchlist`;
@@ -54,9 +55,9 @@ export function setAbroadSnapshot(items) {
 export const ALL_VENUES = ['market', 'bazaar', 'abroad'];
 
 function getSessionToken() {
+  const raw = safeGetItem(SESSION_STORAGE_KEY);
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-    if (!raw) return null;
     const parsed = JSON.parse(raw);
     return parsed?.session_token || null;
   } catch {

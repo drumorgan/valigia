@@ -4,6 +4,7 @@
 
 import { callTornApi } from './torn-api.js';
 import { ABROAD_ITEMS } from './data/abroad-items.js';
+import { safeGetItem, safeSetItem, safeRemoveItem } from './storage.js';
 
 const CACHE_KEY = 'valigia_item_id_map';
 const TYPE_CACHE_KEY = 'valigia_item_type_map';
@@ -38,11 +39,11 @@ export function getItemTypeById(id) {
  * Returns true if all items are now resolved.
  */
 function applyCache() {
-  const cached = localStorage.getItem(CACHE_KEY);
+  const cached = safeGetItem(CACHE_KEY);
   if (!cached) return false;
 
   // Also load type cache
-  const typeCached = localStorage.getItem(TYPE_CACHE_KEY);
+  const typeCached = safeGetItem(TYPE_CACHE_KEY);
   if (typeCached) {
     try { idToType = JSON.parse(typeCached); } catch { /* ignore */ }
   }
@@ -57,7 +58,7 @@ function applyCache() {
     }
     return !hasUnresolvedItems();
   } catch {
-    localStorage.removeItem(CACHE_KEY);
+    safeRemoveItem(CACHE_KEY);
     return false;
   }
 }
@@ -100,6 +101,6 @@ export async function resolveItemIds(playerId) {
 
   // Update in-memory type map and cache both
   idToType = newIdToType;
-  localStorage.setItem(CACHE_KEY, JSON.stringify(nameToId));
-  localStorage.setItem(TYPE_CACHE_KEY, JSON.stringify(newIdToType));
+  safeSetItem(CACHE_KEY, JSON.stringify(nameToId));
+  safeSetItem(TYPE_CACHE_KEY, JSON.stringify(newIdToType));
 }

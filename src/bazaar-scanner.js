@@ -25,6 +25,7 @@ import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { ingestSellPrices, ingestBazaarPrices } from './ingest.js';
 import { BAZAAR_WATCHLIST } from './data/bazaar-watchlist.js';
+import { safeGetItem } from './storage.js';
 
 const DISCOVER_BUDGET = 8;    // API calls for discovering new bazaar sources
 const CHECK_BUDGET = 25;      // API calls for checking unique bazaar owners
@@ -45,7 +46,7 @@ const BEST_RUN_MIN_SAVINGS = 10000;        // don't bother surfacing sub-$10K ab
  * Resolve watchlist item names to IDs using cached item catalog.
  */
 function resolveWatchlistIds() {
-  const cached = localStorage.getItem('valigia_item_id_map');
+  const cached = safeGetItem('valigia_item_id_map');
   if (!cached) return { resolved: [], unresolved: BAZAAR_WATCHLIST.slice() };
 
   let nameToId;
@@ -81,7 +82,7 @@ async function buildDynamicWatchlist(staticItemIds) {
 
     if (error || !data) return [];
 
-    const cached = localStorage.getItem('valigia_item_id_map');
+    const cached = safeGetItem('valigia_item_id_map');
     let idToName = {};
     if (cached) {
       try {
@@ -819,7 +820,7 @@ export async function findBestBazaarRun(playerId) {
     for (const row of marketRows) marketPrices.set(row.item_id, row.price);
 
     // Resolve item IDs back to names for display.
-    const cached = localStorage.getItem('valigia_item_id_map');
+    const cached = safeGetItem('valigia_item_id_map');
     const idToName = {};
     if (cached) {
       try {

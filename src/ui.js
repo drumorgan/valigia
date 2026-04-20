@@ -6,6 +6,7 @@ import { getItemTypeById } from './item-resolver.js';
 import { calculateMargins, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock } from './stock-forecast.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
+import { safeGetItem, safeSetItem } from './storage.js';
 
 // ── Flight type definitions ───────────────────────────────────
 // `short` is what we display in the collapsed control so the whole bar
@@ -31,12 +32,12 @@ const STORAGE_FILTER_DEST = 'valigia_filter_dest';
 const STORAGE_FILTER_CAT = 'valigia_filter_cat';
 const STORAGE_REALISM = 'valigia_realism_mode';
 
-let slotCount = parseInt(localStorage.getItem(STORAGE_SLOTS)) || 29;
-let flightType = localStorage.getItem(STORAGE_FLIGHT_TYPE) || 'standard';
-let sortCol = localStorage.getItem(STORAGE_SORT_COL) || 'profitPerHour';
-let sortDir = localStorage.getItem(STORAGE_SORT_DIR) || 'desc';
-let filterDestination = localStorage.getItem(STORAGE_FILTER_DEST) || 'all';
-let filterCategory = localStorage.getItem(STORAGE_FILTER_CAT) || 'all';
+let slotCount = parseInt(safeGetItem(STORAGE_SLOTS)) || 29;
+let flightType = safeGetItem(STORAGE_FLIGHT_TYPE, 'standard');
+let sortCol = safeGetItem(STORAGE_SORT_COL, 'profitPerHour');
+let sortDir = safeGetItem(STORAGE_SORT_DIR, 'desc');
+let filterDestination = safeGetItem(STORAGE_FILTER_DEST, 'all');
+let filterCategory = safeGetItem(STORAGE_FILTER_CAT, 'all');
 // realismMode:
 //   'realistic' — clamp slots to arrival-time stock forecast AND include
 //                 category sell-time in the profit/hr denominator. Default.
@@ -45,7 +46,7 @@ let filterCategory = localStorage.getItem(STORAGE_FILTER_CAT) || 'all';
 //                 (assume instant liquidation). Answers "what's the peak
 //                 theoretical return of this arbitrage pairing right now".
 //                 Useful as a sanity check and for planning ahead.
-let realismMode = localStorage.getItem(STORAGE_REALISM) || 'realistic';
+let realismMode = safeGetItem(STORAGE_REALISM, 'realistic');
 
 // Live data — populated as prices arrive
 const sellPrices = new Map();   // itemId → sell price
@@ -107,22 +108,22 @@ export function showToast(message, type = 'error') {
 // ── Controls ───────────────────────────────────────────────────
 
 function persistControls() {
-  localStorage.setItem(STORAGE_SLOTS, String(slotCount));
-  localStorage.setItem(STORAGE_FLIGHT_TYPE, flightType);
+  safeSetItem(STORAGE_SLOTS, String(slotCount));
+  safeSetItem(STORAGE_FLIGHT_TYPE, flightType);
 }
 
 function persistSort() {
-  localStorage.setItem(STORAGE_SORT_COL, sortCol);
-  localStorage.setItem(STORAGE_SORT_DIR, sortDir);
+  safeSetItem(STORAGE_SORT_COL, sortCol);
+  safeSetItem(STORAGE_SORT_DIR, sortDir);
 }
 
 function persistFilters() {
-  localStorage.setItem(STORAGE_FILTER_DEST, filterDestination);
-  localStorage.setItem(STORAGE_FILTER_CAT, filterCategory);
+  safeSetItem(STORAGE_FILTER_DEST, filterDestination);
+  safeSetItem(STORAGE_FILTER_CAT, filterCategory);
 }
 
 function persistRealism() {
-  localStorage.setItem(STORAGE_REALISM, realismMode);
+  safeSetItem(STORAGE_REALISM, realismMode);
 }
 
 /**
@@ -258,7 +259,7 @@ export function renderControls(container, onChange, onCategoryChange) {
 export function setPlayerTravel(slots, airstrip) {
   if (slots != null && slots > slotCount) {
     slotCount = slots;
-    localStorage.setItem(STORAGE_SLOTS, slotCount);
+    safeSetItem(STORAGE_SLOTS, String(slotCount));
     const el = document.getElementById('ctl-slots');
     if (el) el.value = slotCount;
   }

@@ -6,6 +6,8 @@
 // the user taps it when they want the walkthrough. No "dismiss forever"
 // localStorage flag either: the button is quiet enough on its own.
 
+import { safeSetItem } from './storage.js';
+
 const SCRIPT_URL = 'https://valigia.girovagabondo.com/valigia-ingest.user.js';
 
 // Two helper links we drop into the API-key step of the install walkthrough.
@@ -62,21 +64,19 @@ export function mountPdaInstallButton(container) {
 // ── First-time-seen flag ───────────────────────────────────────
 
 function hasSeenButton() {
+  // This file genuinely needs to distinguish "storage threw" (pulse
+  // would otherwise repeat forever) from "value was null" (first-time
+  // user, we DO want to pulse). safeGetItem collapses both to the same
+  // fallback, so we keep an inline try/catch here.
   try {
     return localStorage.getItem(SEEN_STORAGE_KEY) === '1';
   } catch {
-    // Private mode / storage disabled — don't pulse forever in that case,
-    // just skip the nudge.
     return true;
   }
 }
 
 function markButtonSeen() {
-  try {
-    localStorage.setItem(SEEN_STORAGE_KEY, '1');
-  } catch {
-    // ignore
-  }
+  safeSetItem(SEEN_STORAGE_KEY, '1');
 }
 
 // ── Modal ──────────────────────────────────────────────────────
