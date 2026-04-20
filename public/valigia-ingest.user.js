@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.2
+// @version      0.8.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.8.2';
+  const SCRIPT_VERSION = '0.8.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -99,7 +99,10 @@
   }
 
   function toast(message, kind) {
-    const bg = kind === 'error' ? '#b33' : kind === 'success' ? '#2a7' : '#333';
+    const bg = kind === 'error' ? '#b33'
+      : kind === 'success' ? '#2a7'
+      : kind === 'warning' ? '#e8824a'
+      : '#333';
     const el = document.createElement('div');
     el.textContent = 'Valigia: ' + message;
     Object.assign(el.style, {
@@ -1152,11 +1155,31 @@
   /**
    * Read alerts for this player, then look up live market/bazaar prices
    * for the alerted items and compute the match list. Returns [] on any
+  /**
+   * Fetch + shape this player's watchlist matches. Returns [] on any
    * failure so callers can treat "no matches" and "fetch failed"
    * identically — a silent no-op is the right failure mode for a banner.
+   *
+   * Memoised for WATCHLIST_CACHE_TTL_MS (30 s). Item Market's SPA nav
+   * fires dispatch() — and therefore injectWatchlistBar() — on every
+   * item tap, so a user flicking through 10 items in 30 s used to burn
+   * 30 PostgREST reads on data that can't have changed. Per-player key
+   * isolates cache across key rotation (player_id changes), and cached
+   * reads of an empty result are just as valid as non-empty, so zero
+   * matches are memoised too.
    */
+  const WATCHLIST_CACHE_TTL_MS = 30_000;
+  let watchlistMatchesCache = null; // { playerId, expiresAt, matches } | null
+
   async function fetchWatchlistMatches(playerId) {
     if (!playerId) return [];
+
+    const now = Date.now();
+    if (watchlistMatchesCache
+        && watchlistMatchesCache.playerId === playerId
+        && watchlistMatchesCache.expiresAt > now) {
+      return watchlistMatchesCache.matches;
+    }
 
     const alerts = await fetchJSON(
       WATCHLIST_ALERTS_URL +
@@ -1259,6 +1282,12 @@
       }
     }
     matches.sort(function (a, b) { return b.savings_pct - a.savings_pct; });
+
+    watchlistMatchesCache = {
+      playerId: playerId,
+      expiresAt: now + WATCHLIST_CACHE_TTL_MS,
+      matches: matches,
+    };
     return matches;
   }
 
@@ -1887,6 +1916,16 @@
       }
     }
 
+    // Surface silent selector drift: if nearestShopCategoryFor couldn't
+    // match any heading in an item's ancestry, rows get tagged 'Unknown'.
+    // On iPad with no DevTools that's indistinguishable from a real
+    // scrape — the user just thinks it worked. Add a visible count to
+    // the success toast so a Torn DOM change shows up as "UAE: 48 prices
+    // (3 unknown)" instead of a silent degradation.
+    const unknownCount = shops.reduce(function (s, sh) {
+      return s + (sh.category === 'Unknown' ? sh.items.length : 0);
+    }, 0);
+
     // Fire ingest (POST) and sell-price fetch (GET) in parallel. Overlay
     // render waits only on the sell-price fetch; ingest toast fires
     // independently when its POST resolves.
@@ -1900,7 +1939,11 @@
         const status = result.status;
         const body = result.body;
         if (status >= 200 && status < 300 && body && body.ok) {
-          toast(destination + ': ' + body.stored + ' prices', 'success');
+          const suffix = unknownCount > 0
+            ? ' (' + unknownCount + ' unknown)'
+            : '';
+          const toneForUnknown = unknownCount > 0 ? 'warning' : 'success';
+          toast(destination + ': ' + body.stored + ' prices' + suffix, toneForUnknown);
         } else {
           toast('Ingest failed', 'error');
         }
