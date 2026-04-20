@@ -6,6 +6,7 @@
 import { supabaseUrl, supabaseAnonKey } from './supabase.js';
 import { callTornApi } from './torn-api.js';
 import { showToast } from './ui.js';
+import { safeGetItem, safeSetItem, safeRemoveItem } from './storage.js';
 
 // Session bundle (player_id + session_token) — both fields required for
 // auto-login. Legacy key kept only so we can actively clear it and force
@@ -17,7 +18,7 @@ const AUTO_LOGIN_URL = `${supabaseUrl}/functions/v1/auto-login`;
 
 /** Read stored session bundle, or null. */
 export function getSession() {
-  const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+  const raw = safeGetItem(SESSION_STORAGE_KEY);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
@@ -31,15 +32,21 @@ export function getSession() {
 /** Store or clear the session bundle. */
 function setSession(session) {
   if (session && session.player_id && session.session_token) {
-    localStorage.setItem(
+    const ok = safeSetItem(
       SESSION_STORAGE_KEY,
       JSON.stringify({
         player_id: String(session.player_id),
         session_token: session.session_token,
       })
     );
+    // Under iPad private-browsing setItem silently refuses. We can still
+    // carry the session in-memory for this page, but auto-login on the
+    // next visit won't work — warn once so the user knows why.
+    if (!ok) {
+      showToast('Session not saved (private browsing?) — you may need to log in again after refresh.', 'warning');
+    }
   } else {
-    localStorage.removeItem(SESSION_STORAGE_KEY);
+    safeRemoveItem(SESSION_STORAGE_KEY);
   }
 }
 
@@ -60,10 +67,10 @@ export async function tryAutoLogin() {
   // and force them through the login screen once. Safer than carrying a
   // dual-mode code path.
   const legacyOnly =
-    localStorage.getItem(LEGACY_PLAYER_ID_KEY) &&
-    !localStorage.getItem(SESSION_STORAGE_KEY);
+    safeGetItem(LEGACY_PLAYER_ID_KEY) &&
+    !safeGetItem(SESSION_STORAGE_KEY);
   if (legacyOnly) {
-    localStorage.removeItem(LEGACY_PLAYER_ID_KEY);
+    safeRemoveItem(LEGACY_PLAYER_ID_KEY);
     return { success: false, error: 'session_upgrade_required' };
   }
 
@@ -192,7 +199,7 @@ export async function handleLogin(apiKey) {
   // Step 3: save session bundle locally. Also sweep the legacy key so a
   // future deploy doesn't find stale ambiguous state.
   setSession({ player_id: playerId, session_token: sessionToken });
-  localStorage.removeItem(LEGACY_PLAYER_ID_KEY);
+  safeRemoveItem(LEGACY_PLAYER_ID_KEY);
 
   return {
     success: true,
@@ -205,7 +212,7 @@ export async function handleLogin(apiKey) {
 /** Clear session — remove stored session bundle. */
 export function logout() {
   setSession(null);
-  localStorage.removeItem(LEGACY_PLAYER_ID_KEY);
+  safeRemoveItem(LEGACY_PLAYER_ID_KEY);
 }
 
 /**

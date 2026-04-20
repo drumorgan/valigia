@@ -15,6 +15,7 @@
 // render a freshness indicator (see src/ui.js).
 
 import { supabase } from './supabase.js';
+import { safeGetItem, safeSetItem } from './storage.js';
 
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 const CACHE_KEY = 'valigia_yata_cache_v1';
@@ -44,9 +45,9 @@ const COUNTRY_MAP = {
 };
 
 function readCache() {
+  const raw = safeGetItem(CACHE_KEY);
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.items) || !parsed.fetchedAt) return null;
     return parsed;
@@ -56,14 +57,11 @@ function readCache() {
 }
 
 function writeCache(items) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({
-      items,
-      fetchedAt: Date.now(),
-    }));
-  } catch {
-    // Storage full or disabled — non-fatal.
-  }
+  // Storage full or disabled — safeSetItem returns false and we move on.
+  safeSetItem(CACHE_KEY, JSON.stringify({
+    items,
+    fetchedAt: Date.now(),
+  }));
 }
 
 /**

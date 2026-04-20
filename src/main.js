@@ -13,6 +13,7 @@ import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
   renderMatchesCard, renderWatchlistTab, invalidateWatchlistCache,
 } from './watchlist-ui.js';
+import { safeGetItem, safeSetItem } from './storage.js';
 import { setAbroadSnapshot, listAlerts } from './watchlist.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
@@ -52,7 +53,7 @@ const TAB_CONTAINER_IDS = {
 };
 
 function getStoredTab() {
-  const stored = localStorage.getItem(STORAGE_ACTIVE_TAB);
+  const stored = safeGetItem(STORAGE_ACTIVE_TAB);
   return VALID_TABS.includes(stored) ? stored : 'travel';
 }
 
@@ -469,7 +470,7 @@ async function switchTab(nextTab) {
   if (nextTab === currentTab) return;
   currentTab = nextTab;
   // Persist so a page refresh lands the user back on the same tab.
-  try { localStorage.setItem(STORAGE_ACTIVE_TAB, nextTab); } catch {}
+  safeSetItem(STORAGE_ACTIVE_TAB, nextTab);
 
   // Update nav-button styling
   if (tabNav) {

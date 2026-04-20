@@ -14,6 +14,7 @@ import { listAlerts, upsertAlert, deleteAlert, findMatches, ALL_VENUES } from '.
 import { ABROAD_ITEMS } from './data/abroad-items.js';
 import { showToast } from './ui.js';
 import { formatMoney } from './calculator.js';
+import { safeGetItem } from './storage.js';
 
 const ITEM_ID_MAP_KEY = 'valigia_item_id_map';
 
@@ -38,9 +39,9 @@ function getItemNameById() {
     if (it.itemId != null) map.set(Number(it.itemId), it.name);
   }
   // The Torn item catalog cached by item-resolver covers every other id.
-  try {
-    const raw = localStorage.getItem(ITEM_ID_MAP_KEY);
-    if (raw) {
+  const raw = safeGetItem(ITEM_ID_MAP_KEY);
+  if (raw) {
+    try {
       const nameToId = JSON.parse(raw);
       for (const [name, id] of Object.entries(nameToId)) {
         // Only overwrite if not already set — ABROAD_ITEMS has the canonical
@@ -50,8 +51,8 @@ function getItemNameById() {
           map.set(Number(id), name);
         }
       }
-    }
-  } catch { /* cache corrupt — ignore; worst case we show "Item #206" */ }
+    } catch { /* cache corrupt — ignore; worst case we show "Item #206" */ }
+  }
   itemNameByIdMemo = map;
   return map;
 }
