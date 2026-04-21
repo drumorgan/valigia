@@ -18,6 +18,7 @@
 // The calling code feeds `flightMins * flightMultiplier` as arrivalMins.
 
 import { supabase } from './supabase.js';
+import { safeGetItem, safeSetItem } from './storage.js';
 
 // Track whether we've already surfaced a snapshot-write error this session.
 // Supabase rejects every insert for the same reason (e.g. RLS), so one toast
@@ -69,8 +70,64 @@ const MIN_RESTOCK_EVENTS = 2;
 const historyCache = new Map();
 const restockCache = new Map();
 
+// Cross-session cache: on every successful loadForecastData() we mirror
+// both maps to localStorage so a page refresh inside the TTL window can
+// skip the full snapshot+restock pull (thousands of rows). Chose 15 min
+// because shelves deplete over hours and a 15-min-stale forecast is
+// visually indistinguishable from a fresh one — the ETA uncertainty
+// band already absorbs that much drift. Bump the version suffix (v1)
+// if the serialised shape ever changes so old blobs deserialise cleanly
+// instead of landing as noise in the fitter.
+const FORECAST_CACHE_KEY = 'valigia_forecast_cache_v1';
+const FORECAST_CACHE_TTL_MS = 15 * 60 * 1000;
+
 function cacheKey(itemId, destination) {
   return `${itemId}|${destination}`;
+}
+
+/**
+ * Try to populate historyCache + restockCache from localStorage.
+ * Returns true iff a fresh cache was found and hydrated. Any corruption
+ * or missing fields → return false and let the caller do a live fetch.
+ */
+function hydrateForecastFromStorage() {
+  const raw = safeGetItem(FORECAST_CACHE_KEY);
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed
+        || typeof parsed.fetchedAt !== 'number'
+        || !Array.isArray(parsed.history)
+        || !Array.isArray(parsed.restock)) {
+      return false;
+    }
+    if (Date.now() - parsed.fetchedAt > FORECAST_CACHE_TTL_MS) return false;
+
+    historyCache.clear();
+    restockCache.clear();
+    for (const [key, arr] of parsed.history) {
+      if (typeof key === 'string' && Array.isArray(arr)) historyCache.set(key, arr);
+    }
+    for (const [key, arr] of parsed.restock) {
+      if (typeof key === 'string' && Array.isArray(arr)) restockCache.set(key, arr);
+    }
+    return historyCache.size > 0 || restockCache.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persist the current caches to localStorage. Best-effort — quota
+ * exceeded or storage disabled just means next visit does the live
+ * fetch, which is the pre-cache behaviour anyway.
+ */
+function persistForecastToStorage() {
+  safeSetItem(FORECAST_CACHE_KEY, JSON.stringify({
+    fetchedAt: Date.now(),
+    history: Array.from(historyCache.entries()),
+    restock: Array.from(restockCache.entries()),
+  }));
 }
 
 /**
@@ -226,9 +283,23 @@ export async function recordSnapshots(items) {
  * @param {Array<{item_id, destination}>} items
  */
 export async function loadForecastData(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    historyCache.clear();
+    restockCache.clear();
+    return false;
+  }
+
+  // localStorage short-circuit: a page refresh inside FORECAST_CACHE_TTL_MS
+  // hydrates from disk and skips the live Supabase read entirely. The
+  // writes from recordSnapshots() still fire (that's the caller's
+  // parallel promise in main.js), so we keep contributing data — we
+  // just don't pay to re-read what we already had.
+  if (hydrateForecastFromStorage()) {
+    return historyCache.size > 0 || restockCache.size > 0;
+  }
+
   historyCache.clear();
   restockCache.clear();
-  if (!Array.isArray(items) || items.length === 0) return false;
 
   const snapshotCutoff = new Date(Date.now() - HISTORY_WINDOW_MINS * 60_000).toISOString();
   const restockCutoff = new Date(Date.now() - RESTOCK_HISTORY_WINDOW_MINS * 60_000).toISOString();
@@ -288,6 +359,11 @@ export async function loadForecastData(items) {
       });
     }
   }
+
+  // Mirror the freshly-fetched maps to localStorage so the next page
+  // refresh inside FORECAST_CACHE_TTL_MS can short-circuit the fetch.
+  // No-op on private browsing / quota-exceeded — safeSetItem swallows.
+  persistForecastToStorage();
 
   return historyCache.size > 0 || restockCache.size > 0;
 }
