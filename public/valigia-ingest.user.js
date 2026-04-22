@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.3
+// @version      0.8.4
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.8.3';
+  const SCRIPT_VERSION = '0.8.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -293,20 +293,49 @@
     });
   }
 
+  // Travel-shop ingest POST. Same retry policy as postIngestRows (below):
+  // transient failures (network/timeout, HTTP 5xx, 429 rate-limit) get up
+  // to two retries with 500ms → 1500ms backoff; permanent 4xx failures
+  // (bad key, validation) return immediately so the friendly-error toast
+  // fires without delay. Returns the same { ok, count, error, raw } shape
+  // that friendlyIngestError() consumes.
   async function postIngest(payload) {
-    const res = await gmRequest({
-      method: 'POST',
-      url: INGEST_URL,
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
-      },
-      data: JSON.stringify(payload),
-    });
-    let parsed = null;
-    try { parsed = JSON.parse(res.responseText); } catch (e) { /* ignore */ }
-    return { status: res.status, body: parsed, raw: res.responseText };
+    let lastError = 'unknown';
+    let lastRaw = null;
+    for (let attempt = 0; attempt < INGEST_MAX_ATTEMPTS; attempt++) {
+      let transient = false;
+      try {
+        const res = await gmRequest({
+          method: 'POST',
+          url: INGEST_URL,
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          },
+          data: JSON.stringify(payload),
+        });
+        let body = null;
+        try { body = JSON.parse(res.responseText); } catch { /* ignore */ }
+        if (res.status >= 200 && res.status < 300 && body && body.ok) {
+          return { ok: true, count: body.stored ?? 0, body };
+        }
+        lastError = (body && body.error) || ('HTTP ' + res.status);
+        lastRaw = res.responseText;
+        if (!isTransientStatus(res.status)) {
+          return { ok: false, error: lastError, raw: lastRaw };
+        }
+        transient = true;
+      } catch (err) {
+        lastError = (err && err.message) || String(err);
+        transient = true;
+      }
+      if (transient && attempt < INGEST_MAX_ATTEMPTS - 1) {
+        log('travel ingest transient failure, retrying', { attempt, error: lastError });
+        await sleep(INGEST_BACKOFF_MS[attempt]);
+      }
+    }
+    return { ok: false, error: lastError, raw: lastRaw, retried: true };
   }
 
   // -- Activity ping -------------------------------------------------------
@@ -1930,25 +1959,19 @@
     // render waits only on the sell-price fetch; ingest toast fires
     // independently when its POST resolves.
     const ingestPromise = (async function () {
-      try {
-        const result = await postIngest({
-          api_key: TORN_API_KEY,
-          destination: destination,
-          shops: shops,
-        });
-        const status = result.status;
-        const body = result.body;
-        if (status >= 200 && status < 300 && body && body.ok) {
-          const suffix = unknownCount > 0
-            ? ' (' + unknownCount + ' unknown)'
-            : '';
-          const toneForUnknown = unknownCount > 0 ? 'warning' : 'success';
-          toast(destination + ': ' + body.stored + ' prices' + suffix, toneForUnknown);
-        } else {
-          toast('Ingest failed', 'error');
-        }
-      } catch (_err) {
-        toast('Network error', 'error');
+      const result = await postIngest({
+        api_key: TORN_API_KEY,
+        destination: destination,
+        shops: shops,
+      });
+      if (result.ok) {
+        const suffix = unknownCount > 0
+          ? ' (' + unknownCount + ' unknown)'
+          : '';
+        const toneForUnknown = unknownCount > 0 ? 'warning' : 'success';
+        toast(destination + ': ' + result.count + ' prices' + suffix, toneForUnknown);
+      } else {
+        toast(friendlyIngestError('Travel ' + destination, totalItems, result), 'error');
       }
     })();
 
