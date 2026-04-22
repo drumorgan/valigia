@@ -64,7 +64,7 @@ export async function callTornApi(params) {
         2: 'Invalid API key — please log out and re-enter a valid key',
         5: 'Too many requests — wait a moment',
         10: 'Key owner is in federal jail',
-        13: 'Key disabled (owner inactive >7 days) — please create a new key',
+        13: 'Your Torn key is dormant (owner offline >7 days). Log into Torn once, then retry — no need to make a new key.',
         16: 'Key access too low — delete your current key on Torn and create a new one with the "Create a Custom Key" link on the login screen',
         17: 'Torn backend hiccup — scan continues',
       };

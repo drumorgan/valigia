@@ -2,7 +2,7 @@
 
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
-import { tryAutoLogin, renderLoginScreen, logout } from './auth.js';
+import { tryAutoLogin, renderLoginScreen, logout, getSession } from './auth.js';
 import { fetchAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices, refreshSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
@@ -72,9 +72,20 @@ async function boot() {
     showPlayerHeader(result.name, result.level);
     showToast(`Welcome back, ${result.name}!`, 'success');
     startDashboard(result.player_id, result.name);
-  } else {
-    showLoginScreen();
+    return;
   }
+
+  // Transient failures (Torn rate-limit, edge-fn cold start, brief network
+  // outage, Torn error 13 "owner inactive >7 days") leave the stored session
+  // intact. Don't dump the user to a fresh API-key form — they already gave
+  // us a key, and re-entering it won't help if Torn itself is the problem.
+  // Show a compact reconnect card with an error-appropriate message.
+  if (getSession()) {
+    showReconnectScreen(result);
+    return;
+  }
+
+  showLoginScreen();
 }
 
 // ── PDA activity counter ──────────────────────────────────────
@@ -160,6 +171,70 @@ function showLoginScreen() {
     showPlayerHeader(result.name, result.level);
     showToast(`Welcome, ${result.name}!`, 'success');
     startDashboard(result.player_id, result.name);
+  });
+}
+
+// ── Reconnect Screen ───────────────────────────────────────────
+// Shown when the stored session is still intact but auto-login failed for
+// a transient reason (Torn rate limit, edge-fn cold start, network blip,
+// or Torn error 13 "owner inactive >7 days"). Skips the API-key re-entry
+// form entirely — that wouldn't help — and instead offers a Retry button
+// plus an escape hatch for users who genuinely want to swap keys.
+function reconnectMessage(result) {
+  const tornCode = Number(result?.torn_error);
+  if (tornCode === 13) {
+    return {
+      title: 'Your Torn key is dormant',
+      body: 'Torn disables API keys when the owner has been offline for 7+ days. Log into Torn once, then tap Retry.',
+    };
+  }
+  if (tornCode === 5) {
+    return {
+      title: 'Torn API rate-limited',
+      body: 'Too many requests to the Torn API right now. Give it a few seconds and try again.',
+    };
+  }
+  if (tornCode === 8 || tornCode === 9) {
+    return {
+      title: 'Torn API unavailable',
+      body: 'Torn has temporarily blocked API access from this network or disabled the API. Try again shortly.',
+    };
+  }
+  return {
+    title: 'Reconnect to Valigia',
+    body: "Couldn't reach Torn to verify your session. Your stored key is still safe — just tap Retry.",
+  };
+}
+
+function showReconnectScreen(result) {
+  clearPlayerHeader();
+  hideTabNav();
+  invalidateWatchlistCache();
+
+  const { title, body } = reconnectMessage(result);
+  screenContainer.innerHTML = `
+    <div class="login-card reconnect-card">
+      <h2 class="login-title">${title}</h2>
+      <p class="login-desc">${body}</p>
+      <button id="reconnect-retry-btn" class="login-btn reconnect-retry-btn">Retry</button>
+      <button id="reconnect-switch-btn" class="find-key-btn reconnect-switch-btn">
+        Log in with a different key
+      </button>
+    </div>
+  `;
+
+  const retryBtn = screenContainer.querySelector('#reconnect-retry-btn');
+  const switchBtn = screenContainer.querySelector('#reconnect-switch-btn');
+
+  retryBtn.addEventListener('click', async () => {
+    retryBtn.disabled = true;
+    retryBtn.textContent = 'Retrying…';
+    await boot();
+  });
+
+  switchBtn.addEventListener('click', () => {
+    logout();
+    showLoginScreen();
   });
 }
 

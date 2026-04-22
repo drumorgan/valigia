@@ -56,10 +56,78 @@ export function getPlayerId() {
   return session ? session.player_id : null;
 }
 
+// Transient failures (edge-fn cold start, Torn rate limit, inactive-owner
+// error 13) self-heal within a few seconds. A single silent retry turns
+// most of those into a successful auto-login with no user-visible blip.
+const AUTO_LOGIN_RETRY_DELAYS_MS = [1000, 2000];
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * Attempt auto-login using stored player ID + session token. Returns
- * { success, player_id, name, level } on success, or { success: false, error }
- * on any failure (including missing session, expired token, revoked key).
+ * Single auto-login attempt. Does NOT retry or toast — callers compose
+ * retry behavior around it.
+ */
+async function attemptAutoLogin(session) {
+  try {
+    const res = await fetch(AUTO_LOGIN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+      },
+      body: JSON.stringify({
+        player_id: Number(session.player_id),
+        session_token: session.session_token,
+      }),
+    });
+
+    // 503 = transient Torn outage (rate limit, 5xx, paused / inactive key).
+    // The stored session is still valid — DO NOT clear it.
+    if (res.status === 503) {
+      let body = {};
+      try { body = await res.json(); } catch {}
+      return { success: false, error: 'torn_unavailable', transient: true, ...body };
+    }
+
+    // Any other non-2xx (401 for bad/missing token, 500, etc.) → clear and
+    // send the user back to the login screen silently.
+    if (!res.ok) {
+      setSession(null);
+      return { success: false, error: 'unauthorized' };
+    }
+
+    const data = await res.json();
+
+    if (!data.success) {
+      // Server explicitly told us this is transient — keep the session.
+      if (data.error === 'torn_unavailable') {
+        return { ...data, transient: true };
+      }
+      setSession(null);
+      if (data.error === 'key_invalid') {
+        showToast('Your API key expired or was revoked. Please log in again.');
+      }
+      return data;
+    }
+
+    return data;
+  } catch (err) {
+    // Network blip between the browser and our edge function. Leave the
+    // stored session alone — re-prompting for the API key over a flaky
+    // connection is the wrong answer.
+    return { success: false, error: err.message || 'network_error', transient: true };
+  }
+}
+
+/**
+ * Attempt auto-login using stored player ID + session token. Retries once
+ * or twice on transient failures (cold start, rate limit, network blip)
+ * before returning. Returns { success, player_id, name, level } on success,
+ * or { success: false, error, transient? } on failure. `transient: true`
+ * means the stored session is still good — caller should offer a retry
+ * instead of dumping the user to a fresh API-key entry form.
  */
 export async function tryAutoLogin() {
   // Hard cutover for users who logged in before the session-token patch:
@@ -77,59 +145,16 @@ export async function tryAutoLogin() {
   const session = getSession();
   if (!session) return { success: false, error: 'no_stored_session' };
 
-  try {
-    const res = await fetch(AUTO_LOGIN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${supabaseAnonKey}`,
-      },
-      body: JSON.stringify({
-        player_id: Number(session.player_id),
-        session_token: session.session_token,
-      }),
-    });
-
-    // 503 = transient Torn outage (rate limit, 5xx, paused / inactive key).
-    // The stored session is still valid — DO NOT clear it. Let the user
-    // through the login screen once and retry on next page load.
-    if (res.status === 503) {
-      let body = {};
-      try { body = await res.json(); } catch {}
-      showToast('Torn API is busy — try again in a moment.');
-      return { success: false, error: 'torn_unavailable', ...body };
-    }
-
-    // Any other non-2xx (401 for bad/missing token, 500, etc.) → clear and
-    // send the user back to the login screen silently.
-    if (!res.ok) {
-      setSession(null);
-      return { success: false, error: 'unauthorized' };
-    }
-
-    const data = await res.json();
-
-    if (!data.success) {
-      // Server explicitly told us this is transient — keep the session.
-      if (data.error === 'torn_unavailable') {
-        showToast('Torn API is busy — try again in a moment.');
-        return data;
-      }
-      setSession(null);
-      if (data.error === 'key_invalid') {
-        showToast('Your API key expired or was revoked. Please log in again.');
-      }
-      return data;
-    }
-
-    return data;
-  } catch (err) {
-    // Network blip between the browser and our edge function. Leave the
-    // stored session alone — re-prompting for the API key over a flaky
-    // connection is the wrong answer.
-    showToast(`Auto-login failed: ${err.message}`);
-    return { success: false, error: err.message };
+  let last = await attemptAutoLogin(session);
+  for (const waitMs of AUTO_LOGIN_RETRY_DELAYS_MS) {
+    if (last.success || !last.transient) break;
+    // Session may have been cleared by a non-transient failure on a prior
+    // attempt — guard against looping against a stale snapshot.
+    if (!getSession()) break;
+    await delay(waitMs);
+    last = await attemptAutoLogin(session);
   }
+  return last;
 }
 
 /**
