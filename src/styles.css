@@ -225,13 +225,13 @@ body {
 }
 
 .stats-coverage-bar {
-  color: var(--positive);
+  color: var(--muted);
   letter-spacing: -0.05em;
   white-space: nowrap;
 }
 
 .stats-coverage-pct {
-  color: var(--accent);
+  color: var(--muted);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -241,6 +241,30 @@ body {
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-size: 0.82rem;
+}
+
+/* Freshness tiers drive bar + percent colors. Age column stays muted
+   across the board so the eye tracks the bar as the primary signal. */
+
+.stats-coverage--fresh .stats-coverage-bar,
+.stats-coverage--fresh .stats-coverage-pct {
+  color: var(--positive);
+}
+
+.stats-coverage--aging .stats-coverage-bar,
+.stats-coverage--aging .stats-coverage-pct {
+  color: var(--accent);
+}
+
+.stats-coverage--stale .stats-coverage-bar,
+.stats-coverage--stale .stats-coverage-pct {
+  color: var(--warning);
+}
+
+.stats-coverage--cold .stats-coverage-bar,
+.stats-coverage--cold .stats-coverage-pct {
+  color: var(--muted);
+  opacity: 0.6;
 }
 
 #player-badge {
