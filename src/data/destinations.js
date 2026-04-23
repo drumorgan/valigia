@@ -7,6 +7,27 @@
 // 3-letter mnemonic — not strict ISO in every case but consistent enough
 // for seasoned Torn players to recognize at a glance.
 
+// Canonical list of Torn travel destinations, shortest flight first.
+// DESTINATIONS below includes lookup aliases ('UK' → 'United Kingdom',
+// 'Caymans' → 'Cayman Islands') so parsing code can match whatever
+// YATA or Torn happens to return. CANONICAL_DESTINATIONS is the
+// dedup'd display list for UI surfaces that need one row per country —
+// the stats-panel coverage section must show every destination exactly
+// once, even those never scouted.
+export const CANONICAL_DESTINATIONS = [
+  'Mexico',
+  'Canada',
+  'Cayman Islands',
+  'Hawaii',
+  'United Kingdom',
+  'Switzerland',
+  'Argentina',
+  'Japan',
+  'China',
+  'UAE',
+  'South Africa',
+];
+
 export const DESTINATIONS = {
   'South Africa':     { flightMins: 311, flag: '🇿🇦', code: 'ZAF' },
   'UAE':              { flightMins: 259, flag: '🇦🇪', code: 'UAE' },
