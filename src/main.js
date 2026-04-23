@@ -200,6 +200,12 @@ function reconnectMessage(result) {
       body: 'Torn has temporarily blocked API access from this network or disabled the API. Try again shortly.',
     };
   }
+  if (result?.error === 'server_error') {
+    return {
+      title: 'Server hiccup',
+      body: "Valigia's backend had a momentary issue. Your stored key is still safe — just tap Retry.",
+    };
+  }
   return {
     title: 'Reconnect to Valigia',
     body: "Couldn't reach Torn to verify your session. Your stored key is still safe — just tap Retry.",

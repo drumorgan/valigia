@@ -56,6 +56,29 @@ function unauthorized() {
   );
 }
 
+// 500 signals a server-side problem (DB blip, decrypt throw, unexpected
+// exception) — NOT an auth failure. The client treats 5xx as transient and
+// keeps the session so a flaky Supabase read doesn't silently log the user
+// out forever. 503 is reserved for upstream Torn outages specifically.
+function serverError(detail?: string) {
+  return new Response(
+    JSON.stringify({ success: false, error: 'server_error', ...(detail ? { detail } : {}) }),
+    { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+  );
+}
+
+function tornUnavailable(tornError?: number, detail?: string) {
+  return new Response(
+    JSON.stringify({
+      success: false,
+      error: 'torn_unavailable',
+      ...(tornError != null ? { torn_error: tornError } : {}),
+      ...(detail ? { detail } : {}),
+    }),
+    { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+  );
+}
+
 // ── Handler ──────────────────────────────────────
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -75,12 +98,20 @@ serve(async (req) => {
       return unauthorized();
     }
 
-    // Retrieve encrypted key + stored token hash
-    const { data: secret } = await supabase
+    // Retrieve encrypted key + stored token hash. `.maybeSingle()` returns
+    // `{ data: null, error: null }` for zero rows — so any non-null `error`
+    // here is a real transient DB failure (connection blip, timeout, RLS
+    // misconfiguration) rather than "user doesn't exist". Treating those as
+    // 401 would wrongly log the user out; return 500 so the client retries.
+    const { data: secret, error: secretErr } = await supabase
       .from('player_secrets')
       .select('api_key_enc, api_key_iv, key_version, session_token_hash')
       .eq('torn_player_id', player_id)
-      .single();
+      .maybeSingle();
+
+    if (secretErr) {
+      return serverError('player_secrets_read_failed');
+    }
 
     // No row, no encrypted key, or no token set → unauthorized. Do NOT leak
     // which of those it was; do NOT fall back to the pre-token code path.
@@ -112,14 +143,7 @@ serve(async (req) => {
       );
       tornData = await tornRes.json();
     } catch (err) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'torn_unavailable',
-          detail: (err as Error).message,
-        }),
-        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return tornUnavailable(undefined, (err as Error).message);
     }
 
     if (tornData.error) {
@@ -150,14 +174,7 @@ serve(async (req) => {
 
       // Transient Torn failure — leave the encrypted row in place. The
       // client keeps its session and retries on the next page load.
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'torn_unavailable',
-          torn_error: code,
-        }),
-        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return tornUnavailable(code);
     }
 
     return new Response(
@@ -170,8 +187,11 @@ serve(async (req) => {
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (_err) {
-    // Don't echo err.message — it can reveal shape of the request. Generic
-    // error for the client; details stay in Supabase function logs.
-    return unauthorized();
+    // Unexpected server-side throw (JSON parse, decrypt failure, Supabase
+    // client init, etc). Return 500 — NOT 401 — so the client's transient
+    // retry path keeps the session. Mis-labeling a server bug as an auth
+    // failure silently logs the user out. Details stay in function logs;
+    // don't echo err.message because it can reveal request shape.
+    return serverError();
   }
 });
