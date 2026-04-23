@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.4
+// @version      0.8.5
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -2007,65 +2007,21 @@
   //
   // What this runner does:
   //   1. Scrape the currently-visible category tab for { item_id, name, qty }.
-  //   2. Merge into a per-player localStorage cache so multiple tabs
-  //      accumulate across a single page visit (and so the web-app Sell
-  //      tab can read the same inventory without another Torn call).
-  //   3. Query te_buy_prices for every item_id in the cache and find the
-  //      single highest buy-offer per item (anon SELECT — public data).
-  //   4. Inject a green "Best Sell Opportunities" bar at the top of the
+  //   2. Query te_buy_prices for those item_ids and find the single highest
+  //      buy-offer per item (anon SELECT — public data).
+  //   3. Inject a green "Best Sell Opportunities" bar at the top of the
   //      page, summarising the rows whose best offer × qty is largest.
   //
-  // The bar updates live: a MutationObserver watches the items list for
-  // tab-switch-induced DOM swaps and re-runs the scrape, so a player who
-  // clicks through Flowers → Plushies → Drugs sees the bar grow each time.
+  // Earlier versions (≤0.8.4) merged every scrape into a 24-hour
+  // localStorage cache so all tabs visited in a session accumulated in the
+  // bar. That made just-sold items linger and mixed categories — when the
+  // player is on "Plushies" they only want to see plushies, not the
+  // flowers they scrolled past ten minutes ago. Dropping the cache gives
+  // an always-current view scoped to the visible tab; the MutationObserver
+  // already rescrapes on every tab switch, so the bar tracks the DOM.
 
   const ITEM_PAGE_BAR_ID = 'valigia-sell-opportunities-bar';
-  const INVENTORY_CACHE_KEY_PREFIX = 'valigia_pda_inventory_v1_';
-  // Inventory rows older than this are dropped when we reload the cache —
-  // stale data from an old session shouldn't be quoted as "your stack".
-  const INVENTORY_TTL_MS = 24 * 60 * 60 * 1000;
   const TE_BUY_PRICES_URL = SUPABASE_REST_URL + '/te_buy_prices';
-
-  function inventoryCacheKey(playerId) {
-    return INVENTORY_CACHE_KEY_PREFIX + String(playerId || 'anon');
-  }
-
-  function loadInventoryCache(playerId) {
-    try {
-      const raw = localStorage.getItem(inventoryCacheKey(playerId));
-      if (!raw) return new Map();
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return new Map();
-      const cutoff = Date.now() - INVENTORY_TTL_MS;
-      const map = new Map();
-      for (const [k, v] of Object.entries(parsed)) {
-        if (!v || typeof v !== 'object') continue;
-        const id = Number(k);
-        const qty = Number(v.quantity);
-        const ts = Number(v.observed_at);
-        if (!Number.isInteger(id) || id <= 0) continue;
-        if (!Number.isFinite(qty) || qty <= 0) continue;
-        if (!Number.isFinite(ts) || ts < cutoff) continue;
-        map.set(id, {
-          item_id: id,
-          name: typeof v.name === 'string' ? v.name : '',
-          quantity: qty,
-          observed_at: ts,
-        });
-      }
-      return map;
-    } catch (_) {
-      return new Map();
-    }
-  }
-
-  function saveInventoryCache(playerId, map) {
-    try {
-      const out = {};
-      for (const [id, row] of map) out[id] = row;
-      localStorage.setItem(inventoryCacheKey(playerId), JSON.stringify(out));
-    } catch (_) { /* quota etc. — non-fatal, bar still works this session */ }
-  }
 
   // Scrape the currently-visible category's item rows. Uses the same
   // /images/items/{id}/ selector other runners rely on, plus the shared
@@ -2274,11 +2230,10 @@
     });
   }
 
-  async function renderItemPageBar(playerId) {
-    const inventory = loadInventoryCache(playerId);
-    if (inventory.size === 0) {
-      const existing = document.getElementById(ITEM_PAGE_BAR_ID);
-      if (existing) existing.remove();
+  async function renderItemPageBar(inventory) {
+    const prev = document.getElementById(ITEM_PAGE_BAR_ID);
+    if (!inventory || inventory.size === 0) {
+      if (prev) prev.remove();
       return;
     }
 
@@ -2293,13 +2248,13 @@
     }
     matches.sort((a, b) => b.total - a.total);
 
-    const prev = document.getElementById(ITEM_PAGE_BAR_ID);
+    const after = document.getElementById(ITEM_PAGE_BAR_ID);
     if (matches.length === 0) {
-      if (prev) prev.remove();
+      if (after) after.remove();
       return;
     }
     const bar = buildItemPageBar(matches);
-    if (prev) prev.replaceWith(bar);
+    if (after) after.replaceWith(bar);
     else {
       const host =
         document.querySelector('#mainContainer .content-wrapper') ||
@@ -2312,23 +2267,21 @@
 
   // Debounced scrape + render. A category-tab click re-renders Torn's
   // items list, which fires a flurry of MutationObserver callbacks —
-  // collapse them into one scrape.
+  // collapse them into one scrape. An empty scrape is treated as a
+  // mid-swap transient: leave the existing bar in place rather than
+  // flashing it empty, since the next mutation will bring rows back.
   let itemPageScheduled = null;
-  function scheduleItemPageScan(playerId, reason) {
+  function scheduleItemPageScan(reason) {
     if (itemPageScheduled) clearTimeout(itemPageScheduled);
     itemPageScheduled = setTimeout(async function () {
       itemPageScheduled = null;
       try {
         const fresh = scrapeItemPageRows();
         if (fresh.size === 0) {
-          // Could just be mid-swap — try once more after a short beat.
           log('item.php: empty scrape reason=' + reason);
           return;
         }
-        const cache = loadInventoryCache(playerId);
-        for (const [id, row] of fresh) cache.set(id, row);
-        saveInventoryCache(playerId, cache);
-        await renderItemPageBar(playerId);
+        await renderItemPageBar(fresh);
       } catch (e) {
         log('item.php scan error:', e);
       }
@@ -2336,13 +2289,8 @@
   }
 
   async function runItemPage() {
-    const playerId = await resolvePlayerId();
-    if (!playerId) return;
-
-    // First pass on whatever is currently rendered. Render the bar from
-    // any pre-existing cache too — category tabs the player already
-    // visited this session stay useful until TTL expires.
-    scheduleItemPageScan(playerId, 'initial');
+    // First pass on whatever is currently rendered.
+    scheduleItemPageScan('initial');
 
     // Watch the document for item-list swaps. We attach broadly (body)
     // and filter in the callback to keep the wiring simple — Torn's
@@ -2358,7 +2306,7 @@
           if (node && node.nodeType === 1) {
             if (node.matches && (node.matches('img[src*="/images/items/"]') ||
                 node.querySelector && node.querySelector('img[src*="/images/items/"]'))) {
-              scheduleItemPageScan(playerId, 'mutation');
+              scheduleItemPageScan('mutation');
               return;
             }
           }
@@ -2377,10 +2325,10 @@
     });
 
     // Not pinging the scout counter here — record-pda-activity's
-    // ALLOWED_PAGE_TYPES is currently {travel, item_market, bazaar}
-    // and expanding it belongs in its own change. This runner's value
-    // to the player is immediate (the bar + the cached inventory);
-    // the scouts counter is vanity.
+    // ALLOWED_PAGE_TYPES is currently {travel, item_market, bazaar} and
+    // expanding it belongs in its own change. This runner's value to
+    // the player is immediate (the bar scoped to the visible tab); the
+    // scouts counter is vanity.
   }
 
   // -- Dispatch ------------------------------------------------------------
