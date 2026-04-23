@@ -17,6 +17,7 @@ import { safeGetItem, safeSetItem } from './storage.js';
 import { setAbroadSnapshot, listAlerts } from './watchlist.js';
 import { renderSellTab, invalidateSellCache } from './sell-ui.js';
 import { listTraders, refreshStaleTrader } from './te-traders.js';
+import { initStatsPanel } from './stats-panel.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
@@ -72,8 +73,11 @@ const BOOT_UI_DEADLINE_MS = 8_000;
 
 async function boot() {
   // Header-level PDA-scouts counter is independent of login state — fire it
-  // in parallel so it shows up on the login screen too.
+  // in parallel so it shows up on the login screen too. initStatsPanel
+  // just wires the triangle click handler; the RPC only fires when the
+  // user actually expands the panel.
   loadPdaScoutCount();
+  initStatsPanel();
 
   const loginPromise = tryAutoLogin();
 
