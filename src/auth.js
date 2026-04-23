@@ -83,16 +83,20 @@ async function attemptAutoLogin(session) {
       }),
     });
 
-    // 503 = transient Torn outage (rate limit, 5xx, paused / inactive key).
-    // The stored session is still valid — DO NOT clear it.
-    if (res.status === 503) {
+    // Any 5xx = transient server-side problem (edge-fn cold start, DB blip,
+    // upstream Torn outage at 503). The stored session is still valid — DO
+    // NOT clear it. Previously this branch only covered 503, so a DB read
+    // hiccup that bubbled up as 500 would silently log the user out.
+    if (res.status >= 500) {
       let body = {};
       try { body = await res.json(); } catch {}
-      return { success: false, error: 'torn_unavailable', transient: true, ...body };
+      const error = body?.error === 'torn_unavailable' ? 'torn_unavailable' : 'server_error';
+      return { success: false, error, transient: true, ...body };
     }
 
-    // Any other non-2xx (401 for bad/missing token, 500, etc.) → clear and
-    // send the user back to the login screen silently.
+    // Any 4xx (401 for bad/missing token, 400 for malformed request) →
+    // session is genuinely invalid. Clear it and send the user back to the
+    // login screen.
     if (!res.ok) {
       setSession(null);
       return { success: false, error: 'unauthorized' };
