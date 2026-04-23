@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.6
+// @version      0.8.7
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -2286,53 +2286,73 @@
     }
   }
 
-  // Debounced scrape + render. A category-tab click re-renders Torn's
-  // items list, which fires a flurry of MutationObserver callbacks —
-  // collapse them into one scrape. An empty scrape (a tab with no
-  // sellable items, or a tab that happens to have no TE matches) clears
-  // the bar completely; the MutationObserver will fire another scrape
-  // when Torn finishes rendering if this was a mid-swap transient.
+  // Debounced scrape + render. Torn switches category tabs in two
+  // different ways depending on whether the tab has been visited this
+  // session: sometimes a full DOM rebuild (new item images added —
+  // observable via childList), sometimes a pure CSS toggle on a cached
+  // tree (no nodes added, only class/style attributes change). We
+  // schedule a scan on ANY mutation and let a hash guard collapse
+  // no-op re-renders, so both cases land on the same code path.
+  //
+  // The debounce resets on every mutation (so a burst of 20 mutations
+  // in 5ms collapses into one scan), but a max-wait guarantees the
+  // scan still fires ~1.2s after the first mutation even if mutations
+  // keep arriving — otherwise a constantly-ticking UI element could
+  // starve the scan forever.
   let itemPageScheduled = null;
+  let itemPageFirstMutation = 0;
+  let lastRenderedHash = null;
+
   function scheduleItemPageScan(reason) {
+    const now = Date.now();
+    if (!itemPageFirstMutation) itemPageFirstMutation = now;
     if (itemPageScheduled) clearTimeout(itemPageScheduled);
+
+    const DEBOUNCE_MS = 300;
+    const MAX_WAIT_MS = 1200;
+    const elapsed = now - itemPageFirstMutation;
+    const wait = elapsed >= MAX_WAIT_MS ? 0 : Math.min(DEBOUNCE_MS, MAX_WAIT_MS - elapsed);
+
     itemPageScheduled = setTimeout(async function () {
       itemPageScheduled = null;
+      itemPageFirstMutation = 0;
       try {
         const fresh = scrapeItemPageRows();
+        // Hash the visible set (ids + quantities, sorted) so we can
+        // skip re-renders when nothing changed. Crucial: the bar's own
+        // DOM insertion feeds the observer, and without this guard
+        // that would loop forever.
+        const ids = Array.from(fresh.keys()).sort(function (a, b) { return a - b; });
+        const hash = ids.length === 0
+          ? ''
+          : ids.map(function (id) { return id + ':' + fresh.get(id).quantity; }).join(',');
+        if (hash === lastRenderedHash) return;
+        lastRenderedHash = hash;
         log('item.php: scrape reason=' + reason + ' size=' + fresh.size);
         await renderItemPageBar(fresh);
       } catch (e) {
         log('item.php scan error:', e);
       }
-    }, 350);
+    }, wait);
   }
 
   async function runItemPage() {
     // First pass on whatever is currently rendered.
     scheduleItemPageScan('initial');
 
-    // Watch the document for item-list swaps. We attach broadly (body)
-    // and filter in the callback to keep the wiring simple — Torn's
-    // DOM shape has varied enough across skins that a more targeted
-    // selector has a habit of breaking. Observer disconnects on page
-    // navigation via the lastDispatchedUrl guard below.
-    const observer = new MutationObserver(function (mutations) {
-      // Only re-scrape when at least one mutation touched a node that
-      // contains an item image — otherwise minor UI bits (hamburger
-      // expand, notification badge) would re-fire for nothing.
-      for (const m of mutations) {
-        for (const node of m.addedNodes) {
-          if (node && node.nodeType === 1) {
-            if (node.matches && (node.matches('img[src*="/images/items/"]') ||
-                node.querySelector && node.querySelector('img[src*="/images/items/"]'))) {
-              scheduleItemPageScan('mutation');
-              return;
-            }
-          }
-        }
-      }
+    // Watch for tab-switch triggers. We observe the whole body with
+    // childList + attributes so both full-DOM-swap and class-toggle
+    // forms of category switching are caught. The callback is
+    // unconditional — the debounce + hash guard handle noise.
+    const observer = new MutationObserver(function () {
+      scheduleItemPageScan('mutation');
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'],
+    });
     // Tear down if the PDA dispatcher fires again for a different URL
     // (e.g. user navigates to the Item Market). The existing
     // scheduleDispatch() flow doesn't explicitly cancel observers, but
