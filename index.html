@@ -35,7 +35,16 @@
           <span class="pda-scouts-count" id="pda-bazaar-scouts">--</span>
           <span class="pda-scouts-events" id="pda-bazaar-events"></span>
         </span>
+        <button
+          type="button"
+          id="stats-toggle"
+          class="stats-toggle"
+          aria-expanded="false"
+          aria-controls="stats-panel"
+          aria-label="Show community stats"
+        >▶</button>
       </div>
+      <div id="stats-panel" class="stats-panel" hidden aria-live="polite"></div>
     </header>
     <nav id="tab-nav" class="tab-nav" hidden>
       <button class="tab-btn tab-btn--active" data-tab="travel" type="button">Travel</button>
