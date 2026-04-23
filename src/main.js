@@ -61,12 +61,48 @@ function getStoredTab() {
 }
 
 // ── Boot ───────────────────────────────────────────────────────
+// Hard wall-clock cap on "no UI visible" time. tryAutoLogin() has its own
+// per-attempt timeouts and retry loop, but in the worst case those can
+// still add up past what a user will patiently watch a "Loading…" spinner
+// for. If the login promise hasn't settled in this window we force-render
+// the reconnect screen (or login screen if no session). A late-arriving
+// success still transitions to the dashboard; a late-arriving failure is
+// discarded because the UI is already showing the right thing.
+const BOOT_UI_DEADLINE_MS = 8_000;
+
 async function boot() {
   // Header-level PDA-scouts counter is independent of login state — fire it
   // in parallel so it shows up on the login screen too.
   loadPdaScoutCount();
 
-  const result = await tryAutoLogin();
+  const loginPromise = tryAutoLogin();
+
+  const deadlinePromise = new Promise((resolve) => {
+    setTimeout(() => resolve({ __deadline: true }), BOOT_UI_DEADLINE_MS);
+  });
+
+  const winner = await Promise.race([loginPromise, deadlinePromise]);
+
+  if (winner && winner.__deadline) {
+    // Fallback path: auto-login is still pending past the deadline. Render
+    // the best UI we can with what we know locally, then attach a late
+    // handler so a deferred success still lands on the dashboard.
+    if (getSession()) {
+      showReconnectScreen({ error: 'boot_ui_deadline', transient: true });
+    } else {
+      showLoginScreen();
+    }
+    loginPromise.then((late) => {
+      if (late && late.success) {
+        showPlayerHeader(late.name, late.level);
+        showToast(`Welcome back, ${late.name}!`, 'success');
+        startDashboard(late.player_id, late.name);
+      }
+    }).catch(() => { /* already showing fallback UI */ });
+    return;
+  }
+
+  const result = winner;
 
   if (result.success) {
     showPlayerHeader(result.name, result.level);
