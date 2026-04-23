@@ -47,24 +47,47 @@ function formatAge(seconds) {
 }
 
 // 18-cell ASCII bar, matches the cargo-terminal aesthetic better than an
-// SVG meter. Empty denominator → all-dot (no data rather than a lie).
+// SVG meter.
 const BAR_CELLS = 18;
-function barFor(numerator, denominator) {
-  const n = Number(numerator);
-  const d = Number(denominator);
-  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) {
-    return '░'.repeat(BAR_CELLS);
-  }
-  const pct = Math.max(0, Math.min(1, n / d));
-  const filled = Math.round(pct * BAR_CELLS);
+
+function barForScore(score) {
+  const s = Math.max(0, Math.min(1, Number(score) || 0));
+  const filled = Math.round(s * BAR_CELLS);
   return '█'.repeat(filled) + '░'.repeat(BAR_CELLS - filled);
 }
 
-function pctFor(numerator, denominator) {
-  const n = Number(numerator);
-  const d = Number(denominator);
-  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return '—';
-  return `${Math.round((n / d) * 100)}%`;
+// Freshness as a function of last-scout age. Full credit up to 30 min,
+// zero past 48 h, log-interpolated in between. Log decay (not linear)
+// because the user cares about order-of-magnitude staleness —
+// 30 min vs 60 min is a bigger deal than 12 h vs 13 h. Tuning anchors:
+//   0–30 min   → 100%  (fresh)
+//   1 h        →  85%
+//   2 h        →  70%
+//   12 h       →  30%
+//   48 h+      →   0%  (cold)
+const FRESH_FLOOR_MIN = 30;
+const STALE_CEIL_MIN = 48 * 60;
+const LOG_FLOOR = Math.log2(FRESH_FLOOR_MIN);
+const LOG_CEIL = Math.log2(STALE_CEIL_MIN);
+
+function freshnessScore(ageSeconds) {
+  const s = Number(ageSeconds);
+  if (!Number.isFinite(s) || s < 0) return 0;
+  const ageMin = s / 60;
+  if (ageMin <= FRESH_FLOOR_MIN) return 1;
+  if (ageMin >= STALE_CEIL_MIN) return 0;
+  return 1 - (Math.log2(ageMin) - LOG_FLOOR) / (LOG_CEIL - LOG_FLOOR);
+}
+
+// Four tiers drive the bar + percent colors. Cutoffs align with the
+// log-decay anchors above: "fresh" = within the yes/no floor, "aging"
+// spans the first few hours, "stale" runs the long tail to 48 h, and
+// "cold" is the >48 h catch-all.
+function tierFor(score) {
+  if (score >= 0.8) return 'fresh';
+  if (score >= 0.4) return 'aging';
+  if (score > 0.01) return 'stale';
+  return 'cold';
 }
 
 // ── Render ─────────────────────────────────────────────────────
@@ -81,15 +104,24 @@ function renderCoverage(rows) {
     wrap.appendChild(el('div', 'stats-muted', 'No first-party scrapes yet.'));
     return wrap;
   }
-  for (const row of rows) {
-    const r = el('div', 'stats-coverage-row');
+  // Freshest destinations on top so the user can see at a glance what
+  // they can trust right now. Stable order via destination name when
+  // ages are equal / absent. RPC default sort is by catalog depth,
+  // which matters less than recency for this panel.
+  const sorted = rows.slice().sort((a, b) => {
+    const aAge = Number.isFinite(Number(a.last_scout_s)) ? Number(a.last_scout_s) : Infinity;
+    const bAge = Number.isFinite(Number(b.last_scout_s)) ? Number(b.last_scout_s) : Infinity;
+    if (aAge !== bAge) return aAge - bAge;
+    return String(a.destination).localeCompare(String(b.destination));
+  });
+  for (const row of sorted) {
+    const score = freshnessScore(row.last_scout_s);
+    const tier = tierFor(score);
+    const r = el('div', `stats-coverage-row stats-coverage--${tier}`);
     r.appendChild(el('span', 'stats-coverage-dest', row.destination));
-    r.appendChild(el('span', 'stats-coverage-bar',
-      barFor(row.fresh_30m, row.items_known)));
-    r.appendChild(el('span', 'stats-coverage-pct',
-      pctFor(row.fresh_30m, row.items_known)));
-    r.appendChild(el('span', 'stats-coverage-age',
-      formatAge(row.last_scout_s)));
+    r.appendChild(el('span', 'stats-coverage-bar', barForScore(score)));
+    r.appendChild(el('span', 'stats-coverage-pct', `${Math.round(score * 100)}%`));
+    r.appendChild(el('span', 'stats-coverage-age', formatAge(row.last_scout_s)));
     wrap.appendChild(r);
   }
   return wrap;
@@ -110,7 +142,7 @@ function renderStatsPanel(panel, data) {
 
   // Abroad coverage
   panel.appendChild(
-    renderSection('ABROAD COVERAGE (first-party, fresh < 30 min)',
+    renderSection('ABROAD COVERAGE (first-party, age-graded to 48 h)',
       renderCoverage(abroad))
   );
 
