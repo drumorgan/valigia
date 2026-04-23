@@ -61,6 +61,14 @@ export function getPlayerId() {
 // most of those into a successful auto-login with no user-visible blip.
 const AUTO_LOGIN_RETRY_DELAYS_MS = [1000, 2000];
 
+// Per-attempt timeout for the auto-login fetch. Without this, a stalled
+// edge-function request (cold start that never finishes, half-open TCP
+// connection on cellular, CDN hiccup) leaves the fetch pending forever,
+// which blocks boot() from ever replacing the "Loading…" placeholder.
+// 10 s is generous enough to cover a real cold start but short enough
+// that a genuine stall converts into a transient retry.
+const AUTO_LOGIN_TIMEOUT_MS = 10_000;
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -70,6 +78,8 @@ function delay(ms) {
  * retry behavior around it.
  */
 async function attemptAutoLogin(session) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), AUTO_LOGIN_TIMEOUT_MS);
   try {
     const res = await fetch(AUTO_LOGIN_URL, {
       method: 'POST',
@@ -81,6 +91,7 @@ async function attemptAutoLogin(session) {
         player_id: Number(session.player_id),
         session_token: session.session_token,
       }),
+      signal: controller.signal,
     });
 
     // 503 = transient Torn outage (rate limit, 5xx, paused / inactive key).
@@ -114,10 +125,18 @@ async function attemptAutoLogin(session) {
 
     return data;
   } catch (err) {
-    // Network blip between the browser and our edge function. Leave the
-    // stored session alone — re-prompting for the API key over a flaky
-    // connection is the wrong answer.
-    return { success: false, error: err.message || 'network_error', transient: true };
+    // AbortError = our own timeout fired. Network blip / DNS / TLS errors
+    // also land here. Either way the stored session is still valid — treat
+    // as transient so the retry loop kicks in, and so an exhausted retry
+    // bubbles up to the reconnect screen instead of the API-key form.
+    const isTimeout = err?.name === 'AbortError';
+    return {
+      success: false,
+      error: isTimeout ? 'auto_login_timeout' : (err?.message || 'network_error'),
+      transient: true,
+    };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
