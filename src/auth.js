@@ -65,9 +65,10 @@ const AUTO_LOGIN_RETRY_DELAYS_MS = [1000, 2000];
 // edge-function request (cold start that never finishes, half-open TCP
 // connection on cellular, CDN hiccup) leaves the fetch pending forever,
 // which blocks boot() from ever replacing the "Loading…" placeholder.
-// 10 s is generous enough to cover a real cold start but short enough
-// that a genuine stall converts into a transient retry.
-const AUTO_LOGIN_TIMEOUT_MS = 10_000;
+// 6 s is enough to cover a real cold start but short enough that a
+// genuine stall converts into a transient retry well before boot()'s
+// own wall-clock fallback fires.
+const AUTO_LOGIN_TIMEOUT_MS = 6_000;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
