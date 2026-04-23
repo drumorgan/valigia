@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.5
+// @version      0.8.6
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -2023,9 +2023,27 @@
   const ITEM_PAGE_BAR_ID = 'valigia-sell-opportunities-bar';
   const TE_BUY_PRICES_URL = SUPABASE_REST_URL + '/te_buy_prices';
 
+  // Walk up from el to body; return true if any ancestor (or el itself) is
+  // actually rendered. Torn's items page keeps every previously-rendered
+  // category tab alive in the DOM and hides the inactive ones — some with
+  // display:none, some with zero-height collapses. innerText *should* skip
+  // display:none text but in practice on PDA's webview it sometimes still
+  // returns the text for those nodes, so an explicit geometry check is the
+  // reliable filter.
+  function isRowVisible(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    return true;
+  }
+
   // Scrape the currently-visible category's item rows. Uses the same
   // /images/items/{id}/ selector other runners rely on, plus the shared
-  // rowContainer() heuristic to tolerate Torn's <tr>/<div> drift.
+  // rowContainer() heuristic to tolerate Torn's <tr>/<div> drift, then
+  // filters to only rows that are actually on screen so hidden category
+  // tabs don't leak into the bar.
   function scrapeItemPageRows() {
     const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
     const rows = new Map();
@@ -2039,6 +2057,9 @@
       const row = rowContainer(img);
       if (!row || seenRows.has(row)) continue;
       seenRows.add(row);
+
+      // Filter hidden category tabs still present in the DOM.
+      if (!isRowVisible(row)) continue;
 
       // Skip the left sidebar's item-icon row (category tabs, equipped
       // preview) — those have images but no "x{N}" count next to them.
@@ -2267,9 +2288,10 @@
 
   // Debounced scrape + render. A category-tab click re-renders Torn's
   // items list, which fires a flurry of MutationObserver callbacks —
-  // collapse them into one scrape. An empty scrape is treated as a
-  // mid-swap transient: leave the existing bar in place rather than
-  // flashing it empty, since the next mutation will bring rows back.
+  // collapse them into one scrape. An empty scrape (a tab with no
+  // sellable items, or a tab that happens to have no TE matches) clears
+  // the bar completely; the MutationObserver will fire another scrape
+  // when Torn finishes rendering if this was a mid-swap transient.
   let itemPageScheduled = null;
   function scheduleItemPageScan(reason) {
     if (itemPageScheduled) clearTimeout(itemPageScheduled);
@@ -2277,10 +2299,7 @@
       itemPageScheduled = null;
       try {
         const fresh = scrapeItemPageRows();
-        if (fresh.size === 0) {
-          log('item.php: empty scrape reason=' + reason);
-          return;
-        }
+        log('item.php: scrape reason=' + reason + ' size=' + fresh.size);
         await renderItemPageBar(fresh);
       } catch (e) {
         log('item.php scan error:', e);
