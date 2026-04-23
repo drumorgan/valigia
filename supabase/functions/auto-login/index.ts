@@ -136,14 +136,31 @@ serve(async (req) => {
     // Validate against Torn API. If the fetch itself fails (network / DNS /
     // Torn side timeout) treat it as transient — the stored row is still
     // good, just tell the client to retry on the next page load.
+    //
+    // Bound the Torn call with our own AbortController timeout. Without it,
+    // a stalled Torn response ties up the whole edge function for its full
+    // platform timeout (tens of seconds), which is what was turning into
+    // the client's "Loading…" hang. 4 s is well above normal Torn latency
+    // (~300–800 ms) and leaves the client's 8 s boot deadline plenty of
+    // room to receive the 503 and show the reconnect screen.
+    const TORN_FETCH_TIMEOUT_MS = 4_000;
     let tornData: any;
+    const tornController = new AbortController();
+    const tornTimeoutId = setTimeout(() => tornController.abort(), TORN_FETCH_TIMEOUT_MS);
     try {
       const tornRes = await fetch(
-        `https://api.torn.com/user/?selections=basic&key=${apiKey}`
+        `https://api.torn.com/user/?selections=basic&key=${apiKey}`,
+        { signal: tornController.signal }
       );
       tornData = await tornRes.json();
     } catch (err) {
-      return tornUnavailable(undefined, (err as Error).message);
+      const isTimeout = (err as Error)?.name === 'AbortError';
+      return tornUnavailable(
+        undefined,
+        isTimeout ? 'torn_fetch_timeout' : (err as Error).message,
+      );
+    } finally {
+      clearTimeout(tornTimeoutId);
     }
 
     if (tornData.error) {
