@@ -9,6 +9,7 @@
 // banner itself intact. This is a nerdy-stats surface, not a dashboard.
 
 import { supabase } from './supabase.js';
+import { CANONICAL_DESTINATIONS } from './data/destinations.js';
 
 const PANEL_CACHE_TTL_MS = 60_000;
 
@@ -36,6 +37,10 @@ function formatInt(n) {
 
 // "3m", "2h", "5d" — matches the terseness of the rest of the UI.
 function formatAge(seconds) {
+  // Null / missing signals a destination that has no abroad_prices row at
+  // all — i.e. nobody has ever scouted it. Render explicitly rather than
+  // a dash so the user can tell "new" from "unknown".
+  if (seconds === null || seconds === undefined) return 'never';
   const s = Number(seconds);
   if (!Number.isFinite(s) || s < 0) return '—';
   if (s < 90) return `${Math.round(s)}s`;
@@ -98,19 +103,48 @@ function renderSection(title, body) {
   return section;
 }
 
+// Merge the RPC rows (only destinations that have ever been scouted) with
+// the canonical destination list so every country shows up — scouted ones
+// get their real numbers, unscouted ones get a "never" stub. Unknown
+// destinations from the RPC (shouldn't happen, but defensive against
+// ingest-normalisation drift) are appended at the bottom so we don't
+// silently hide them.
+function buildCoverageRows(rpcRows) {
+  const byDest = new Map();
+  for (const row of Array.isArray(rpcRows) ? rpcRows : []) {
+    if (row && typeof row.destination === 'string') {
+      byDest.set(row.destination, row);
+    }
+  }
+  const merged = [];
+  for (const dest of CANONICAL_DESTINATIONS) {
+    merged.push(byDest.get(dest) || {
+      destination: dest,
+      items_known: 0,
+      fresh_30m: 0,
+      last_scout_s: null,
+    });
+    byDest.delete(dest);
+  }
+  for (const leftover of byDest.values()) merged.push(leftover);
+  return merged;
+}
+
 function renderCoverage(rows) {
   const wrap = el('div', 'stats-coverage');
-  if (!Array.isArray(rows) || rows.length === 0) {
-    wrap.appendChild(el('div', 'stats-muted', 'No first-party scrapes yet.'));
+  const merged = buildCoverageRows(rows);
+  if (merged.length === 0) {
+    wrap.appendChild(el('div', 'stats-muted', 'No destinations configured.'));
     return wrap;
   }
   // Freshest destinations on top so the user can see at a glance what
-  // they can trust right now. Stable order via destination name when
-  // ages are equal / absent. RPC default sort is by catalog depth,
-  // which matters less than recency for this panel.
-  const sorted = rows.slice().sort((a, b) => {
-    const aAge = Number.isFinite(Number(a.last_scout_s)) ? Number(a.last_scout_s) : Infinity;
-    const bAge = Number.isFinite(Number(b.last_scout_s)) ? Number(b.last_scout_s) : Infinity;
+  // they can trust right now. "never" scouted rows (last_scout_s === null)
+  // sort to the bottom. Stable order via destination name when ages tie.
+  const sorted = merged.slice().sort((a, b) => {
+    const aAge = (a.last_scout_s === null || a.last_scout_s === undefined)
+      ? Infinity : Number(a.last_scout_s);
+    const bAge = (b.last_scout_s === null || b.last_scout_s === undefined)
+      ? Infinity : Number(b.last_scout_s);
     if (aAge !== bAge) return aAge - bAge;
     return String(a.destination).localeCompare(String(b.destination));
   });
