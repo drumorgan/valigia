@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.7
+// @version      0.8.8
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.8.4';
+  const SCRIPT_VERSION = '0.8.8';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1895,6 +1895,146 @@
     host.insertBefore(bar, host.firstChild);
   }
 
+  // -- Stakeout mode -------------------------------------------------------
+  // Tier 3 of the restock-data-quality plan. When the user is abroad and
+  // this toggle is ON, re-run runTravel() every STAKEOUT_INTERVAL_MS so
+  // each upsert to abroad_prices gives the restock trigger a chance to
+  // fire on a stock-up delta. Every tick is an independently-observed
+  // data point with tight confidence (≤5 min since prior observation),
+  // so stakers meaningfully improve the community's cadence metric.
+  //
+  // The 5 min cadence is well above the edge function's 5 s per-player
+  // rate limit, so there's no backend pressure. It's also above the
+  // realistic post-cleanup median cadence (20–45 min observed), which
+  // means most real refills during a long stakeout get caught on the
+  // *next* tick after they occur.
+  //
+  // User-facing UI is a small pill fixed to the top-right of the travel
+  // page: [STAKEOUT: OFF] tap-to-enable, [STAKEOUT: ON · next 4:32]
+  // tap-to-disable. Setting is persisted in localStorage so it survives
+  // page reloads and re-landings.
+  const STAKEOUT_INTERVAL_MS = 5 * 60 * 1000;
+  const STAKEOUT_STORAGE_KEY = 'valigia_stakeout_enabled';
+
+  const stakeout = {
+    intervalId: null,
+    tickIntervalId: null,
+    badge: null,
+    nextTickAt: 0,
+  };
+
+  function stakeoutEnabled() {
+    try { return localStorage.getItem(STAKEOUT_STORAGE_KEY) === '1'; }
+    catch (e) { return false; }
+  }
+
+  function setStakeoutEnabled(val) {
+    try { localStorage.setItem(STAKEOUT_STORAGE_KEY, val ? '1' : '0'); }
+    catch (e) { /* quota / private mode — ignore */ }
+  }
+
+  function formatCountdown(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + ':' + String(r).padStart(2, '0');
+  }
+
+  function updateStakeoutBadge() {
+    if (!stakeout.badge) return;
+    const on = stakeoutEnabled();
+    let text = 'STAKEOUT: ' + (on ? 'ON' : 'OFF');
+    if (on && stakeout.nextTickAt > 0) {
+      text += ' · next ' + formatCountdown(stakeout.nextTickAt - Date.now());
+    }
+    stakeout.badge.textContent = text;
+    stakeout.badge.style.color = on ? '#4ae8a0' : '#999';
+    stakeout.badge.style.borderColor = on ? '#4ae8a0' : '#444';
+  }
+
+  function onStakeoutBadgeClick() {
+    if (stakeoutEnabled()) {
+      setStakeoutEnabled(false);
+      stopStakeoutInterval();
+      toast('Stakeout disabled', 'success');
+    } else {
+      setStakeoutEnabled(true);
+      startStakeoutInterval();
+      toast('Stakeout enabled — next scrape in 5 min', 'success');
+    }
+    updateStakeoutBadge();
+  }
+
+  function mountStakeoutBadge() {
+    if (stakeout.badge) return;
+    const badge = document.createElement('div');
+    badge.id = 'valigia-stakeout-badge';
+    Object.assign(badge.style, {
+      position: 'fixed',
+      top: '10px',
+      right: '10px',
+      zIndex: '99998',
+      padding: '6px 10px',
+      background: '#161a22',
+      border: '1px solid #444',
+      borderRadius: '6px',
+      font: "600 11px/1 'Syne Mono', monospace",
+      letterSpacing: '0.04em',
+      color: '#999',
+      cursor: 'pointer',
+      userSelect: 'none',
+      boxShadow: '0 2px 8px rgba(0,0,0,.4)',
+    });
+    badge.addEventListener('click', onStakeoutBadgeClick);
+    document.body.appendChild(badge);
+    stakeout.badge = badge;
+  }
+
+  function unmountStakeoutBadge() {
+    if (stakeout.badge) {
+      stakeout.badge.remove();
+      stakeout.badge = null;
+    }
+  }
+
+  async function stakeoutTick() {
+    log('stakeout tick');
+    stakeout.nextTickAt = Date.now() + STAKEOUT_INTERVAL_MS;
+    updateStakeoutBadge();
+    try { await runTravel(); } catch (e) { log('stakeout tick error:', e); }
+  }
+
+  function startStakeoutInterval() {
+    if (stakeout.intervalId) return; // already running, don't stack
+    stakeout.nextTickAt = Date.now() + STAKEOUT_INTERVAL_MS;
+    stakeout.intervalId = setInterval(stakeoutTick, STAKEOUT_INTERVAL_MS);
+    stakeout.tickIntervalId = setInterval(updateStakeoutBadge, 1000);
+  }
+
+  function stopStakeoutInterval() {
+    if (stakeout.intervalId) { clearInterval(stakeout.intervalId); stakeout.intervalId = null; }
+    if (stakeout.tickIntervalId) { clearInterval(stakeout.tickIntervalId); stakeout.tickIntervalId = null; }
+    stakeout.nextTickAt = 0;
+  }
+
+  // Called from runTravel() once a destination is confirmed. Mounts the
+  // badge (shows OFF or ON state from localStorage) and starts the
+  // auto-scrape interval if the user previously enabled it.
+  function initStakeoutUI() {
+    mountStakeoutBadge();
+    if (stakeoutEnabled() && !stakeout.intervalId) {
+      startStakeoutInterval();
+    }
+    updateStakeoutBadge();
+  }
+
+  // Called from dispatch() when navigating to a non-travel page. Clears
+  // timers + removes the badge but does NOT flip the user's preference.
+  function tearDownStakeout() {
+    stopStakeoutInterval();
+    unmountStakeoutBadge();
+  }
+
   // -- Main ----------------------------------------------------------------
   async function runTravel() {
     const destination = detectDestination();
@@ -1902,6 +2042,12 @@
       log('No "You are in X" marker - probably not landed yet.');
       return;
     }
+
+    // Mount the stakeout toggle as soon as we know the user is abroad.
+    // Idempotent: re-running this on a stakeout tick is a no-op. Must run
+    // BEFORE the 8-s shop-hydration poll so the toggle appears even if
+    // scraping fails for DOM-selector reasons.
+    initStakeoutUI();
 
     // Torn's travel page hydrates its shop lists after initial DOM render.
     // Poll briefly for item images to show up before scraping.
@@ -2390,6 +2536,11 @@
       return;
     }
     const page = detectPage();
+    // Stakeout badge + auto-rescrape interval are travel-page-only. Tear
+    // them down on every dispatch and let runTravel() re-mount if
+    // applicable. Skips the teardown during a stakeout-driven re-run
+    // (page is still 'travel'), which would otherwise stop its own loop.
+    if (page !== 'travel') tearDownStakeout();
     switch (page) {
       case 'travel':     return runTravel();
       case 'itemmarket': return runItemMarket();
