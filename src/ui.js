@@ -413,7 +413,10 @@ function renderDestCell(destination) {
   const travelLink = `<a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener" class="dest-link" title="Travel to ${destination}">✈️</a>`;
   const { flag, code } = getDestinationBadge(destination);
   if (!flag) return `${travelLink} ${destination}`;
-  return `${travelLink} <span class="dest-flag" title="${destination}">${flag}</span> <span class="dest-code">${code}</span>`;
+  // data-dest carries the full country name so the mobile (≤580px) card
+  // layout can swap the desktop's "✈️ 🏝️ HAW" trio for "🏝️ Hawaii" via
+  // a CSS ::after pseudo, no extra DOM nodes required.
+  return `${travelLink} <span class="dest-flag" data-dest="${destination}" title="${destination}">${flag}</span> <span class="dest-code">${code}</span>`;
 }
 
 // Trailing hint for rows where cadence data exists but isn't confident

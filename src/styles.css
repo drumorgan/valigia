@@ -2019,19 +2019,28 @@ tr.row--negative td {
     gap: 0.5rem;
   }
 
+  /* Phone card layout — top-down hierarchy where each row tells one story:
+       1. header  — rank, item name, destination (flag + full country name)
+       2. hero    — profit/hr (large gold) with flight RT inline
+       3. stock   — Now / ETA + dynamics subline (depletion + refill cadence)
+       4. buy/sell — economics on one line, buy left + sell right
+       5. run     — profit/run (green) with run cost subline inline
+     Replaces the prior 11-cell asymmetric grid where everything quantitative
+     was crammed into a thin right strip while item/dest floated centered. */
   .arb-table tr {
     display: grid;
-    grid-template-columns: auto 1fr 1fr;
+    grid-template-columns: auto 1fr auto;
     grid-template-areas:
-      "rank item item"
-      "rank dest stock"
-      "buy  sell hr"
-      "run  run  hr";
-    gap: 0.15rem 0.5rem;
+      "rank  item   dest"
+      "hr    hr     hr"
+      "stock stock  stock"
+      "buy   buy    sell"
+      "run   run    run";
+    gap: 0.35rem 0.6rem;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.6rem 0.75rem;
+    border-radius: 10px;
+    padding: 0.75rem 0.85rem;
   }
 
   .arb-table tr.row--negative {
@@ -2040,93 +2049,180 @@ tr.row--negative td {
 
   .arb-table td {
     border-bottom: none;
-    padding: 0.1rem 0;
+    padding: 0;
     white-space: normal;
   }
 
+  /* — Header row — */
   .arb-table td.col-rank {
     grid-area: rank;
-    font-size: 1.1rem;
+    font-size: 1.05rem;
     font-weight: 700;
     color: var(--muted);
-    display: flex;
-    align-items: center;
-    width: auto;
+    align-self: center;
   }
 
   .arb-table td.col-item {
     grid-area: item;
-    font-size: 0.9rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
     text-align: left;
+    align-self: center;
   }
 
   .arb-table td.col-dest {
     grid-area: dest;
-    font-size: 0.7rem;
-    text-align: left;
+    font-size: 0.78rem;
+    color: var(--text);
+    text-align: right;
+    align-self: center;
   }
 
+  /* On mobile we ditch the desktop ✈️ + 🏝️ + 3-letter trio — too many icons
+     in too little space — and render just the flag + full country name. The
+     flag span carries data-dest with the destination name, so a single CSS
+     pseudo handles the swap with no extra DOM. */
+  .arb-table td.col-dest .dest-link,
+  .arb-table td.col-dest .dest-code {
+    display: none;
+  }
+  .arb-table td.col-dest .dest-flag::after {
+    content: " " attr(data-dest);
+    font-family: 'Syne Mono', monospace;
+    font-size: 0.78rem;
+    color: var(--text);
+    letter-spacing: 0.02em;
+    margin-left: 0.15em;
+  }
+
+  /* — Hero row: profit/hr large + flight RT inline — */
+  .arb-table td.col-hr {
+    grid-area: hr;
+    text-align: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent);
+    padding: 0.25rem 0;
+  }
+
+  .arb-table td.col-hr::after {
+    content: " /hr";
+    font-size: 0.7rem;
+    font-weight: 400;
+    opacity: 0.7;
+    letter-spacing: 0.04em;
+  }
+
+  /* Flight subline — pull it INLINE with the hero number on mobile so the
+     round-trip context sits next to the rate ("$55,258 /hr · 2h 49m RT")
+     instead of dangling on its own line under a single-cell column. */
+  .arb-table td.col-hr .hr-sub {
+    display: inline;
+    font-size: 0.7rem;
+    margin-left: 0.6rem;
+    opacity: 0.75;
+    letter-spacing: 0.02em;
+  }
+
+  /* — Stock row: Now / ETA + dynamics subline — */
+  .arb-table td.col-stock {
+    grid-area: stock;
+    text-align: left;
+    color: var(--text);
+    font-size: 0.85rem;
+  }
+
+  .arb-table td.col-stock::before {
+    content: "Stock ";
+    color: var(--muted);
+    font-size: 0.7rem;
+    opacity: 0.7;
+    margin-right: 0.25rem;
+    letter-spacing: 0.04em;
+  }
+
+  /* stock-now and stock-eta render inline on mobile so "Now 9,916  ETA 6,793"
+     reads as one line. shelf-dynamics stays block (its own subline). */
+  .arb-table td.col-stock .stock-now {
+    display: inline;
+    font-size: 0.85rem;
+  }
+
+  .arb-table td.col-stock .stock-eta {
+    display: inline;
+    font-size: 0.75rem;
+    margin-left: 0.5rem;
+  }
+
+  .arb-table td.col-stock .shelf-dynamics {
+    font-size: 0.65rem;
+    margin-top: 3px;
+  }
+
+  /* — Buy / Sell row — */
   .arb-table td.col-buy {
     grid-area: buy;
     text-align: left;
-    color: var(--muted);
-    font-size: 0.72rem;
+    font-size: 0.82rem;
+    color: var(--text);
   }
 
   .arb-table td.col-buy::before {
     content: "Buy ";
     color: var(--muted);
-    opacity: 0.6;
+    font-size: 0.7rem;
+    opacity: 0.7;
+    margin-right: 0.25rem;
+    letter-spacing: 0.04em;
   }
 
   .arb-table td.col-sell {
     grid-area: sell;
-    text-align: left;
-    font-size: 0.72rem;
+    text-align: right;
+    font-size: 0.82rem;
+    color: var(--text);
   }
 
   .arb-table td.col-sell::before {
     content: "Sell ";
     color: var(--muted);
-    opacity: 0.6;
-  }
-
-  .arb-table td.col-hr {
-    grid-area: hr;
-    text-align: right;
-    font-size: 0.9rem;
-    font-weight: 700;
-    color: var(--accent);
-  }
-
-  .arb-table td.col-hr::after {
-    content: " /hr";
-    font-size: 0.65rem;
-    font-weight: 400;
+    font-size: 0.7rem;
     opacity: 0.7;
+    margin-right: 0.25rem;
+    letter-spacing: 0.04em;
   }
 
-  .arb-table td.col-stock {
-    grid-area: stock;
-    text-align: right;
-    color: var(--muted);
-    font-size: 0.68rem;
-    align-self: end;
-  }
-
+  /* — Run row: profit/run + cost subline inline — */
   .arb-table td.col-run {
     grid-area: run;
     text-align: left;
-    font-size: 0.78rem;
+    font-size: 0.95rem;
+    color: var(--positive);
+    font-weight: 600;
     border-top: 1px solid var(--border);
-    padding-top: 0.3rem;
-    margin-top: 0.15rem;
+    padding-top: 0.45rem;
+    margin-top: 0.2rem;
   }
 
   .arb-table td.col-run::before {
     content: "Run ";
     color: var(--muted);
-    opacity: 0.6;
+    font-size: 0.7rem;
+    opacity: 0.7;
+    font-weight: 400;
+    margin-right: 0.25rem;
+    letter-spacing: 0.04em;
+  }
+
+  /* Cost subline (💰 + run cost + optional stock-limited badge) — pull
+     inline so the per-trip story reads as one line: "Run $158,775  💰 $20,300 cost". */
+  .arb-table td.col-run .run-sub {
+    display: inline;
+    font-size: 0.72rem;
+    margin-left: 0.6rem;
+    color: var(--muted);
+    opacity: 0.9;
   }
 
   /* Login adjustments */
