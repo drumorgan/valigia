@@ -35,6 +35,13 @@ const STORAGE_REALISM = 'valigia_realism_mode';
 let slotCount = parseInt(safeGetItem(STORAGE_SLOTS)) || 29;
 let flightType = safeGetItem(STORAGE_FLIGHT_TYPE, 'standard');
 let sortCol = safeGetItem(STORAGE_SORT_COL, 'profitPerHour');
+// Migrate users whose persisted sortCol referred to a column we removed
+// during the layout trim (Margin / Run Cost / Flight). Without this fallback
+// the sort header would render with no active indicator and clicks on the
+// new headers would still feel correct, but the underlying sort would silently
+// resolve to 0 for every row.
+const RETIRED_SORT_KEYS = new Set(['marginPerItem', 'runCost', 'flightMins']);
+if (RETIRED_SORT_KEYS.has(sortCol)) sortCol = 'profitPerHour';
 let sortDir = safeGetItem(STORAGE_SORT_DIR, 'desc');
 let filterDestination = safeGetItem(STORAGE_FILTER_DEST, 'all');
 let filterCategory = safeGetItem(STORAGE_FILTER_CAT, 'all');
@@ -66,6 +73,9 @@ let bestBazaarRun = null;        // Optional verified bazaar deal, set by main.j
 const BAZAAR_NOMINAL_TRANSACTION_MINS = 5;
 
 // ── Column definitions for sortable headers ───────────────────
+// Trimmed from 11 to 8: Margin $ / Run Cost / Flight folded into adjacent
+// cells (Margin $ derives from Buy/Sell, Run Cost is an action subline under
+// Profit/Run, Flight is round-trip context next to Profit/hr).
 const COLUMNS = [
   { key: null,            label: '#',           css: 'col-rank' },
   { key: 'name',          label: 'Item',        css: 'col-item' },
@@ -73,11 +83,8 @@ const COLUMNS = [
   { key: 'quantity',      label: 'Stock',       css: 'col-stock' },
   { key: 'buyPrice',      label: 'Buy',         css: 'col-buy' },
   { key: 'sellPrice',     label: 'Sell (net)',   css: 'col-sell' },
-  { key: 'marginPerItem', label: 'Margin',      css: 'col-margin' },
-  { key: 'runCost',       label: 'Run Cost',    css: 'col-runcost' },
   { key: 'profitPerRun',  label: 'Profit/Run',  css: 'col-run' },
   { key: 'profitPerHour', label: 'Profit/hr',   css: 'col-hr' },
-  { key: 'flightMins',    label: 'Flight',      css: 'col-flight' },
 ];
 
 const COL_COUNT = COLUMNS.length;
@@ -433,6 +440,40 @@ function cadenceLearningHint(forecast) {
   return ` <span class="stock-eta__learning" title="${title}">· cadence forming (${count} obs)</span>`;
 }
 
+// Steady-state shelf dynamics — depletion rate and restock interval. These
+// describe the shelf's intrinsic behavior across observed cycles, separate
+// from the "next event" copy in etaLine ("restock ~52m", "leave in 45m"). We
+// suppress the rate line when etaLine already shows "empty ~Xm" (same slope
+// expressed as time-to-empty) and the interval line when etaLine already
+// mentions a specific next restock — both rules avoid two lines saying
+// adjacent versions of the same thing.
+function renderShelfDynamics(forecast, etaLineHtml) {
+  const parts = [];
+
+  if (forecast.depletionPerMin != null
+      && forecast.depletionPerMin < 0
+      && (forecast.confidence === 'ok' || forecast.confidence === 'high')
+      && !etaLineHtml.includes('empty ~')) {
+    const rate = -forecast.depletionPerMin;
+    const rateStr = rate >= 1 ? Math.round(rate) : rate.toFixed(1);
+    parts.push(`<span class="shelf-rate" title="Pooled steady-state depletion rate across observed cycles (${forecast.confidence} conf)">−${rateStr}/min</span>`);
+  }
+
+  if (forecast.restockIntervalMins != null
+      && (forecast.restockConfidence === 'ok' || forecast.restockConfidence === 'high')
+      && !etaLineHtml.includes('restock ')
+      && !etaLineHtml.includes('leave in')) {
+    const m = forecast.restockIntervalMins;
+    const label = m < 60
+      ? `${m}m`
+      : (m % 60 === 0 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 60)}h ${m % 60}m`);
+    parts.push(`<span class="shelf-cadence" title="Median observed restock interval (${forecast.restockConfidence} conf)">refill ~${label}</span>`);
+  }
+
+  if (parts.length === 0) return '';
+  return `<div class="shelf-dynamics">${parts.join(' · ')}</div>`;
+}
+
 function renderStockCell(row) {
   const now = row.quantity;
   if (now == null) return '<span class="muted">—</span>';
@@ -572,6 +613,7 @@ function renderStockCell(row) {
   return `
     <span class="stock-now">Now ${Number(now).toLocaleString('en-US')}</span>
     ${etaLine}
+    ${renderShelfDynamics(f, etaLine)}
   `;
 }
 
@@ -1107,44 +1149,42 @@ export function renderTable() {
 
     // Metric cells
     const dash = '<span class="muted">—</span>';
-    const marginCell = r.metrics ? formatMoney(r.metrics.marginPerItem) : (noListings ? dash : '<span class="shimmer-cell"></span>');
 
-    // Run cost cell — add a stock-limited badge when the run can't be filled
-    // because the destination doesn't carry enough stock.
-    let runCostCell;
+    // Profit/Run cell — folds the former Run Cost column in as a subline
+    // ("of $X cost" with the 💰 stocks-link and stock-limited badge). Margin $
+    // also folded here as a tiny tail (it's just sell − buy and the user can
+    // verify the math at a glance).
+    let runCell;
     if (r.metrics) {
-      const base = formatMoney(r.metrics.runCost);
-      runCostCell = r.metrics.stockLimited
-        // Drop the "/29" — the configured slot count is already shown in
-        // the Slots input at the top of the page, so repeating it on every
-        // row was noise. The warning icon plus the fillable number alone
-        // communicates the constraint.
-        ? `${base} <span class="stock-limited" title="Limited by available stock — only ${r.metrics.effectiveSlots} of ${slotCount} slots fillable">&#9888;${r.metrics.effectiveSlots}</span>`
-        : base;
+      const profitStr = formatMoney(r.metrics.profitPerRun);
+      const costStr = formatMoney(r.metrics.runCost);
+      const stocksLink = `<a href="https://www.torn.com/page.php?sid=stocks" target="_blank" rel="noopener" class="runcost-link" title="Stock Market">💰</a>`;
+      const stockLimitedBadge = r.metrics.stockLimited
+        ? ` <span class="stock-limited" title="Limited by available stock — only ${r.metrics.effectiveSlots} of ${slotCount} slots fillable">&#9888;${r.metrics.effectiveSlots}</span>`
+        : '';
+      runCell = `${profitStr}<div class="run-sub">${stocksLink} ${costStr} cost${stockLimitedBadge}</div>`;
     } else {
-      runCostCell = noListings ? dash : '<span class="shimmer-cell"></span>';
+      runCell = noListings ? dash : '<span class="shimmer-cell"></span>';
     }
-    const runCell = r.metrics ? formatMoney(r.metrics.profitPerRun) : (noListings ? dash : '<span class="shimmer-cell"></span>');
-    // Profit/hr cell — in Realistic mode include the liquidity assumption
-    // as a small trailing badge so the user can see why a drug row "beats"
-    // an artifact row that has nominally higher margin. The sell-time is
-    // already baked into the hourly number; the badge just makes the
-    // assumption visible. In Ideal mode the sell-time is zero by design,
-    // so the badge would be misleading.
+
+    // Profit/hr cell — primary sort. Folds the former Flight column in as a
+    // round-trip subline so the user can see the time investment that
+    // produces the hourly rate. Liquidity badge stays inline (Realistic only).
     let hrCell;
     if (r.metrics) {
+      const hrStr = formatMoney(r.metrics.profitPerHour);
+      const flightStr = formatFlightTime(r.metrics.roundTripMins);
+      let mainLine;
       if (realismMode === 'ideal') {
-        hrCell = formatMoney(r.metrics.profitPerHour);
+        mainLine = hrStr;
       } else {
         const badge = getLiquidityBadge(r.category);
-        hrCell = `${formatMoney(r.metrics.profitPerHour)} <span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>`;
+        mainLine = `${hrStr} <span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>`;
       }
+      hrCell = `${mainLine}<div class="hr-sub" title="Round-trip flight time">${flightStr} RT</div>`;
     } else {
       hrCell = noListings ? dash : '<span class="shimmer-cell"></span>';
     }
-    const flightCell = r.metrics
-      ? formatFlightTime(r.metrics.roundTripMins)
-      : (r.flightMins > 0 ? formatFlightTime(r.flightMins * 2) : '—');
 
     return `
       <tr class="${rowClass}">
@@ -1154,11 +1194,8 @@ export function renderTable() {
         <td class="col-stock">${stockCell}</td>
         <td class="col-buy">${buyCell}</td>
         <td class="col-sell">${sellCell}</td>
-        <td class="col-margin">${marginCell}</td>
-        <td class="col-runcost">${r.metrics ? `<a href="https://www.torn.com/page.php?sid=stocks" target="_blank" rel="noopener" class="runcost-link" title="Stock Market">💰</a> ` : ''}${runCostCell}</td>
         <td class="col-run">${runCell}</td>
         <td class="col-hr">${hrCell}</td>
-        <td class="col-flight">${flightCell}</td>
       </tr>
     `;
   }).join('');
