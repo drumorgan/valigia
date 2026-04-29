@@ -753,26 +753,41 @@ body {
   font-size: 0.75rem;
 }
 
-.arb-table td.col-runcost {
-  color: var(--muted);
-  font-size: 0.72rem;
-}
-
 .arb-table td.col-hr {
   color: var(--accent);
   font-weight: 700;
   font-size: 0.85rem;
 }
 
-.arb-table td.col-flight {
-  color: var(--muted);
-  font-size: 0.72rem;
-}
-
-/* Positive margin rows */
-.arb-table td.col-margin,
+/* Positive profit rows — Profit/Run shows the per-trip take in green */
 .arb-table td.col-run {
   color: var(--positive);
+}
+
+/* Run cost subline under Profit/Run — stocks-link icon, raw run cost, and
+   the optional stock-limited badge live here. Smaller and muted so the
+   primary green Profit/Run number stays dominant. */
+.run-sub {
+  display: block;
+  font-size: 0.62rem;
+  color: var(--muted);
+  font-weight: 400;
+  margin-top: 1px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+/* Round-trip flight time subline under Profit/hr — context for "why is the
+   hourly rate this number" without consuming a full column. */
+.hr-sub {
+  display: block;
+  font-size: 0.62rem;
+  color: var(--muted);
+  font-weight: 400;
+  margin-top: 1px;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 /* Negative margin rows — entire row greyed out */
@@ -954,6 +969,25 @@ tr.row--negative td {
   font-weight: 400;
   opacity: 0.85;
   margin-left: 0.15em;
+}
+
+/* Steady-state shelf dynamics — "−8/min · refill ~42m" subline under the
+   Now/ETA pair. Distinct from the next-event copy in stock-eta because it
+   describes the shelf's intrinsic behavior (pooled across cycles) rather
+   than the immediate window. Confidence-gated in JS, so anything that
+   makes it to render is already 'ok' or 'high'. */
+.shelf-dynamics {
+  font-size: 0.6rem;
+  color: var(--muted);
+  line-height: 1.1;
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.shelf-rate,
+.shelf-cadence {
+  cursor: help;
 }
 
 /* ── Best Run Right Now summary card ───────────────────────────── */
@@ -1930,11 +1964,10 @@ tr.row--negative td {
     font-size: 0.68rem;
   }
 
-  .arb-table .col-stock,
-  .arb-table .col-runcost,
-  .arb-table .col-flight {
-    display: none;
-  }
+  /* Stock column carries the new depletion-rate / restock-interval sublines
+     in REALISTIC mode, so it's no longer the first thing we hide on iPad
+     portrait. Run Cost and Flight folded into the Profit/Run and Profit/hr
+     cells respectively, so those classes no longer exist. */
 
   .arb-table th,
   .arb-table td {
@@ -1990,11 +2023,10 @@ tr.row--negative td {
     display: grid;
     grid-template-columns: auto 1fr 1fr;
     grid-template-areas:
-      "rank item    item"
-      "rank dest    stock"
-      "buy  sell    margin"
-      "runcost run  hr"
-      "flight flight flight";
+      "rank item item"
+      "rank dest stock"
+      "buy  sell hr"
+      "run  run  hr";
     gap: 0.15rem 0.5rem;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -2059,18 +2091,6 @@ tr.row--negative td {
     opacity: 0.6;
   }
 
-  .arb-table td.col-margin {
-    grid-area: margin;
-    text-align: left;
-    font-size: 0.78rem;
-  }
-
-  .arb-table td.col-margin::before {
-    content: "Margin ";
-    color: var(--muted);
-    opacity: 0.6;
-  }
-
   .arb-table td.col-hr {
     grid-area: hr;
     text-align: right;
@@ -2094,47 +2114,18 @@ tr.row--negative td {
     align-self: end;
   }
 
-  .arb-table td.col-stock::before {
-    content: "Stock ";
-    opacity: 0.6;
-  }
-
-  .arb-table td.col-runcost {
-    grid-area: runcost;
-    text-align: left;
-    color: var(--muted);
-    font-size: 0.72rem;
-  }
-
-  .arb-table td.col-runcost::before {
-    content: "Cost ";
-    opacity: 0.6;
-  }
-
   .arb-table td.col-run {
     grid-area: run;
-    text-align: center;
-    font-size: 0.72rem;
-  }
-
-  .arb-table td.col-run::before {
-    content: "Run ";
-    color: var(--muted);
-    opacity: 0.6;
-  }
-
-  .arb-table td.col-flight {
-    grid-area: flight;
-    text-align: center;
-    color: var(--muted);
-    font-size: 0.68rem;
+    text-align: left;
+    font-size: 0.78rem;
     border-top: 1px solid var(--border);
     padding-top: 0.3rem;
     margin-top: 0.15rem;
   }
 
-  .arb-table td.col-flight::before {
-    content: "Flight ";
+  .arb-table td.col-run::before {
+    content: "Run ";
+    color: var(--muted);
     opacity: 0.6;
   }
 

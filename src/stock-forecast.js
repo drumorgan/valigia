@@ -514,6 +514,7 @@ function estimateNextRestock(events, nowMs) {
     sampleCount: gaps.length,
     cadenceMAE,
     confidence,
+    medianIntervalMins: medianInterval,
   };
 }
 
@@ -650,11 +651,13 @@ function pooledDepletionSlope(segments) {
  *   confidence: 'none'|'low'|'ok',          // depletion-slope fit confidence
  *   hasHistory: boolean,
  *   timeToEmptyMins: number|null,           // null if not depleting, > 24h, or no slope
+ *   depletionPerMin: number|null,           // pooled units/min slope (≤0). null when no usable slope. Exposed so UI can show the steady-state rate independent of current stock — a shelf at 0 still has a meaningful depletion rate from prior cycles.
  *   nextRestockMins: number|null,           // raw time-to-next-restock (un-gated, minutes from now)
  *   restockEtaMins: number|null,            // only set when restock is expected DURING this flight
  *   restockQty: number|null,                // typical post-restock qty, set whenever cadence exists
  *   restockUncertaintyMins: number|null,    // max(scaled MAD, in-sample MAE) — widened when model underclaims
  *   restockConfidence: 'none'|'low'|'ok'|'high',  // auto-capped when MAE exceeds scaledMAD × 2 or 0.75 × median
+ *   restockIntervalMins: number|null,       // median observed interval between restocks (un-gated by confidence; UI gates display)
  *   cadenceMAE: number|null,                // leave-one-out in-sample MAE (minutes), null when <2 gaps
  *   restockEventCount: number               // raw count of observed restocks (30-day window) for "cadence forming (N obs)" hints
  * }}
@@ -687,6 +690,11 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   const restockQty = restockEst ? restockEst.typicalPostQty : null;
   const restockUncertaintyMins = restockEst ? restockEst.uncertaintyMins : null;
   const restockConfidence = restockEst ? restockEst.confidence : 'none';
+  // Median observed interval between restocks (minutes). Exposed alongside
+  // confidence so the UI can decide whether to render it ("refill ~42m"
+  // line on the row) — typicalPostQty + timeToNextMins handle the
+  // "what/when" but not the steady-state cadence.
+  const restockIntervalMins = restockEst ? Math.round(restockEst.medianIntervalMins) : null;
   // Cadence MAE (leave-one-out in-sample, minutes). Exposed for future
   // observability — a layer-2 accuracy log or a debug panel can read it
   // without re-running estimateNextRestock. null when <2 gaps.
@@ -731,11 +739,13 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
       confidence: nowQty != null ? 'low' : 'none',
       hasHistory: restockCoversEmptyShelf || hasActionableCadence,
       timeToEmptyMins: null,
+      depletionPerMin: null,
       nextRestockMins,
       restockEtaMins,
       restockQty,
       restockUncertaintyMins,
       restockConfidence,
+      restockIntervalMins,
       cadenceMAE,
       restockEventCount,
     };
@@ -770,7 +780,8 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     return {
       nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
-      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
+      depletionPerMin: null,
+      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockIntervalMins, cadenceMAE, restockEventCount,
     };
   }
 
@@ -819,6 +830,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   return {
     nowQty, etaQty, confidence, hasHistory: true,
     timeToEmptyMins,
-    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, cadenceMAE, restockEventCount,
+    depletionPerMin: slope,
+    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockIntervalMins, cadenceMAE, restockEventCount,
   };
 }
