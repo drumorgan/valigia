@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.8
+// @version      0.8.9
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.8.8';
+  const SCRIPT_VERSION = '0.8.9';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -70,6 +70,7 @@
   const SUPABASE_REST_URL = 'https://vtslzplzlxdptpvxtanz.supabase.co/rest/v1';
   const SELL_PRICES_URL = SUPABASE_REST_URL + '/sell_prices';
   const BAZAAR_PRICES_URL = SUPABASE_REST_URL + '/bazaar_prices';
+  const RESTOCK_EVENTS_URL = SUPABASE_REST_URL + '/restock_events';
 
   // Known Torn travel shop category names. Used as section anchors: the
   // parser looks for these in visible text to group items by shop.
@@ -432,6 +433,83 @@
     }
   }
 
+  // -- Restock ETA fetch + estimator --------------------------------------
+  // Slim port of stock-forecast.js's estimateNextRestock for the travel
+  // overlay: only "expected refill" mins, only for shelves that are
+  // currently empty. Falls back silently on any failure — refill ETA is a
+  // nice-to-have, never blocks the BEST/margin overlay.
+  //
+  // Anon SELECT on restock_events is allowed (migration 018). 30-day
+  // window matches the web app's RESTOCK_HISTORY_WINDOW_MINS so we
+  // estimate from the same data the dashboard uses; 2000-row cap keeps
+  // payloads bounded on shelves with very high cadence.
+  async function fetchRestockEvents(itemIds, destination) {
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return new Map();
+    if (!destination) return new Map();
+    const cutoffIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const idList = itemIds.join(',');
+    const url = RESTOCK_EVENTS_URL +
+      '?select=item_id,restocked_at' +
+      '&item_id=in.(' + idList + ')' +
+      '&destination=eq.' + encodeURIComponent(destination) +
+      '&restocked_at=gte.' + encodeURIComponent(cutoffIso) +
+      '&order=restocked_at.desc' +
+      '&limit=2000';
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: url,
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) return new Map();
+      const rows = JSON.parse(res.responseText || '[]');
+      const byItem = new Map();
+      for (const r of rows) {
+        if (!r || typeof r.item_id !== 'number') continue;
+        const t = new Date(r.restocked_at).getTime();
+        if (!Number.isFinite(t)) continue;
+        let arr = byItem.get(r.item_id);
+        if (!arr) { arr = []; byItem.set(r.item_id, arr); }
+        arr.push(t);
+      }
+      return byItem;
+    } catch (e) {
+      return new Map();
+    }
+  }
+
+  // Median observed interval minus time-since-last-restock. Mirrors the
+  // central calculation in stock-forecast.js (estimateNextRestock) without
+  // the confidence/MAD/MAE machinery — the overlay just needs one number.
+  // Needs ≥2 events (one interval sample); returns null otherwise.
+  function estimateRefillMins(eventTimes, nowMs) {
+    if (!Array.isArray(eventTimes) || eventTimes.length < 2) return null;
+    const sorted = eventTimes.slice().sort(function (a, b) { return a - b; });
+    const gaps = [];
+    for (let i = 1; i < sorted.length; i++) {
+      gaps.push((sorted[i] - sorted[i - 1]) / 60000);
+    }
+    const sortedGaps = gaps.slice().sort(function (a, b) { return a - b; });
+    const median = sortedGaps[Math.floor(sortedGaps.length / 2)];
+    if (!(median > 0)) return null;
+    const lastAt = sorted[sorted.length - 1];
+    const sinceLastMins = (nowMs - lastAt) / 60000;
+    return Math.max(0, Math.round(median - sinceLastMins));
+  }
+
+  function formatRefillEta(mins) {
+    if (mins == null) return null;
+    if (mins < 1) return 'refill imminent';
+    if (mins < 90) return 'refill ~' + Math.round(mins) + 'm';
+    const h = Math.floor(mins / 60);
+    const m = Math.round(mins % 60);
+    return m > 0 ? 'refill ~' + h + 'h ' + m + 'm' : 'refill ~' + h + 'h';
+  }
+
   // -- Ingest edge-function post ------------------------------------------
   // Layer 2 security hardening: writes to sell_prices / bazaar_prices flow
   // through ingest-sell-prices / ingest-bazaar-prices. Each validates
@@ -622,7 +700,8 @@
   // For each row we scraped, compute profit and inject a cell at the end of
   // the row showing margin + profit/hr. Mark the top profit/hr row with a
   // BEST badge and a subtle green highlight.
-  function renderOverlay(shops, sellPriceMap) {
+  function renderOverlay(shops, sellPriceMap, refillEtaMap) {
+    if (!(refillEtaMap instanceof Map)) refillEtaMap = new Map();
     injectStyles();
 
     // Flatten every scraped item into a row descriptor with a reference to
@@ -719,7 +798,13 @@
         let html = '';
         if (isBest) html += '<span class="valigia-best-badge">BEST</span>';
         if (outOfStock) {
-          html += '<span class="v-muted">stock 0 &middot; skip</span>';
+          const etaMins = refillEtaMap.get(r.item_id);
+          const etaText = formatRefillEta(etaMins != null ? etaMins : null);
+          if (etaText) {
+            html += '<span class="v-muted">stock 0 &middot; ' + etaText + '</span>';
+          } else {
+            html += '<span class="v-muted">stock 0 &middot; skip</span>';
+          }
         } else {
           // Label the number "Market Price" so it's clearly distinct from
           // Torn's existing "Cost" / "Buy" columns on the shop page. The
@@ -2121,10 +2206,38 @@
       }
     })();
 
+    // Identify items currently at stock 0 — those are the only rows where
+    // a refill ETA is useful to show. Skipping the fetch entirely when none
+    // are zero-stock keeps the common case (fully stocked shelves) free of
+    // an extra round-trip.
+    const zeroStockIds = [];
+    const seenZero = new Set();
+    for (const sh of shops) {
+      for (const it of sh.items) {
+        if (it.stock === 0 && !seenZero.has(it.item_id)) {
+          seenZero.add(it.item_id);
+          zeroStockIds.push(it.item_id);
+        }
+      }
+    }
+
     const overlayPromise = (async function () {
       try {
-        const sellPriceMap = await fetchSellPrices(itemIds);
-        const stats = renderOverlay(shops, sellPriceMap);
+        const [sellPriceMap, restockEventsMap] = await Promise.all([
+          fetchSellPrices(itemIds),
+          zeroStockIds.length > 0
+            ? fetchRestockEvents(zeroStockIds, destination)
+            : Promise.resolve(new Map()),
+        ]);
+        const refillEtaMap = new Map();
+        const nowMs = Date.now();
+        for (const entry of restockEventsMap) {
+          const itemId = entry[0];
+          const events = entry[1];
+          const etaMins = estimateRefillMins(events, nowMs);
+          if (etaMins != null) refillEtaMap.set(itemId, etaMins);
+        }
+        const stats = renderOverlay(shops, sellPriceMap, refillEtaMap);
         if (DEBUG) {
           const bestLine = stats.best
             ? ('best=' + stats.best.item_id + ' margin=' + Math.round(stats.best.metrics.marginPerItem))
