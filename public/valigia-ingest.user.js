@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.8.9
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache + surface your Watchlist matches, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
+// @version      0.9.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.8.9';
+  const SCRIPT_VERSION = '0.9.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -952,6 +952,11 @@
     // Fire-and-forget: any failure is silent so the primary scraper
     // flow isn't blocked on a (potentially slow) Torn key validation.
     injectWatchlistBar();
+    // When the player has filtered down to a single item (hash carries
+    // itemID=N), surface the cheapest fresh bazaar listing for that
+    // item from the shared pool. Silent no-op on the catalog landing
+    // view or when the pool has no fresh hit.
+    injectLowestPriceBar();
 
     // Poll briefly for listings to hydrate - the Item Market page is SPA-ish.
     const start = Date.now();
@@ -1978,6 +1983,293 @@
       document.querySelector('#mainContainer') ||
       document.body;
     host.insertBefore(bar, host.firstChild);
+  }
+
+  // -- Lowest Price Found bar ---------------------------------------------
+  // On the Item Market when the user has filtered down to a single item
+  // (the hash carries `itemID=N`), look up the cheapest fresh bazaar
+  // listing for that item from the shared `bazaar_prices` pool and
+  // inject a single-row card. Stacks directly below the Watchlist
+  // Matches bar when both are present, otherwise sits at the top of
+  // the page on its own. Hidden entirely when the pool has no fresh
+  // hit for the active item.
+
+  const LOWEST_PRICE_BAR_ID = 'valigia-lowest-price-bar';
+  // Same freshness window the watchlist matcher uses for bazaar entries
+  // (and the web app's "Best Run" eligibility gate). Older rows get
+  // dropped — the listing is too likely to be gone by the time the
+  // player taps through.
+  const LOWEST_PRICE_BAZAAR_MAX_AGE_MS = 10 * 60 * 1000;
+  // Anything priced under 10% of the Item Market floor is almost
+  // certainly a locked / troll listing — same threshold the web app
+  // uses before claiming the Best Run card. Filter these so we never
+  // deep-link a player to a bazaar where the listing isn't actually
+  // buyable.
+  const LOWEST_PRICE_TOO_GOOD_THRESHOLD = 0.10;
+
+  /**
+   * Pull the active item id out of the Item Market hash. Torn uses
+   * patterns like "#/market/view=search&itemID=12345" and
+   * "#/market/view=category&itemID=12345&...". Returns null on the
+   * landing view (no itemID) so the bar doesn't fire across the
+   * whole catalog.
+   */
+  function detectItemMarketSingleItemId() {
+    const hash = location.hash || '';
+    const m = hash.match(/itemID=(\d+)/i);
+    return m ? Number(m[1]) : null;
+  }
+
+  /**
+   * Read the cheapest fresh bazaar entry for `itemId` from the shared
+   * pool. Cross-references `sell_prices` so we can both filter
+   * locked-listing scams (price < 10% of market floor) and surface
+   * the savings vs. the Item Market the player is currently looking
+   * at. Returns null when there's no eligible row.
+   */
+  async function fetchLowestBazaarForItem(itemId) {
+    if (!itemId) return null;
+    const [bazaarRows, sellRows] = await Promise.all([
+      fetchJSON(
+        BAZAAR_PRICES_URL +
+        '?item_id=eq.' + encodeURIComponent(itemId) +
+        '&price=gt.1' +
+        '&select=item_id,price,quantity,bazaar_owner_id,checked_at' +
+        '&order=price.asc' +
+        '&limit=20'
+      ),
+      fetchJSON(
+        SELL_PRICES_URL +
+        '?item_id=eq.' + encodeURIComponent(itemId) +
+        '&select=price,min_price'
+      ),
+    ]);
+    if (!Array.isArray(bazaarRows) || bazaarRows.length === 0) return null;
+
+    const sellRow = Array.isArray(sellRows) && sellRows.length > 0
+      ? sellRows[0] : null;
+    const marketPrice = sellRow && sellRow.price != null
+      ? Number(sellRow.price) : null;
+    const marketFloor = sellRow && sellRow.min_price != null
+      ? Number(sellRow.min_price)
+      : marketPrice;
+
+    const cutoff = Date.now() - LOWEST_PRICE_BAZAAR_MAX_AGE_MS;
+    for (const r of bazaarRows) {
+      const observedAt = r.checked_at ? new Date(r.checked_at).getTime() : 0;
+      if (observedAt < cutoff) continue;
+      const price = Number(r.price);
+      if (!Number.isFinite(price) || price <= 1) continue;
+      if (Number.isFinite(marketFloor) && marketFloor > 0 &&
+          price < marketFloor * LOWEST_PRICE_TOO_GOOD_THRESHOLD) {
+        continue;
+      }
+      return {
+        item_id: itemId,
+        price: price,
+        quantity: Number(r.quantity) || 1,
+        bazaar_owner_id: r.bazaar_owner_id,
+        observed_at: observedAt,
+        market_price: Number.isFinite(marketPrice) ? marketPrice : null,
+      };
+    }
+    return null;
+  }
+
+  function injectLowestPriceStyles() {
+    if (document.getElementById('valigia-lowest-price-styles')) return;
+    const css = [
+      '#' + LOWEST_PRICE_BAR_ID + ' {',
+      '  all: initial;',
+      '  display: block;',
+      '  margin: 8px auto 12px;',
+      '  max-width: 1100px;',
+      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  color: #c8cdd8;',
+      '  background: #161a22;',
+      '  border: 1px solid #252a35;',
+      '  border-left: 3px solid #4ae8a0;',
+      '  border-radius: 4px;',
+      '  box-sizing: border-box;',
+      '  overflow: hidden;',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-row {',
+      '  display: grid;',
+      '  grid-template-columns: auto minmax(0,1.4fr) auto auto minmax(0,1fr) auto auto;',
+      '  align-items: center;',
+      '  gap: 10px;',
+      '  padding: 10px 12px;',
+      '  color: #c8cdd8;',
+      '  text-decoration: none;',
+      '  font-size: 12px;',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-row:active {',
+      '  background: rgba(74,232,160,0.08);',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-title {',
+      '  color: #4ae8a0;',
+      '  font-weight: 700;',
+      '  font-size: 11px;',
+      '  letter-spacing: 0.12em;',
+      '  text-transform: uppercase;',
+      '  white-space: nowrap;',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-item {',
+      '  font-weight: 700;',
+      '  color: #c8cdd8;',
+      '  white-space: nowrap;',
+      '  overflow: hidden;',
+      '  text-overflow: ellipsis;',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-price {',
+      '  color: #4ae8a0;',
+      '  font-weight: 700;',
+      '  white-space: nowrap;',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-qty {',
+      '  color: #8a8fa0;',
+      '  white-space: nowrap;',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-vs {',
+      '  color: #8a8fa0;',
+      '  white-space: nowrap;',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-vs strong { color: #4ae8a0; font-weight: 700; }',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-vs.vgl-lp-vs--worse strong { color: #e8824a; }',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-age {',
+      '  color: #8a8fa0;',
+      '  font-size: 10px;',
+      '  white-space: nowrap;',
+      '}',
+      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-arrow {',
+      '  color: #4ae8a0;',
+      '  font-weight: 700;',
+      '}',
+      '@media (max-width: 560px) {',
+      '  #' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-row {',
+      '    grid-template-columns: auto 1fr auto;',
+      '    row-gap: 4px;',
+      '  }',
+      '  #' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-item { grid-column: 1 / -1; }',
+      '  #' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-vs { grid-column: 1 / -1; }',
+      '}',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-lowest-price-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function buildLowestPriceBar(deal) {
+    const bar = document.createElement('div');
+    bar.id = LOWEST_PRICE_BAR_ID;
+
+    const row = document.createElement('a');
+    row.className = 'vgl-lp-row';
+    row.href = 'https://www.torn.com/bazaar.php?userId=' + deal.bazaar_owner_id;
+    row.target = '_top';
+    row.rel = 'noopener';
+
+    const title = document.createElement('span');
+    title.className = 'vgl-lp-title';
+    title.textContent = 'Lowest Price Found';
+
+    const name = document.createElement('span');
+    name.className = 'vgl-lp-item';
+    name.textContent = itemNameFor(deal.item_id);
+
+    const price = document.createElement('span');
+    price.className = 'vgl-lp-price';
+    price.textContent = formatMoney(deal.price);
+
+    const qty = document.createElement('span');
+    qty.className = 'vgl-lp-qty';
+    qty.textContent = 'qty ' + deal.quantity;
+
+    const vs = document.createElement('span');
+    vs.className = 'vgl-lp-vs';
+    if (deal.market_price != null && deal.market_price > 0) {
+      const diff = deal.market_price - deal.price;
+      const pct = (diff / deal.market_price) * 100;
+      const strong = document.createElement('strong');
+      if (diff > 0) {
+        strong.textContent = formatMoney(diff);
+        vs.appendChild(document.createTextNode('saves '));
+        vs.appendChild(strong);
+        vs.appendChild(document.createTextNode(
+          ' (' + Math.round(pct) + '%) vs market'
+        ));
+      } else {
+        vs.classList.add('vgl-lp-vs--worse');
+        strong.textContent = formatMoney(-diff);
+        vs.appendChild(document.createTextNode('+'));
+        vs.appendChild(strong);
+        vs.appendChild(document.createTextNode(' over market'));
+      }
+    } else {
+      vs.appendChild(document.createTextNode('no market reference'));
+    }
+
+    const age = document.createElement('span');
+    age.className = 'vgl-lp-age';
+    age.textContent = formatAge(deal.observed_at);
+
+    const arrow = document.createElement('span');
+    arrow.className = 'vgl-lp-arrow';
+    arrow.textContent = '→';
+
+    row.appendChild(title);
+    row.appendChild(name);
+    row.appendChild(price);
+    row.appendChild(qty);
+    row.appendChild(vs);
+    row.appendChild(age);
+    row.appendChild(arrow);
+
+    bar.appendChild(row);
+    return bar;
+  }
+
+  /**
+   * Top-level entry. Safe to call on every Item Market dispatch — it
+   * tears down any prior instance and silently no-ops when the user
+   * isn't filtered to a single item or the pool has no fresh hit.
+   * Stacks below the Watchlist Matches bar when present (race-safe:
+   * whichever bar arrives later sits in the right slot regardless of
+   * order).
+   */
+  async function injectLowestPriceBar() {
+    const existing = document.getElementById(LOWEST_PRICE_BAR_ID);
+    if (existing) existing.remove();
+
+    const itemId = detectItemMarketSingleItemId();
+    if (!itemId) return;
+
+    const [deal] = await Promise.all([
+      fetchLowestBazaarForItem(itemId),
+      ensureItemCatalog(),
+    ]);
+    if (!deal) return;
+
+    injectLowestPriceStyles();
+    const bar = buildLowestPriceBar(deal);
+
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+
+    // Slot directly after the Watchlist Matches bar when it's already
+    // present. If the watchlist injects after us, its insertBefore at
+    // host.firstChild will push this bar down naturally — so the
+    // stacking order ends up Watchlist → Lowest Price either way.
+    const watchlistBar = document.getElementById(WATCHLIST_BAR_ID);
+    if (watchlistBar && watchlistBar.parentNode === host) {
+      host.insertBefore(bar, watchlistBar.nextSibling);
+    } else {
+      host.insertBefore(bar, host.firstChild);
+    }
   }
 
   // -- Stakeout mode -------------------------------------------------------
