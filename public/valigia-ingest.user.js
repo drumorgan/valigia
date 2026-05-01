@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.10.1
+// @version      0.10.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.10.1';
+  const SCRIPT_VERSION = '0.10.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2094,10 +2094,10 @@
       '  overflow: hidden;',
       '}',
       '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-row {',
-      '  display: grid;',
-      '  grid-template-columns: auto minmax(0,1.4fr) auto auto minmax(0,1fr) auto auto;',
+      '  display: flex;',
       '  align-items: center;',
-      '  gap: 10px;',
+      '  flex-wrap: wrap;',
+      '  gap: 6px 10px;',
       '  padding: 10px 12px;',
       '  color: #c8cdd8;',
       '  text-decoration: none;',
@@ -2118,8 +2118,6 @@
       '  font-weight: 700;',
       '  color: #c8cdd8;',
       '  white-space: nowrap;',
-      '  overflow: hidden;',
-      '  text-overflow: ellipsis;',
       '}',
       '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-price {',
       '  color: #4ae8a0;',
@@ -2136,22 +2134,10 @@
       '}',
       '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-vs strong { color: #4ae8a0; font-weight: 700; }',
       '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-vs.vgl-lp-vs--worse strong { color: #e8824a; }',
-      '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-age {',
-      '  color: #8a8fa0;',
-      '  font-size: 10px;',
-      '  white-space: nowrap;',
-      '}',
       '#' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-arrow {',
       '  color: #4ae8a0;',
       '  font-weight: 700;',
-      '}',
-      '@media (max-width: 560px) {',
-      '  #' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-row {',
-      '    grid-template-columns: auto 1fr auto;',
-      '    row-gap: 4px;',
-      '  }',
-      '  #' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-item { grid-column: 1 / -1; }',
-      '  #' + LOWEST_PRICE_BAR_ID + ' .vgl-lp-vs { grid-column: 1 / -1; }',
+      '  margin-left: auto;',
       '}',
     ].join('\n');
     const style = document.createElement('style');
