@@ -417,6 +417,33 @@ too much across layouts — the single top bar is the stable replacement.
 All three runners use a single shared `rowContainer()` heuristic that
 tolerates Torn's migration from `<table>` to div-based layouts.
 
+### Drip-scrape (background bazaar pool maintenance)
+
+On every dispatch *except* the bazaar runner, the userscript fires one
+v2 `market/{id}/bazaar` discovery call against a stale-but-valuable
+item picked from the shared pool. Per-user throttle gate
+(`localStorage`, 60 s) caps each user's drip spend at ~1 Torn API call
+per minute — well under 1% of the 100/min key budget. Distributed
+across the userbase this keeps the pool fresh for high-value items
+without any third-party data dependency.
+
+Candidate selection: top 30 items from `sell_prices` by market value
+(>= $10K floor), cross-referenced against the freshest `bazaar_prices`
+entry for each. Items whose freshest bazaar entry is younger than 30
+min are filtered out — the pool already knows those well. The remaining
+list is cached in `localStorage` for 10 min so most page visits skip
+the two PostgREST reads entirely. Picker scores by
+`price × log(age_hours + 1) × jitter`, takes top 5, picks one randomly
+— concentrated effort on valuable stale items, but spread enough that
+many simultaneous users don't all converge on the same item id.
+
+Skipped on the bazaar runner because that runner already writes heavily
+to `bazaar_prices` via DOM scraping, and a drip in parallel would just
+race the main upsert against the per-endpoint rate limiter
+(`ingest_rate_check`, 500 ms). Silent on success; errors swallowed so
+the dispatcher's main flow is never disrupted. Set `DEBUG = true` in
+the script to see drip activity in the on-page panel.
+
 ### Why direct anon upserts for sell / bazaar, but an edge function for travel?
 
 - `sell_prices` and `bazaar_prices` already have anon `INSERT`/`UPDATE`
