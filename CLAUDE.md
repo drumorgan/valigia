@@ -393,6 +393,16 @@ call (routed through `GM_xmlhttpRequest` so PDA's webview CORS doesn't
 block it), cached in `localStorage` keyed by a hash of the API key so
 it survives key rotation.
 
+The Item Market runner also injects a **Lowest Price Found bar** when
+the page hash carries a single `itemID=N` (search-by-id or category
+drill-down). It reads `bazaar_prices` for that item, picks the cheapest
+fresh entry (≤10 min old, $1 locked listings filtered, plus the
+"too good to be true" gate that drops anything under 10% of the Item
+Market floor), and shows a single tappable card linking to the bazaar.
+Stacks directly below the Watchlist Matches bar when both fire,
+otherwise sits at the top alone. Hidden entirely on the catalog landing
+view or when the pool has no fresh hit.
+
 The bazaar runner additionally injects a **Bazaar Deals bar** at the
 top of the page (same visual language as the Watchlist Matches bar).
 For every scraped listing whose bazaar price is below the current Item
