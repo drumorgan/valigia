@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.10.0
+// @version      0.10.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.10.0';
+  const SCRIPT_VERSION = '0.10.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2209,21 +2209,29 @@
     } else {
       vs.appendChild(document.createTextNode('no market reference'));
     }
-
-    const age = document.createElement('span');
-    age.className = 'vgl-lp-age';
-    age.textContent = formatAge(deal.observed_at);
+    // Append the freshness inside the same cell with a mid-dot separator.
+    // Cleaner than a separate grid cell whose 10px gap renders too tight
+    // at typical PDA viewport sizes — "vs market" and "just now" looked
+    // smushed together (e.g. "marketnow") in earlier versions.
+    const ageText = formatAge(deal.observed_at);
+    if (ageText) {
+      vs.appendChild(document.createTextNode(' \u00B7 ' + ageText));
+    }
 
     const arrow = document.createElement('span');
     arrow.className = 'vgl-lp-arrow';
-    arrow.textContent = '→';
+    // Use a Unicode escape rather than the literal arrow glyph: cPanel
+    // serves .user.js as Latin-1 by default, so the UTF-8 bytes for the
+    // arrow would mis-decode to "a-circumflex" + control chars in PDA's
+    // webview. The escape keeps the source ASCII and lets the JS engine
+    // produce the correct codepoint at runtime regardless of file charset.
+    arrow.textContent = '\u2192';
 
     row.appendChild(title);
     row.appendChild(name);
     row.appendChild(price);
     row.appendChild(qty);
     row.appendChild(vs);
-    row.appendChild(age);
     row.appendChild(arrow);
 
     bar.appendChild(row);
