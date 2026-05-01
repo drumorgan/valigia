@@ -396,7 +396,9 @@ it survives key rotation.
 The Item Market runner also injects a **Lowest Price Found bar** when
 the page hash carries a single `itemID=N` (search-by-id or category
 drill-down). It reads `bazaar_prices` for that item, picks the cheapest
-fresh entry (≤10 min old, $1 locked listings filtered, plus the
+fresh entry (≤30 min old, aligned with the drip-scrape skip-fresh
+window so there's no dead zone where the bar hides data the drip
+refuses to refresh; $1 locked listings filtered, plus the
 "too good to be true" gate that drops anything under 10% of the Item
 Market floor), and shows a single tappable card linking to the bazaar.
 Stacks directly below the Watchlist Matches bar when both fire,
