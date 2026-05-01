@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.9.0
+// @version      0.10.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.9.0';
+  const SCRIPT_VERSION = '0.10.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2921,6 +2921,234 @@
     // scouts counter is vanity.
   }
 
+  // -- Drip-scrape -----------------------------------------------------------
+  // Background bazaar-pool maintenance. On every dispatch (except the
+  // bazaar runner, which already writes heavily to bazaar_prices via DOM
+  // scraping), fire one v2 `market/{id}/bazaar` discovery call against
+  // a stale-but-valuable item picked from the shared pool. Throttle gate
+  // (per-user, localStorage) caps the spend at one Torn API call per
+  // DRIP_MIN_INTERVAL_MS. Distributed across the userbase this keeps
+  // the pool fresh without any single player burning meaningful API
+  // budget — and no third-party data dependency.
+  //
+  // Candidate selection: top-N items from sell_prices by market value,
+  // cross-referenced against the freshest bazaar_prices entry for each.
+  // Items whose freshest bazaar entry is younger than
+  // DRIP_BAZAAR_FRESH_WINDOW_MS get filtered out — no point re-checking
+  // an item the pool already knows about. The remaining list is cached
+  // in localStorage for DRIP_CANDIDATE_TTL_MS so most page visits
+  // skip the two PostgREST reads entirely.
+
+  const DRIP_GATE_KEY = 'valigia_drip_last_at';
+  const DRIP_CANDIDATE_CACHE_KEY = 'valigia_drip_candidates';
+  // Min interval between drips for a single user. With ~6 page navs per
+  // active minute, this caps drip spend at ~1 Torn call per minute per
+  // user — under 1% of the 100/min key budget.
+  const DRIP_MIN_INTERVAL_MS = 60 * 1000;
+  // Candidate list refresh cadence. The list itself is cheap to derive
+  // (two PostgREST reads), but doing it on every drip would double the
+  // API spend per user with no real benefit.
+  const DRIP_CANDIDATE_TTL_MS = 10 * 60 * 1000;
+  // Pull this many top-value items from sell_prices as the drip pool.
+  const DRIP_CANDIDATE_POOL_SIZE = 30;
+  // Don't drip cheap items — a $500 plushie's bazaar coverage doesn't
+  // matter, and we'd rather spend the budget on the long tail of
+  // high-value goods.
+  const DRIP_VALUE_FLOOR = 10_000;
+  // Skip items whose freshest bazaar entry is younger than this. Web
+  // app's "Best Run" eligibility window is 10 min, so 30 min gives
+  // plenty of buffer to avoid double-checking items the pool already
+  // tracks well.
+  const DRIP_BAZAAR_FRESH_WINDOW_MS = 30 * 60 * 1000;
+
+  let dripInFlight = false;
+
+  function dripGateLastAt() {
+    try { return Number(localStorage.getItem(DRIP_GATE_KEY)) || 0; }
+    catch (_) { return 0; }
+  }
+  function dripGateMark() {
+    try { localStorage.setItem(DRIP_GATE_KEY, String(Date.now())); }
+    catch (_) { /* ignore quota / disabled storage */ }
+  }
+
+  /**
+   * Build (or retrieve from cache) the list of items eligible for the
+   * next drip. Each item is { item_id, price, age_ms } where age_ms is
+   * how long since the freshest known bazaar entry for that item (or
+   * Number.MAX_SAFE_INTEGER if no entries exist at all — those are the
+   * highest-priority drip targets).
+   */
+  async function loadDripCandidates() {
+    try {
+      const raw = localStorage.getItem(DRIP_CANDIDATE_CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (cached && cached.fetchedAt &&
+            Date.now() - cached.fetchedAt < DRIP_CANDIDATE_TTL_MS &&
+            Array.isArray(cached.items)) {
+          return cached.items;
+        }
+      }
+    } catch (_) { /* corrupt cache - fall through to refetch */ }
+
+    const sellRows = await fetchJSON(
+      SELL_PRICES_URL +
+      '?price=gte.' + DRIP_VALUE_FLOOR +
+      '&select=item_id,price' +
+      '&order=price.desc' +
+      '&limit=' + DRIP_CANDIDATE_POOL_SIZE
+    );
+    if (!Array.isArray(sellRows) || sellRows.length === 0) return [];
+
+    const ids = sellRows.map(function (r) { return r.item_id; });
+    const bazRows = await fetchJSON(
+      BAZAAR_PRICES_URL +
+      '?item_id=in.(' + ids.join(',') + ')' +
+      '&select=item_id,checked_at' +
+      '&order=checked_at.desc' +
+      '&limit=500'
+    );
+    const freshestByItem = new Map();
+    if (Array.isArray(bazRows)) {
+      for (const r of bazRows) {
+        const t = r.checked_at ? new Date(r.checked_at).getTime() : 0;
+        const prev = freshestByItem.get(r.item_id) || 0;
+        if (t > prev) freshestByItem.set(r.item_id, t);
+      }
+    }
+
+    const now = Date.now();
+    const candidates = sellRows
+      .map(function (r) {
+        const fresh = freshestByItem.get(r.item_id) || 0;
+        const ageMs = fresh === 0 ? Number.MAX_SAFE_INTEGER : now - fresh;
+        return { item_id: r.item_id, price: Number(r.price), age_ms: ageMs };
+      })
+      .filter(function (c) { return c.age_ms >= DRIP_BAZAAR_FRESH_WINDOW_MS; });
+
+    try {
+      localStorage.setItem(DRIP_CANDIDATE_CACHE_KEY, JSON.stringify({
+        fetchedAt: now,
+        items: candidates,
+      }));
+    } catch (_) { /* ignore quota / disabled storage */ }
+
+    return candidates;
+  }
+
+  /**
+   * Score candidates by `price × log(age_hours + 1) × jitter`. The log
+   * softens staleness so a $1M item that's 1 h old still beats a $50k
+   * item that's 24 h old. Take the top 5 and pick one at random — that
+   * gives concentrated effort on the most valuable stale items while
+   * still spreading load when many users converge on the same shortlist.
+   */
+  function pickDripCandidate(candidates) {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+    const scored = candidates.map(function (c) {
+      const ageHours = Math.max(c.age_ms / 3_600_000, 0.1);
+      const jitter = 0.8 + Math.random() * 0.4;
+      return Object.assign({}, c, { score: c.price * Math.log(ageHours + 1) * jitter });
+    });
+    scored.sort(function (a, b) { return b.score - a.score; });
+    const top = scored.slice(0, Math.min(5, scored.length));
+    return top[Math.floor(Math.random() * top.length)];
+  }
+
+  /**
+   * Parse Torn v2 `market/{id}/bazaar` response. The shape varies:
+   * sometimes `bazaar` is a flat array of listings, sometimes an object
+   * keyed by category whose values are arrays. Handle both. Drop $1 and
+   * sub-$1 entries — they're locked-listing placeholders that would
+   * pollute the pool.
+   */
+  function parseV2BazaarResponse(data) {
+    if (!data || !data.bazaar) return [];
+    const out = [];
+    function handle(e) {
+      const id = Number(e && (e.ID != null ? e.ID : e.id));
+      const price = Number(e && e.price);
+      const qtyRaw = e && (e.quantity != null ? e.quantity : 1);
+      const quantity = Number(qtyRaw);
+      if (!Number.isInteger(id) || id <= 0) return;
+      if (!Number.isFinite(price) || price <= 1) return;
+      out.push({
+        owner_id: id,
+        price: price,
+        quantity: Number.isInteger(quantity) && quantity > 0 ? quantity : 1,
+      });
+    }
+    if (Array.isArray(data.bazaar)) {
+      for (const e of data.bazaar) handle(e);
+    } else if (typeof data.bazaar === 'object') {
+      for (const cat of Object.values(data.bazaar)) {
+        if (Array.isArray(cat)) for (const e of cat) handle(e);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Top-level drip entry. Idempotent and silent — the gate + in-flight
+   * flag mean rapid repeated calls collapse to one. Always returns
+   * before any heavy work if the user isn't inside PDA, the gate
+   * hasn't elapsed, or there's nothing worth dripping. Errors swallowed
+   * so the dispatcher's main flow is never disrupted.
+   */
+  async function dripScrapeBazaarPool() {
+    if (dripInFlight) return;
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return;
+    if (Date.now() - dripGateLastAt() < DRIP_MIN_INTERVAL_MS) return;
+    dripInFlight = true;
+    // Mark the gate immediately so a slow drip + rapid nav can't fire
+    // a second one in flight before this one writes the timestamp.
+    dripGateMark();
+    try {
+      const candidates = await loadDripCandidates();
+      const pick = pickDripCandidate(candidates);
+      if (!pick) return;
+
+      const res = await gmRequest({
+        method: 'GET',
+        url: 'https://api.torn.com/v2/market/' + encodeURIComponent(pick.item_id) +
+             '/bazaar?key=' + encodeURIComponent(TORN_API_KEY),
+        headers: { 'Accept': 'application/json' },
+      });
+      let data = null;
+      try { data = JSON.parse(res.responseText); } catch (_) { return; }
+      if (data && data.error) {
+        log('drip: torn error', data.error);
+        return;
+      }
+      const listings = parseV2BazaarResponse(data);
+      if (listings.length === 0) {
+        log('drip: no listings for item ' + pick.item_id);
+        return;
+      }
+
+      const rows = listings.map(function (l) {
+        return {
+          item_id: pick.item_id,
+          bazaar_owner_id: l.owner_id,
+          price: l.price,
+          quantity: l.quantity,
+          miss_count: 0,
+        };
+      });
+      const result = await postIngestRows(INGEST_BAZAAR_URL, rows);
+      if (result.ok) {
+        log('drip: stored ' + result.count + ' listings for item ' + pick.item_id);
+      } else {
+        log('drip: ingest failed', result.error);
+      }
+    } catch (err) {
+      log('drip: unexpected error', err);
+    } finally {
+      dripInFlight = false;
+    }
+  }
+
   // -- Dispatch ------------------------------------------------------------
   // Route the current page to the right runner. The PDA-APIKEY placeholder
   // check stays as the single gate: only run inside Torn PDA. Outside PDA
@@ -2946,6 +3174,15 @@
     // applicable. Skips the teardown during a stakeout-driven re-run
     // (page is still 'travel'), which would otherwise stop its own loop.
     if (page !== 'travel') tearDownStakeout();
+    // Background drip-scrape — fire and forget, in parallel with the
+    // page runner. Skipped on bazaar pages where the runner already
+    // writes heavily to bazaar_prices and would just race the drip
+    // against the per-endpoint rate limiter. Per-user throttle gate
+    // (60s) inside dripScrapeBazaarPool() makes this safe to call on
+    // every dispatch.
+    if (page && page !== 'bazaar') {
+      dripScrapeBazaarPool().catch(function (e) { log('drip error', e); });
+    }
     switch (page) {
       case 'travel':     return runTravel();
       case 'itemmarket': return runItemMarket();
