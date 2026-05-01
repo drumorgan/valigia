@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.10.2
+// @version      0.10.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -29,7 +29,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.10.2';
+  const SCRIPT_VERSION = '0.10.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1995,11 +1995,14 @@
   // hit for the active item.
 
   const LOWEST_PRICE_BAR_ID = 'valigia-lowest-price-bar';
-  // Same freshness window the watchlist matcher uses for bazaar entries
-  // (and the web app's "Best Run" eligibility gate). Older rows get
-  // dropped — the listing is too likely to be gone by the time the
-  // player taps through.
-  const LOWEST_PRICE_BAZAAR_MAX_AGE_MS = 10 * 60 * 1000;
+  // Aligned with DRIP_BAZAAR_FRESH_WINDOW_MS (the drip-scrape's "skip if
+  // fresh" gate) — using a tighter window here would create a dead zone
+  // where the bar hides data the drip refuses to refresh, leaving no
+  // bazaar info visible for an item even though the pool has it. Bazaar
+  // listings typically stay up for hours-to-days; 30 min is a reasonable
+  // "actionable" window for buying decisions, and the row stamps the
+  // freshness ("3m ago") so the player can judge for themselves.
+  const LOWEST_PRICE_BAZAAR_MAX_AGE_MS = 30 * 60 * 1000;
   // Anything priced under 10% of the Item Market floor is almost
   // certainly a locked / troll listing — same threshold the web app
   // uses before claiming the Best Run card. Filter these so we never
