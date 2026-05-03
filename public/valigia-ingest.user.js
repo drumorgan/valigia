@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.10.3
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
+// @version      0.11.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -13,6 +13,7 @@
 // @grant        GM.xmlHttpRequest
 // @connect      vtslzplzlxdptpvxtanz.supabase.co
 // @connect      api.torn.com
+// @connect      yata.yt
 // @updateURL    https://valigia.girovagabondo.com/valigia-ingest.user.js
 // @downloadURL  https://valigia.girovagabondo.com/valigia-ingest.user.js
 // ==/UserScript==
@@ -29,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.10.3';
+  const SCRIPT_VERSION = '0.11.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -166,6 +167,52 @@
     const body = document.body && document.body.innerText || '';
     const m = body.match(/You are in ([A-Z][A-Za-z ]+?) and have/);
     return m ? m[1].trim() : null;
+  }
+
+  // City names Torn shows during the in-flight banner ("Torn to Dubai...")
+  // mapped back to our canonical destination keys (matches YATA's COUNTRY_MAP
+  // values in src/log-sync.js). Most destinations Torn already labels with
+  // the country/region name; the one stable exception is UAE → "Dubai".
+  // Any unmapped value falls through as-is so a future Torn rename still has
+  // a chance of matching a YATA key.
+  const CITY_TO_DESTINATION = {
+    'Dubai': 'UAE',
+    'UAE': 'UAE',
+    'Mexico': 'Mexico',
+    'Cayman Islands': 'Caymans',
+    'Caymans': 'Caymans',
+    'Canada': 'Canada',
+    'Hawaii': 'Hawaii',
+    'United Kingdom': 'UK',
+    'UK': 'UK',
+    'Argentina': 'Argentina',
+    'Switzerland': 'Switzerland',
+    'Japan': 'Japan',
+    'China': 'China',
+    'South Africa': 'South Africa',
+  };
+
+  // In-flight banner reads: "Torn to {City}. Remaining Flight Time - HH:MM:SS"
+  // (or the inverse "{City} to Torn..." when returning home — we only show
+  // the strip on the outbound leg, since flying back the player can't shop
+  // at the origin anymore). Returns { destination, returning } or null.
+  function detectInFlight() {
+    const body = document.body && document.body.innerText || '';
+    if (!/Remaining Flight Time/i.test(body)) return null;
+
+    let m = body.match(/Torn to ([A-Z][A-Za-z ]+?)\.\s*Remaining Flight Time/);
+    if (m) {
+      const city = m[1].trim();
+      const dest = CITY_TO_DESTINATION[city] || city;
+      return { destination: dest, returning: false };
+    }
+    m = body.match(/([A-Z][A-Za-z ]+?) to Torn\.\s*Remaining Flight Time/);
+    if (m) {
+      const city = m[1].trim();
+      const dest = CITY_TO_DESTINATION[city] || city;
+      return { destination: dest, returning: true };
+    }
+    return null;
   }
 
   // -- Shop scraping -------------------------------------------------------
@@ -2409,8 +2456,262 @@
     unmountStakeoutBadge();
   }
 
+  // -- In-flight destination strip ----------------------------------------
+  // While the player is mid-flight Torn shows a static cloud-image banner
+  // and a "Remaining Flight Time" countdown — no shop list to scrape, no
+  // overlay to paint, just dead time. The strip injects a single static
+  // (non-scrolling) row at the top of the page summarising what's actually
+  // buyable at the destination right now: item · stock · buy → net sell ·
+  // margin %. Sorted by margin desc, in-stock + positive-margin only,
+  // filtered to a sane row count so the iPad layout stays scannable.
+  //
+  // Data source: YATA's public abroad-prices feed (yata.yt/api/v1/travel/
+  // export/), same source the web app uses. Sell prices come from the
+  // shared sell_prices cache via the existing fetchSellPrices() helper, so
+  // the strip pieces together the same buy-vs-net-sell math as the
+  // landed overlay. Both fetches run via gmRequest so PDA's webview CORS
+  // doesn't block them.
+
+  const INFLIGHT_BAR_ID = 'valigia-inflight-strip';
+  const INFLIGHT_MAX_ROWS = 12;
+  const YATA_EXPORT_URL = 'https://yata.yt/api/v1/travel/export/';
+  // Mirrors src/log-sync.js — YATA keys destinations by lowercase 3-letter
+  // codes, which we map back to the same canonical names the rest of this
+  // userscript and the web app use.
+  const YATA_COUNTRY_MAP = {
+    mex: 'Mexico',
+    cay: 'Caymans',
+    can: 'Canada',
+    haw: 'Hawaii',
+    uni: 'UK',
+    arg: 'Argentina',
+    swi: 'Switzerland',
+    jap: 'Japan',
+    chi: 'China',
+    uae: 'UAE',
+    sou: 'South Africa',
+  };
+
+  async function fetchYataForDestination(destination) {
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: YATA_EXPORT_URL,
+        headers: { 'Accept': 'application/json' },
+      });
+      if (res.status < 200 || res.status >= 300) return [];
+      const data = JSON.parse(res.responseText || '{}');
+      const countries = data.stocks || data;
+      const out = [];
+      for (const code of Object.keys(countries)) {
+        const dest = YATA_COUNTRY_MAP[code];
+        if (dest !== destination) continue;
+        const stocks = (countries[code] && countries[code].stocks) || [];
+        for (const s of stocks) {
+          if (!s || !s.id || !s.cost) continue;
+          out.push({
+            item_id: Number(s.id),
+            name: s.name || ('Item ' + s.id),
+            buy_price: Number(s.cost),
+            stock: Number.isFinite(Number(s.quantity)) ? Number(s.quantity) : null,
+          });
+        }
+      }
+      return out;
+    } catch (e) {
+      log('yata fetch failed', e);
+      return [];
+    }
+  }
+
+  function injectInFlightStyles() {
+    if (document.getElementById('valigia-inflight-styles')) return;
+    const css = [
+      '#' + INFLIGHT_BAR_ID + ' {',
+      '  all: initial;',
+      '  display: block;',
+      '  margin: 8px auto 12px;',
+      '  max-width: 1100px;',
+      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  color: #c8cdd8;',
+      '  background: #161a22;',
+      '  border: 1px solid #252a35;',
+      '  border-left: 3px solid #e8c84a;',
+      '  border-radius: 4px;',
+      '  box-sizing: border-box;',
+      '  overflow: hidden;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-head {',
+      '  display: flex; align-items: center; gap: 8px;',
+      '  padding: 8px 12px;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-title {',
+      '  color: #e8c84a; font-weight: 700; font-size: 12px;',
+      '  letter-spacing: 0.12em; text-transform: uppercase;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-dest {',
+      '  color: #c8cdd8; font-size: 11px; opacity: 0.8;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-count {',
+      '  margin-left: auto; background: #e8c84a; color: #0d0f14;',
+      '  font-weight: 700; font-size: 11px; padding: 1px 7px;',
+      '  border-radius: 999px;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-body {',
+      '  display: flex; flex-direction: column; gap: 3px;',
+      '  padding: 4px 10px 10px;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-row {',
+      '  display: grid;',
+      '  grid-template-columns: minmax(0,1.6fr) auto auto auto auto;',
+      '  align-items: center; gap: 8px;',
+      '  padding: 5px 8px;',
+      '  border: 1px solid #252a35; border-radius: 3px;',
+      '  background: rgba(232,200,74,0.04);',
+      '  font-size: 12px;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-name { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-stock { color: #8a8fa0; font-size: 11px; white-space: nowrap; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-buy { color: #c8cdd8; white-space: nowrap; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-sell { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-pct { color: #4ae8a0; font-weight: 700; font-size: 11px; white-space: nowrap; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-empty {',
+      '  padding: 4px 12px 10px; font-size: 11px; color: #8a8fa0;',
+      '}',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-inflight-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function buildInFlightStrip(destination, rows) {
+    const bar = document.createElement('div');
+    bar.id = INFLIGHT_BAR_ID;
+
+    const head = document.createElement('div');
+    head.className = 'vgl-if-head';
+    const title = document.createElement('span');
+    title.className = 'vgl-if-title';
+    title.textContent = 'Arriving Soon';
+    const dest = document.createElement('span');
+    dest.className = 'vgl-if-dest';
+    dest.textContent = '· ' + destination;
+    head.appendChild(title);
+    head.appendChild(dest);
+
+    if (rows.length > 0) {
+      const count = document.createElement('span');
+      count.className = 'vgl-if-count';
+      count.textContent = String(rows.length);
+      head.appendChild(count);
+    }
+    bar.appendChild(head);
+
+    if (rows.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'vgl-if-empty';
+      empty.textContent = 'No profitable in-stock items right now.';
+      bar.appendChild(empty);
+      return bar;
+    }
+
+    const body = document.createElement('div');
+    body.className = 'vgl-if-body';
+    for (const r of rows) {
+      const row = document.createElement('div');
+      row.className = 'vgl-if-row';
+
+      const name = document.createElement('span');
+      name.className = 'vgl-if-name';
+      name.textContent = r.name;
+
+      const stock = document.createElement('span');
+      stock.className = 'vgl-if-stock';
+      stock.textContent = (r.stock != null ? r.stock.toLocaleString('en-US') : '?') + ' in stock';
+
+      const buy = document.createElement('span');
+      buy.className = 'vgl-if-buy';
+      buy.textContent = formatMoneyCompact(r.buy_price);
+
+      const sell = document.createElement('span');
+      sell.className = 'vgl-if-sell';
+      sell.textContent = '→ ' + formatMoneyCompact(r.netSell);
+
+      const pct = document.createElement('span');
+      pct.className = 'vgl-if-pct';
+      pct.textContent = '+' + Math.round(r.marginPct) + '%';
+
+      row.appendChild(name);
+      row.appendChild(stock);
+      row.appendChild(buy);
+      row.appendChild(sell);
+      row.appendChild(pct);
+      body.appendChild(row);
+    }
+    bar.appendChild(body);
+    return bar;
+  }
+
+  // Top-level injection. Idempotent: tears down any previous strip before
+  // rendering, so a hashchange-driven re-dispatch on the travel page never
+  // stacks duplicates. Silent on any data failure — the player still has
+  // the cloud image, they just don't get a preview.
+  async function injectInFlightStrip(destination) {
+    const existing = document.getElementById(INFLIGHT_BAR_ID);
+    if (existing) existing.remove();
+
+    const yataRows = await fetchYataForDestination(destination);
+    if (yataRows.length === 0) {
+      log('inflight: no YATA rows for ' + destination);
+      return;
+    }
+
+    const itemIds = yataRows.map(function (r) { return r.item_id; });
+    const sellMap = await fetchSellPrices(itemIds);
+
+    const ranked = [];
+    for (const r of yataRows) {
+      const sell = sellMap.get(r.item_id);
+      if (!sell || !Number.isFinite(sell.price)) continue;
+      const netSell = sell.price * 0.95;
+      const margin = netSell - r.buy_price;
+      if (margin <= 0) continue;
+      if (r.stock != null && r.stock <= 0) continue;
+      ranked.push({
+        item_id: r.item_id,
+        name: r.name,
+        stock: r.stock,
+        buy_price: r.buy_price,
+        netSell: netSell,
+        margin: margin,
+        marginPct: (margin / r.buy_price) * 100,
+      });
+    }
+    ranked.sort(function (a, b) { return b.marginPct - a.marginPct; });
+    const top = ranked.slice(0, INFLIGHT_MAX_ROWS);
+
+    injectInFlightStyles();
+    const bar = buildInFlightStrip(destination, top);
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(bar, host.firstChild);
+  }
+
   // -- Main ----------------------------------------------------------------
   async function runTravel() {
+    // In-flight branch: no shop DOM to scrape, but we can preview what's
+    // available at the destination so the flight isn't dead time. Outbound
+    // legs only; on the return leg the player can't shop anymore.
+    const flight = detectInFlight();
+    if (flight && !flight.returning) {
+      try { await injectInFlightStrip(flight.destination); } catch (e) { log('inflight error', e); }
+      return;
+    }
+
     const destination = detectDestination();
     if (!destination) {
       log('No "You are in X" marker - probably not landed yet.');
