@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.11.0
+// @version      0.11.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.11.0';
+  const SCRIPT_VERSION = '0.11.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2544,6 +2544,7 @@
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-head {',
       '  display: flex; align-items: center; gap: 8px;',
       '  padding: 8px 12px;',
+      '  cursor: pointer; user-select: none;',
       '}',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-title {',
       '  color: #e8c84a; font-weight: 700; font-size: 12px;',
@@ -2557,9 +2558,20 @@
       '  font-weight: 700; font-size: 11px; padding: 1px 7px;',
       '  border-radius: 999px;',
       '}',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-caret {',
+      '  color: #e8c84a; font-size: 11px;',
+      '  transition: transform 150ms;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + '.vgl-if-open .vgl-if-caret {',
+      '  transform: rotate(180deg);',
+      '}',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-body {',
-      '  display: flex; flex-direction: column; gap: 3px;',
+      '  display: none;',
+      '  flex-direction: column; gap: 3px;',
       '  padding: 4px 10px 10px;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + '.vgl-if-open .vgl-if-body {',
+      '  display: flex;',
       '}',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-row {',
       '  display: grid;',
@@ -2575,8 +2587,13 @@
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-buy { color: #c8cdd8; white-space: nowrap; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-sell { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-pct { color: #4ae8a0; font-weight: 700; font-size: 11px; white-space: nowrap; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrow { color: #4ae8a0; font-weight: 700; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-empty {',
+      '  display: none;',
       '  padding: 4px 12px 10px; font-size: 11px; color: #8a8fa0;',
+      '}',
+      '#' + INFLIGHT_BAR_ID + '.vgl-if-open .vgl-if-empty {',
+      '  display: block;',
       '}',
     ].join('\n');
     const style = document.createElement('style');
@@ -2596,16 +2613,24 @@
     title.textContent = 'Arriving Soon';
     const dest = document.createElement('span');
     dest.className = 'vgl-if-dest';
-    dest.textContent = '· ' + destination;
+    // Middle dot (U+00B7) and the row arrow (U+2192) below are escaped
+    // rather than written as literal multi-byte UTF-8: the FTP deploy
+    // pipeline mangles unescaped non-ASCII into latin-1, which renders
+    // as garbled mojibake on iPad. Match the watchlist bar's convention.
+    dest.textContent = '\u00B7 ' + destination;
     head.appendChild(title);
     head.appendChild(dest);
 
-    if (rows.length > 0) {
-      const count = document.createElement('span');
-      count.className = 'vgl-if-count';
-      count.textContent = String(rows.length);
-      head.appendChild(count);
-    }
+    const count = document.createElement('span');
+    count.className = 'vgl-if-count';
+    count.textContent = String(rows.length);
+    head.appendChild(count);
+
+    const caret = document.createElement('span');
+    caret.className = 'vgl-if-caret';
+    caret.textContent = '\u25BE';
+    head.appendChild(caret);
+
     bar.appendChild(head);
 
     if (rows.length === 0) {
@@ -2613,43 +2638,52 @@
       empty.className = 'vgl-if-empty';
       empty.textContent = 'No profitable in-stock items right now.';
       bar.appendChild(empty);
-      return bar;
+    } else {
+      const body = document.createElement('div');
+      body.className = 'vgl-if-body';
+      for (const r of rows) {
+        const row = document.createElement('div');
+        row.className = 'vgl-if-row';
+
+        const name = document.createElement('span');
+        name.className = 'vgl-if-name';
+        name.textContent = r.name;
+
+        const stock = document.createElement('span');
+        stock.className = 'vgl-if-stock';
+        stock.textContent = (r.stock != null ? r.stock.toLocaleString('en-US') : '?') + ' in stock';
+
+        const buy = document.createElement('span');
+        buy.className = 'vgl-if-buy';
+        buy.textContent = formatMoneyCompact(r.buy_price);
+
+        const arrow = document.createElement('span');
+        arrow.className = 'vgl-if-arrow';
+        arrow.textContent = '\u2192';
+
+        const sell = document.createElement('span');
+        sell.className = 'vgl-if-sell';
+        sell.textContent = formatMoneyCompact(r.netSell);
+
+        const pct = document.createElement('span');
+        pct.className = 'vgl-if-pct';
+        pct.textContent = '+' + Math.round(r.marginPct) + '%';
+
+        row.appendChild(name);
+        row.appendChild(stock);
+        row.appendChild(buy);
+        row.appendChild(arrow);
+        row.appendChild(sell);
+        row.appendChild(pct);
+        body.appendChild(row);
+      }
+      bar.appendChild(body);
     }
 
-    const body = document.createElement('div');
-    body.className = 'vgl-if-body';
-    for (const r of rows) {
-      const row = document.createElement('div');
-      row.className = 'vgl-if-row';
+    head.addEventListener('click', function () {
+      bar.classList.toggle('vgl-if-open');
+    });
 
-      const name = document.createElement('span');
-      name.className = 'vgl-if-name';
-      name.textContent = r.name;
-
-      const stock = document.createElement('span');
-      stock.className = 'vgl-if-stock';
-      stock.textContent = (r.stock != null ? r.stock.toLocaleString('en-US') : '?') + ' in stock';
-
-      const buy = document.createElement('span');
-      buy.className = 'vgl-if-buy';
-      buy.textContent = formatMoneyCompact(r.buy_price);
-
-      const sell = document.createElement('span');
-      sell.className = 'vgl-if-sell';
-      sell.textContent = '→ ' + formatMoneyCompact(r.netSell);
-
-      const pct = document.createElement('span');
-      pct.className = 'vgl-if-pct';
-      pct.textContent = '+' + Math.round(r.marginPct) + '%';
-
-      row.appendChild(name);
-      row.appendChild(stock);
-      row.appendChild(buy);
-      row.appendChild(sell);
-      row.appendChild(pct);
-      body.appendChild(row);
-    }
-    bar.appendChild(body);
     return bar;
   }
 
