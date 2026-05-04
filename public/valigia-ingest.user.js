@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.11.1
+// @version      0.11.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.11.1';
+  const SCRIPT_VERSION = '0.11.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -176,20 +176,35 @@
   // Any unmapped value falls through as-is so a future Torn rename still has
   // a chance of matching a YATA key.
   const CITY_TO_DESTINATION = {
+    // Confirmed live: Tokyo (Japan), Dubai (UAE).
+    // The rest are well-known Torn city names — harmless if Torn happens
+    // to use the country name instead, since both keys point to the same
+    // canonical destination.
     'Dubai': 'UAE',
     'UAE': 'UAE',
     'Mexico': 'Mexico',
+    'Mexico City': 'Mexico',
     'Cayman Islands': 'Caymans',
     'Caymans': 'Caymans',
     'Canada': 'Canada',
+    'Toronto': 'Canada',
     'Hawaii': 'Hawaii',
+    'Honolulu': 'Hawaii',
     'United Kingdom': 'UK',
     'UK': 'UK',
+    'London': 'UK',
     'Argentina': 'Argentina',
+    'Buenos Aires': 'Argentina',
     'Switzerland': 'Switzerland',
+    'Zurich': 'Switzerland',
     'Japan': 'Japan',
+    'Tokyo': 'Japan',
     'China': 'China',
+    'Beijing': 'China',
+    'Shanghai': 'China',
     'South Africa': 'South Africa',
+    'Johannesburg': 'South Africa',
+    'Cape Town': 'South Africa',
   };
 
   // In-flight banner reads: "Torn to {City}. Remaining Flight Time - HH:MM:SS"
