@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.11.3
+// @version      0.12.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.11.3';
+  const SCRIPT_VERSION = '0.12.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -210,22 +210,35 @@
   // the strip on the outbound leg, since flying back the player can't shop
   // at the origin anymore). The city group matches anything except a period
   // so accented chars (Ciudad Juárez) and multi-word names (Buenos Aires)
-  // both work. Returns { destination, returning } or null.
+  // both work. Returns { destination, returning, remainingMins } or null.
   function detectInFlight() {
     const body = document.body && document.body.innerText || '';
     if (!/Remaining Flight Time/i.test(body)) return null;
+
+    // Pull HH:MM:SS off the timer if present. Banner format is
+    // "Remaining Flight Time - 02:37:06" — convert to minutes (fractional).
+    // null when missing, so callers can fall back to the destination's
+    // standard flight time.
+    let remainingMins = null;
+    const tm = body.match(/Remaining Flight Time\s*-\s*(\d{1,2}):(\d{2}):(\d{2})/);
+    if (tm) {
+      const h = Number(tm[1]); const mi = Number(tm[2]); const se = Number(tm[3]);
+      if (Number.isFinite(h) && Number.isFinite(mi) && Number.isFinite(se)) {
+        remainingMins = h * 60 + mi + se / 60;
+      }
+    }
 
     let m = body.match(/Torn to ([^.]+?)\.\s*Remaining Flight Time/);
     if (m) {
       const city = m[1].trim();
       const dest = CITY_TO_DESTINATION[city] || city;
-      return { destination: dest, returning: false };
+      return { destination: dest, returning: false, remainingMins: remainingMins };
     }
     m = body.match(/([^.]+?) to Torn\.\s*Remaining Flight Time/);
     if (m) {
       const city = m[1].trim();
       const dest = CITY_TO_DESTINATION[city] || city;
-      return { destination: dest, returning: true };
+      return { destination: dest, returning: true, remainingMins: remainingMins };
     }
     return null;
   }
@@ -2539,6 +2552,122 @@
     }
   }
 
+  // -- Depletion-slope fitter (slim port of stock-forecast.js) ------------
+  // For each (item_id, destination) we want a per-minute steady-state
+  // depletion rate so the strip can answer "how much will be left when I
+  // land?". The web app's stock-forecast.js does this with restock cadence,
+  // confidence tiers, and a 48h history window — overkill for a quick
+  // arrival estimate. We use the last 2 hours of yata_snapshots, segment
+  // by restock boundaries (positive deltas), least-squares fit a slope per
+  // segment, and weighted-median pool. Same algorithm as the web app's
+  // pooledDepletionSlope(), just compressed.
+  const SNAPSHOTS_HISTORY_MINS = 120;
+  const YATA_SNAPSHOTS_URL = SUPABASE_REST_URL + '/yata_snapshots';
+
+  async function fetchYataSnapshots(itemIds, destination) {
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return new Map();
+    if (!destination) return new Map();
+    const cutoffIso = new Date(Date.now() - SNAPSHOTS_HISTORY_MINS * 60_000).toISOString();
+    const idList = itemIds.join(',');
+    const url = YATA_SNAPSHOTS_URL +
+      '?select=item_id,quantity,snapped_at' +
+      '&item_id=in.(' + idList + ')' +
+      '&destination=eq.' + encodeURIComponent(destination) +
+      '&snapped_at=gte.' + encodeURIComponent(cutoffIso) +
+      '&order=snapped_at.asc' +
+      '&limit=5000';
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: url,
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) return new Map();
+      const rows = JSON.parse(res.responseText || '[]');
+      const byItem = new Map();
+      for (const r of rows) {
+        if (!r || typeof r.item_id !== 'number') continue;
+        if (!Number.isFinite(r.quantity)) continue;
+        const t = new Date(r.snapped_at).getTime();
+        if (!Number.isFinite(t)) continue;
+        let arr = byItem.get(r.item_id);
+        if (!arr) { arr = []; byItem.set(r.item_id, arr); }
+        arr.push({ q: r.quantity, t: t });
+      }
+      return byItem;
+    } catch (e) {
+      return new Map();
+    }
+  }
+
+  // Walk a chronologically-sorted sample series and split into runs of
+  // non-increasing quantity; a strictly-positive delta is a restock and
+  // breaks the run. Same shape as stock-forecast.js's allDepletionSegments.
+  function splitDepletionSegments(samples) {
+    if (!samples || samples.length < 2) return [];
+    const segs = [];
+    let cur = [samples[0]];
+    for (let i = 1; i < samples.length; i++) {
+      if (samples[i].q > cur[cur.length - 1].q) {
+        if (cur.length >= 2) segs.push(cur);
+        cur = [samples[i]];
+      } else {
+        cur.push(samples[i]);
+      }
+    }
+    if (cur.length >= 2) segs.push(cur);
+    return segs;
+  }
+
+  // Least-squares slope of quantity vs minutes-since-segment-start.
+  // Returns null on degenerate segments (single sample, all same time).
+  function fitSlope(seg) {
+    if (!seg || seg.length < 2) return null;
+    const t0 = seg[0].t;
+    let n = 0, sx = 0, sy = 0, sxy = 0, sxx = 0;
+    for (const s of seg) {
+      const x = (s.t - t0) / 60_000;
+      const y = s.q;
+      sx += x; sy += y; sxy += x * y; sxx += x * x; n++;
+    }
+    const denom = n * sxx - sx * sx;
+    if (denom === 0) return null;
+    return (n * sxy - sx * sy) / denom;
+  }
+
+  // Weighted-median pool of per-segment slopes, weighted by segment length.
+  // Drops positive slopes (numerical noise on flat segments); keeps zeros.
+  // Returns units/min (≤ 0) or null when no usable slope.
+  function poolSlope(segments) {
+    const weighted = [];
+    for (const seg of segments) {
+      const s = fitSlope(seg);
+      if (s == null || s > 0) continue;
+      weighted.push({ s: s, w: seg.length });
+    }
+    if (weighted.length === 0) return null;
+    weighted.sort(function (a, b) { return a.s - b.s; });
+    const total = weighted.reduce(function (acc, x) { return acc + x.w; }, 0);
+    let acc = 0;
+    let picked = weighted[weighted.length - 1].s;
+    for (const w of weighted) {
+      acc += w.w;
+      if (acc >= total / 2) { picked = w.s; break; }
+    }
+    return picked;
+  }
+
+  // Top-level: turns a samples array into a per-minute depletion rate.
+  // null when we can't fit one (no history, all flat, single restock cycle
+  // shorter than 2 samples, etc.) — caller falls back to "stock now".
+  function depletionRatePerMin(samples) {
+    return poolSlope(splitDepletionSegments(samples || []));
+  }
+
   function injectInFlightStyles() {
     if (document.getElementById('valigia-inflight-styles')) return;
     const css = [
@@ -2599,6 +2728,7 @@
       '}',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-name { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-stock { color: #8a8fa0; font-size: 11px; white-space: nowrap; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-stock--empty { color: #e8824a; font-weight: 700; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-buy { color: #c8cdd8; white-space: nowrap; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-sell { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-pct { color: #4ae8a0; font-weight: 700; font-size: 11px; white-space: nowrap; }',
@@ -2666,7 +2796,20 @@
 
         const stock = document.createElement('span');
         stock.className = 'vgl-if-stock';
-        stock.textContent = (r.stock != null ? r.stock.toLocaleString('en-US') : '?') + ' in stock';
+        // Prefer the slope-based arrival estimate; fall back to the raw
+        // YATA reading when no history is available. "may sell out" is
+        // the honest reading of a slope that takes the shelf to 0 before
+        // the player lands — buyers ahead in line will clear it.
+        if (r.predictedStock != null) {
+          if (r.predictedStock <= 0) {
+            stock.textContent = 'may sell out';
+            stock.classList.add('vgl-if-stock--empty');
+          } else {
+            stock.textContent = '\u2248 ' + r.predictedStock.toLocaleString('en-US') + ' on arrival';
+          }
+        } else {
+          stock.textContent = (r.stock != null ? r.stock.toLocaleString('en-US') : '?') + ' in stock';
+        }
 
         const buy = document.createElement('span');
         buy.className = 'vgl-if-buy';
@@ -2706,7 +2849,7 @@
   // rendering, so a hashchange-driven re-dispatch on the travel page never
   // stacks duplicates. Silent on any data failure — the player still has
   // the cloud image, they just don't get a preview.
-  async function injectInFlightStrip(destination) {
+  async function injectInFlightStrip(destination, remainingMins) {
     const existing = document.getElementById(INFLIGHT_BAR_ID);
     if (existing) existing.remove();
 
@@ -2717,7 +2860,13 @@
     }
 
     const itemIds = yataRows.map(function (r) { return r.item_id; });
-    const sellMap = await fetchSellPrices(itemIds);
+    // Sell prices for the buy→sell math, snapshots for the depletion-slope
+    // forecast. Both are pure reads; fire in parallel so the strip pops in
+    // at max(sellLatency, snapshotLatency) instead of the sum.
+    const [sellMap, snapshotsMap] = await Promise.all([
+      fetchSellPrices(itemIds),
+      fetchYataSnapshots(itemIds, destination),
+    ]);
 
     const ranked = [];
     for (const r of yataRows) {
@@ -2727,10 +2876,22 @@
       const margin = netSell - r.buy_price;
       if (margin <= 0) continue;
       if (r.stock != null && r.stock <= 0) continue;
+      // Predicted stock at arrival: current YATA reading minus the pooled
+      // depletion rate (units/min, ≤0) times remaining flight minutes.
+      // null when we have no slope or no remaining-time reading — UI
+      // falls back to showing current stock instead.
+      let predicted = null;
+      if (r.stock != null && Number.isFinite(remainingMins) && remainingMins > 0) {
+        const slope = depletionRatePerMin(snapshotsMap.get(r.item_id));
+        if (slope != null) {
+          predicted = Math.max(0, Math.round(r.stock + slope * remainingMins));
+        }
+      }
       ranked.push({
         item_id: r.item_id,
         name: r.name,
         stock: r.stock,
+        predictedStock: predicted,
         buy_price: r.buy_price,
         netSell: netSell,
         margin: margin,
@@ -2757,7 +2918,7 @@
     // legs only; on the return leg the player can't shop anymore.
     const flight = detectInFlight();
     if (flight && !flight.returning) {
-      try { await injectInFlightStrip(flight.destination); } catch (e) { log('inflight error', e); }
+      try { await injectInFlightStrip(flight.destination, flight.remainingMins); } catch (e) { log('inflight error', e); }
       return;
     }
 
