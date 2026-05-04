@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.12.0
+// @version      0.12.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.12.0';
+  const SCRIPT_VERSION = '0.12.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2502,6 +2502,21 @@
 
   const INFLIGHT_BAR_ID = 'valigia-inflight-strip';
   const INFLIGHT_MAX_ROWS = 12;
+  // Slots to multiply the buy price by for the run-cost column. The web
+  // app stores its slot count in localStorage under 'valigia_slots' on the
+  // valigia.girovagabondo.com origin, which the userscript can't read
+  // (cross-origin). Use a separate key the player can override:
+  //   localStorage.setItem('valigia_pda_slots', '32')
+  // Default 29 matches the web app and is correct for most players.
+  const SLOTS_STORAGE_KEY = 'valigia_pda_slots';
+  function getSlotCount() {
+    try {
+      const raw = localStorage.getItem(SLOTS_STORAGE_KEY);
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 5 && n <= 44) return n;
+    } catch { /* ignore */ }
+    return 29;
+  }
   const YATA_EXPORT_URL = 'https://yata.yt/api/v1/travel/export/';
   // Mirrors src/log-sync.js — YATA keys destinations by lowercase 3-letter
   // codes, which we map back to the same canonical names the rest of this
@@ -2717,22 +2732,26 @@
       '#' + INFLIGHT_BAR_ID + '.vgl-if-open .vgl-if-body {',
       '  display: flex;',
       '}',
+      // Five columns, all on a single line. Name flexes; the four numeric
+      // cells size to content with right alignment so they read like a
+      // table. min-width:0 on name lets ellipsis kick in cleanly when an
+      // item name is unusually long instead of pushing the row to wrap.
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-row {',
       '  display: grid;',
-      '  grid-template-columns: minmax(0,1.6fr) auto auto auto auto;',
-      '  align-items: center; gap: 8px;',
+      '  grid-template-columns: minmax(0,1fr) auto auto auto auto;',
+      '  align-items: baseline; gap: 12px;',
       '  padding: 5px 8px;',
       '  border: 1px solid #252a35; border-radius: 3px;',
       '  background: rgba(232,200,74,0.04);',
       '  font-size: 12px;',
       '}',
-      '#' + INFLIGHT_BAR_ID + ' .vgl-if-name { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
-      '#' + INFLIGHT_BAR_ID + ' .vgl-if-stock { color: #8a8fa0; font-size: 11px; white-space: nowrap; }',
-      '#' + INFLIGHT_BAR_ID + ' .vgl-if-stock--empty { color: #e8824a; font-weight: 700; }',
-      '#' + INFLIGHT_BAR_ID + ' .vgl-if-buy { color: #c8cdd8; white-space: nowrap; }',
-      '#' + INFLIGHT_BAR_ID + ' .vgl-if-sell { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
-      '#' + INFLIGHT_BAR_ID + ' .vgl-if-pct { color: #4ae8a0; font-weight: 700; font-size: 11px; white-space: nowrap; }',
-      '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrow { color: #4ae8a0; font-weight: 700; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-name { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-buy { color: #c8cdd8; white-space: nowrap; text-align: right; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-runcost { color: #e8c84a; font-weight: 700; white-space: nowrap; text-align: right; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-stock { color: #8a8fa0; font-size: 11px; white-space: nowrap; text-align: right; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrival { color: #4ae8a0; font-weight: 700; white-space: nowrap; text-align: right; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrival--empty { color: #e8824a; }',
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrival--unknown { color: #5a6070; font-weight: 400; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-empty {',
       '  display: none;',
       '  padding: 4px 12px 10px; font-size: 11px; color: #8a8fa0;',
@@ -2790,49 +2809,46 @@
         const row = document.createElement('div');
         row.className = 'vgl-if-row';
 
+        // Five cells, in order: name | unit price | run cost
+        // (price * slots) | current stock | predicted on arrival.
         const name = document.createElement('span');
         name.className = 'vgl-if-name';
         name.textContent = r.name;
-
-        const stock = document.createElement('span');
-        stock.className = 'vgl-if-stock';
-        // Prefer the slope-based arrival estimate; fall back to the raw
-        // YATA reading when no history is available. "may sell out" is
-        // the honest reading of a slope that takes the shelf to 0 before
-        // the player lands — buyers ahead in line will clear it.
-        if (r.predictedStock != null) {
-          if (r.predictedStock <= 0) {
-            stock.textContent = 'may sell out';
-            stock.classList.add('vgl-if-stock--empty');
-          } else {
-            stock.textContent = '\u2248 ' + r.predictedStock.toLocaleString('en-US') + ' on arrival';
-          }
-        } else {
-          stock.textContent = (r.stock != null ? r.stock.toLocaleString('en-US') : '?') + ' in stock';
-        }
 
         const buy = document.createElement('span');
         buy.className = 'vgl-if-buy';
         buy.textContent = formatMoneyCompact(r.buy_price);
 
-        const arrow = document.createElement('span');
-        arrow.className = 'vgl-if-arrow';
-        arrow.textContent = '\u2192';
+        const runcost = document.createElement('span');
+        runcost.className = 'vgl-if-runcost';
+        runcost.textContent = formatMoneyCompact(r.runCost);
 
-        const sell = document.createElement('span');
-        sell.className = 'vgl-if-sell';
-        sell.textContent = formatMoneyCompact(r.netSell);
+        const stock = document.createElement('span');
+        stock.className = 'vgl-if-stock';
+        stock.textContent = (r.stock != null ? r.stock.toLocaleString('en-US') : '?') + ' stock';
 
-        const pct = document.createElement('span');
-        pct.className = 'vgl-if-pct';
-        pct.textContent = '+' + Math.round(r.marginPct) + '%';
+        // Predicted-arrival cell: green number when we have a slope and
+        // it leaves stock above 0; amber "may sell out" when it doesn't;
+        // muted dash when no history exists to fit a slope.
+        const arrival = document.createElement('span');
+        arrival.className = 'vgl-if-arrival';
+        if (r.predictedStock != null) {
+          if (r.predictedStock <= 0) {
+            arrival.textContent = 'may sell out';
+            arrival.classList.add('vgl-if-arrival--empty');
+          } else {
+            arrival.textContent = '\u2248 ' + r.predictedStock.toLocaleString('en-US') + ' arr.';
+          }
+        } else {
+          arrival.textContent = '\u2014 arr.';
+          arrival.classList.add('vgl-if-arrival--unknown');
+        }
 
         row.appendChild(name);
-        row.appendChild(stock);
         row.appendChild(buy);
-        row.appendChild(arrow);
-        row.appendChild(sell);
-        row.appendChild(pct);
+        row.appendChild(runcost);
+        row.appendChild(stock);
+        row.appendChild(arrival);
         body.appendChild(row);
       }
       bar.appendChild(body);
@@ -2868,6 +2884,7 @@
       fetchYataSnapshots(itemIds, destination),
     ]);
 
+    const slots = getSlotCount();
     const ranked = [];
     for (const r of yataRows) {
       const sell = sellMap.get(r.item_id);
@@ -2876,6 +2893,11 @@
       const margin = netSell - r.buy_price;
       if (margin <= 0) continue;
       if (r.stock != null && r.stock <= 0) continue;
+      // Run cost = unit price × player's slot count, capped by current
+      // stock when stock is the limiting factor (a 5-stock shelf with 29
+      // slots only costs you 5 units' worth).
+      const effectiveSlots = (r.stock != null && r.stock < slots) ? r.stock : slots;
+      const runCost = r.buy_price * effectiveSlots;
       // Predicted stock at arrival: current YATA reading minus the pooled
       // depletion rate (units/min, ≤0) times remaining flight minutes.
       // null when we have no slope or no remaining-time reading — UI
@@ -2893,6 +2915,7 @@
         stock: r.stock,
         predictedStock: predicted,
         buy_price: r.buy_price,
+        runCost: runCost,
         netSell: netSell,
         margin: margin,
         marginPct: (margin / r.buy_price) * 100,
