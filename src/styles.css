@@ -1243,6 +1243,57 @@ tr.row--negative td {
 .crosslink-yoink     { color: #c0c4cc; }
 .crosslink-giro      { color: #d4c8a0; }
 
+/* Footer avatar block — links out to the Torn City profile. Mirrors the
+   element on girovagabondo.com (the parent project hub) so visitors who
+   recognise the avatar there get the same visual cue here. Vertical
+   stack: circular avatar → Italian tricolor bar → caption.
+   Cross-origin image is fine — same parent domain. */
+.footer-avatar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 18px auto 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  text-decoration: none;
+  color: var(--muted);
+  max-width: 220px;
+}
+
+.footer-avatar picture,
+.footer-avatar img {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: block;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+
+.footer-tricolor {
+  display: block;
+  width: 80px;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    #009246 0 33.33%,
+    #ffffff 33.33% 66.66%,
+    #ce2b37 66.66% 100%
+  );
+}
+
+.footer-caption {
+  font: 600 11px/1 ui-monospace, Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.footer-avatar:hover .footer-caption {
+  color: var(--text);
+}
+
 /* ── Bazaar Scanner Button + Fuse ───────────────────────────── */
 
 .fuse-wrapper {
