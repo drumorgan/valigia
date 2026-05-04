@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.12.2
+// @version      0.12.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.12.2';
+  const SCRIPT_VERSION = '0.12.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2608,13 +2608,15 @@
       const freshest = new Map();
       const cutoff = Date.now() - FIRST_PARTY_FRESH_MS;
       for (const r of rows) {
-        if (!r || typeof r.item_id !== 'number') continue;
-        if (freshest.has(r.item_id)) continue;
+        if (!r) continue;
+        const itemId = Number(r.item_id);
+        if (!Number.isFinite(itemId)) continue;
+        if (freshest.has(itemId)) continue;
         const t = new Date(r.observed_at).getTime();
         if (!Number.isFinite(t) || t < cutoff) continue;
-        freshest.set(r.item_id, {
-          item_id: r.item_id,
-          name: r.item_name || ('Item ' + r.item_id),
+        freshest.set(itemId, {
+          item_id: itemId,
+          name: r.item_name || ('Item ' + itemId),
           buy_price: Number(r.buy_price),
           stock: Number.isFinite(Number(r.stock)) ? Number(r.stock) : null,
           observedAt: t,
@@ -2663,14 +2665,28 @@
       if (res.status < 200 || res.status >= 300) return new Map();
       const rows = JSON.parse(res.responseText || '[]');
       const byItem = new Map();
+      // Coerce numeric columns explicitly: yata_snapshots.quantity is
+      // bigint (migration 010), and raw PostgREST may return bigint
+      // values as strings. The web app's Supabase JS SDK auto-coerces;
+      // we don't get that for free here, so the strict typeof === 'number'
+      // check we used previously silently dropped every snapshot row,
+      // which is why the strip's "on arrival" column went all-dashes
+      // overnight despite the data being there.
       for (const r of rows) {
-        if (!r || typeof r.item_id !== 'number') continue;
-        if (!Number.isFinite(r.quantity)) continue;
+        if (!r) continue;
+        const itemId = Number(r.item_id);
+        const qty = Number(r.quantity);
+        if (!Number.isFinite(itemId) || !Number.isFinite(qty)) continue;
         const t = new Date(r.snapped_at).getTime();
         if (!Number.isFinite(t)) continue;
-        let arr = byItem.get(r.item_id);
-        if (!arr) { arr = []; byItem.set(r.item_id, arr); }
-        arr.push({ q: r.quantity, t: t });
+        let arr = byItem.get(itemId);
+        if (!arr) { arr = []; byItem.set(itemId, arr); }
+        arr.push({ q: qty, t: t });
+      }
+      if (DEBUG) {
+        let totalSamples = 0;
+        for (const arr of byItem.values()) totalSamples += arr.length;
+        log('yata_snapshots: rows=' + rows.length + ' items=' + byItem.size + ' samples=' + totalSamples);
       }
       return byItem;
     } catch (e) {
@@ -2990,6 +3006,8 @@
 
     const slots = getSlotCount();
     const ranked = [];
+    let slopeHits = 0;
+    let slopeMisses = 0;
     for (const r of merged) {
       const sell = sellMap.get(r.item_id);
       if (!sell || !Number.isFinite(sell.price)) continue;
@@ -3011,6 +3029,9 @@
         const slope = depletionRatePerMin(snapshotsMap.get(r.item_id));
         if (slope != null) {
           predicted = Math.max(0, Math.round(r.stock + slope * remainingMins));
+          slopeHits++;
+        } else {
+          slopeMisses++;
         }
       }
       ranked.push({
@@ -3027,6 +3048,12 @@
     }
     ranked.sort(function (a, b) { return b.marginPct - a.marginPct; });
     const top = ranked.slice(0, INFLIGHT_MAX_ROWS);
+
+    if (DEBUG) {
+      log('inflight: ' + destination + ' merged=' + merged.length +
+        ' ranked=' + ranked.length + ' slopeHits=' + slopeHits +
+        ' slopeMisses=' + slopeMisses + ' remainingMins=' + remainingMins);
+    }
 
     injectInFlightStyles();
     const bar = buildInFlightStrip(destination, top);
