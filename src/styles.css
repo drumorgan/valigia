@@ -947,6 +947,25 @@ tr.row--negative td {
   line-height: 1.1;
 }
 
+/* Small "post-refill" tag appended to the restock-driven ETA cells.
+   Reads as a faint badge so the eye still catches the number first
+   but the qualifier — "this depends on a refill happening on schedule" —
+   is right there in the cell, not buried in a tooltip. */
+.stock-eta__tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--positive);
+  border-radius: 2px;
+  vertical-align: 2px;
+}
+
 .stock-eta--leave-in {
   /* "leave in Xm → Q" — a different action than the other restock copy
      ("just go, refill happens mid-flight"). Cyan to match the Upcoming
