@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.13.1
+// @version      0.14.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.13.1';
+  const SCRIPT_VERSION = '0.14.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1305,7 +1305,9 @@
   // valigia.girovagabondo.com, but userscript localStorage is scoped to
   // torn.com — we can't share. Cost is one Torn /torn/?selections=items
   // call per player per catalog-TTL, answered by a static dataset.
-  const ITEM_CATALOG_CACHE_KEY = 'valigia_item_catalog_v1';
+  // Bumped to v2 when we extended the cache shape from name-only to
+  // { name, type }. v1 readers got a one-time refetch on first load.
+  const ITEM_CATALOG_CACHE_KEY = 'valigia_item_catalog_v2';
   // Torn rarely changes item names. A 30-day TTL keeps the cache small in
   // terms of refresh pressure; any unknown id at lookup time still falls
   // back to "Item #N" so a stale cache doesn't break the banner.
@@ -1670,8 +1672,11 @@
 
   // In-memory view of the Torn items catalog. Populated lazily by
   // ensureItemCatalog() from localStorage or a Torn API call. Shape:
-  // Map<itemId:number, name:string>.
-  let itemNameCache = null;
+  // Map<itemId:number, { name:string, type:string|null }>.
+  // The cache used to hold names only; v2 added type so the in-flight
+  // strip can filter to the canonical arbitrage categories
+  // (Drug/Flower/Plushie/Artifact).
+  let itemMetaCache = null;
 
   /**
    * Load the id→name map, hydrating the in-memory cache from localStorage
@@ -1680,7 +1685,7 @@
    * the banner never blocks on name resolution.
    */
   async function ensureItemCatalog() {
-    if (itemNameCache && itemNameCache.size > 0) return itemNameCache;
+    if (itemMetaCache && itemMetaCache.size > 0) return itemMetaCache;
 
     // Try localStorage first. If the cached blob is present and fresh,
     // hydrate the in-memory cache and skip the fetch entirely.
@@ -1692,19 +1697,22 @@
           cached &&
           cached.fetchedAt &&
           Date.now() - cached.fetchedAt < ITEM_CATALOG_TTL_MS &&
-          cached.nameById && typeof cached.nameById === 'object'
+          cached.byId && typeof cached.byId === 'object'
         ) {
-          itemNameCache = new Map();
-          for (const idStr in cached.nameById) {
-            itemNameCache.set(Number(idStr), cached.nameById[idStr]);
+          itemMetaCache = new Map();
+          for (const idStr in cached.byId) {
+            const meta = cached.byId[idStr];
+            if (meta && typeof meta === 'object') {
+              itemMetaCache.set(Number(idStr), meta);
+            }
           }
-          if (itemNameCache.size > 0) return itemNameCache;
+          if (itemMetaCache.size > 0) return itemMetaCache;
         }
       }
     } catch (_) { /* corrupt cache — fall through to refetch */ }
 
     if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) {
-      return itemNameCache || new Map();
+      return itemMetaCache || new Map();
     }
 
     try {
@@ -1717,38 +1725,46 @@
       let data = null;
       try { data = JSON.parse(res.responseText); } catch (_) { /* ignore */ }
       if (data && data.items) {
-        const nameById = {};
+        const byId = {};
         const map = new Map();
         for (const idStr in data.items) {
           const entry = data.items[idStr];
-          const name = entry && entry.name;
-          if (name) {
-            nameById[idStr] = name;
-            map.set(Number(idStr), name);
+          if (entry && entry.name) {
+            const meta = { name: entry.name, type: entry.type || null };
+            byId[idStr] = meta;
+            map.set(Number(idStr), meta);
           }
         }
         try {
           localStorage.setItem(
             ITEM_CATALOG_CACHE_KEY,
-            JSON.stringify({ nameById, fetchedAt: Date.now() })
+            JSON.stringify({ byId, fetchedAt: Date.now() })
           );
         } catch (_) { /* storage full / disabled — non-fatal */ }
-        itemNameCache = map;
-        return itemNameCache;
+        itemMetaCache = map;
+        return itemMetaCache;
       }
     } catch (err) {
       log('item catalog fetch failed', err);
     }
 
-    return itemNameCache || new Map();
+    return itemMetaCache || new Map();
   }
 
   /** Synchronous lookup used once the catalog is warm. "Item #N" fallback. */
   function itemNameFor(itemId) {
-    if (itemNameCache && itemNameCache.has(Number(itemId))) {
-      return itemNameCache.get(Number(itemId));
-    }
+    const meta = itemMetaCache && itemMetaCache.get(Number(itemId));
+    if (meta && meta.name) return meta.name;
     return 'Item #' + itemId;
+  }
+
+  // Returns Torn's item-category string ('Drug' / 'Flower' / 'Plushie' /
+  // 'Artifact' / 'Energy Drink' / etc.) or null when the catalog hasn't
+  // been warmed yet for this id. Callers must treat null as "unknown" —
+  // the in-flight strip drops unknown rows when filtering by type.
+  function itemTypeFor(itemId) {
+    const meta = itemMetaCache && itemMetaCache.get(Number(itemId));
+    return meta && meta.type ? meta.type : null;
   }
 
   function buildWatchlistBar(matches) {
@@ -2552,7 +2568,17 @@
   // doesn't block them.
 
   const INFLIGHT_BAR_ID = 'valigia-inflight-strip';
-  const INFLIGHT_MAX_ROWS = 12;
+  // The four canonical Torn arbitrage categories. Filtering the strip
+  // to these surfaces the items players actually fly to buy/sell, and
+  // drops noise like alcohol/booster/melee/etc. Torn's items endpoint
+  // returns these strings verbatim in the `type` field (capitalized,
+  // singular). Match exactly.
+  const INFLIGHT_ALLOWED_TYPES = new Set(['Drug', 'Flower', 'Plushie', 'Artifact']);
+  // Generous upper bound rather than a hard top-N: every Drug/Flower/
+  // Plushie/Artifact at the destination should fit comfortably under
+  // this. Keeps a safety net against runaway DOM cost if Torn ever
+  // dramatically expands the catalog.
+  const INFLIGHT_MAX_ROWS = 50;
   // Slots to multiply the buy price by for the run-cost column. The web
   // app stores its slot count in localStorage under 'valigia_slots' on the
   // valigia.girovagabondo.com origin, which the userscript can't read
@@ -3002,11 +3028,15 @@
     const existing = document.getElementById(INFLIGHT_BAR_ID);
     if (existing) existing.remove();
 
-    // Fire YATA + first-party scrapes in parallel: YATA is the backbone
-    // (covers every destination), abroad_prices is fresher when we have it.
+    // Fire YATA + first-party scrapes + item catalog warm in parallel.
+    // The catalog is needed to filter the strip by Torn's type field
+    // (Drug / Flower / Plushie / Artifact); without it we can't tell
+    // a Cherry Blossom from a Bottle of Sake. Cache hit is free; cold
+    // first run pays one Torn API call.
     const [yataRows, scoutMap] = await Promise.all([
       fetchYataForDestination(destination),
       fetchAbroadScrapes(destination),
+      ensureItemCatalog(),
     ]);
 
     // Build the merged row list. Every YATA row is kept (so the strip
@@ -3068,8 +3098,18 @@
     let slopeHits = 0;
     let slopeMisses = 0;
     let restockOverrides = 0;
+    let typeFiltered = 0;
     const nowMs = Date.now();
     for (const r of merged) {
+      // Drop anything that isn't one of the four canonical arbitrage
+      // categories. Items the catalog hasn't resolved yet (type=null)
+      // are dropped too — better to wait one dispatch for the warm
+      // than to flash non-arbitrage items and remove them on rerender.
+      const itype = itemTypeFor(r.item_id);
+      if (!itype || !INFLIGHT_ALLOWED_TYPES.has(itype)) {
+        typeFiltered++;
+        continue;
+      }
       const sell = sellMap.get(r.item_id);
       if (!sell || !Number.isFinite(sell.price)) continue;
       const netSell = sell.price * 0.95;
@@ -3151,6 +3191,7 @@
         'merged=' + merged.length + ' ranked=' + ranked.length,
         'sources: scout=' + scoutCount + ' yata=' + (merged.length - scoutCount),
         'snapshots: items=' + snapshotItems + ' samples=' + snapshotSamples,
+        'filter: typeFiltered=' + typeFiltered + ' (kept Drug/Flower/Plushie/Artifact)',
         'predict: slopeHits=' + slopeHits + ' slopeMisses=' + slopeMisses + ' restockOverrides=' + restockOverrides,
       ]);
     }
