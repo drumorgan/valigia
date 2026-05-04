@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.13.0
+// @version      0.13.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.13.0';
+  const SCRIPT_VERSION = '0.13.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2741,11 +2741,6 @@
         if (!arr) { arr = []; byItem.set(itemId, arr); }
         arr.push({ q: qty, t: t });
       }
-      if (DEBUG) {
-        let totalSamples = 0;
-        for (const arr of byItem.values()) totalSamples += arr.length;
-        log('yata_snapshots: rows=' + rows.length + ' items=' + byItem.size + ' samples=' + totalSamples);
-      }
       return byItem;
     } catch (e) {
       return new Map();
@@ -3139,10 +3134,25 @@
     const top = ranked.slice(0, INFLIGHT_MAX_ROWS);
 
     if (DEBUG) {
-      log('inflight: ' + destination + ' merged=' + merged.length +
-        ' ranked=' + ranked.length + ' slopeHits=' + slopeHits +
-        ' slopeMisses=' + slopeMisses + ' restockOverrides=' + restockOverrides +
-        ' remainingMins=' + remainingMins);
+      // Counts the userscript-side breakdown of where the strip's
+      // numbers come from. Visible on iPad as a fixed black panel
+      // (debugPanel renders to the page; PDA has no console).
+      let snapshotItems = 0;
+      let snapshotSamples = 0;
+      for (const arr of snapshotsMap.values()) {
+        snapshotItems++;
+        snapshotSamples += arr.length;
+      }
+      let scoutCount = 0;
+      for (const r of merged) if (r.source === 'scout') scoutCount++;
+      debugPanel([
+        'inflight ' + destination,
+        'remaining=' + (remainingMins != null ? Math.round(remainingMins) + 'm' : '?'),
+        'merged=' + merged.length + ' ranked=' + ranked.length,
+        'sources: scout=' + scoutCount + ' yata=' + (merged.length - scoutCount),
+        'snapshots: items=' + snapshotItems + ' samples=' + snapshotSamples,
+        'predict: slopeHits=' + slopeHits + ' slopeMisses=' + slopeMisses + ' restockOverrides=' + restockOverrides,
+      ]);
     }
 
     injectInFlightStyles();
