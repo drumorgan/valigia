@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.12.4
+// @version      0.13.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.12.4';
+  const SCRIPT_VERSION = '0.13.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -524,8 +524,12 @@
     if (!destination) return new Map();
     const cutoffIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const idList = itemIds.join(',');
+    // post_qty is the typical-shelf-after-restock count — needed by the
+    // in-flight strip's during-flight refill override (estimateRestockPlan
+    // below). The landed-overlay caller only uses .at and ignores postQty,
+    // so the change is backwards-compatible.
     const url = RESTOCK_EVENTS_URL +
-      '?select=item_id,restocked_at' +
+      '?select=item_id,restocked_at,post_qty' +
       '&item_id=in.(' + idList + ')' +
       '&destination=eq.' + encodeURIComponent(destination) +
       '&restocked_at=gte.' + encodeURIComponent(cutoffIso) +
@@ -545,12 +549,15 @@
       const rows = JSON.parse(res.responseText || '[]');
       const byItem = new Map();
       for (const r of rows) {
-        if (!r || typeof r.item_id !== 'number') continue;
+        if (!r) continue;
+        const itemId = Number(r.item_id);
+        if (!Number.isFinite(itemId)) continue;
         const t = new Date(r.restocked_at).getTime();
         if (!Number.isFinite(t)) continue;
-        let arr = byItem.get(r.item_id);
-        if (!arr) { arr = []; byItem.set(r.item_id, arr); }
-        arr.push(t);
+        const postQty = Number(r.post_qty);
+        let arr = byItem.get(itemId);
+        if (!arr) { arr = []; byItem.set(itemId, arr); }
+        arr.push({ at: t, postQty: Number.isFinite(postQty) ? postQty : null });
       }
       return byItem;
     } catch (e) {
@@ -562,9 +569,12 @@
   // central calculation in stock-forecast.js (estimateNextRestock) without
   // the confidence/MAD/MAE machinery — the overlay just needs one number.
   // Needs ≥2 events (one interval sample); returns null otherwise.
-  function estimateRefillMins(eventTimes, nowMs) {
-    if (!Array.isArray(eventTimes) || eventTimes.length < 2) return null;
-    const sorted = eventTimes.slice().sort(function (a, b) { return a - b; });
+  function estimateRefillMins(events, nowMs) {
+    if (!Array.isArray(events) || events.length < 2) return null;
+    const sorted = events.map(function (e) { return e.at; })
+      .filter(Number.isFinite)
+      .sort(function (a, b) { return a - b; });
+    if (sorted.length < 2) return null;
     const gaps = [];
     for (let i = 1; i < sorted.length; i++) {
       gaps.push((sorted[i] - sorted[i - 1]) / 60000);
@@ -575,6 +585,46 @@
     const lastAt = sorted[sorted.length - 1];
     const sinceLastMins = (nowMs - lastAt) / 60000;
     return Math.max(0, Math.round(median - sinceLastMins));
+  }
+
+  // Slim port of stock-forecast.js's estimateNextRestock — returns
+  // { timeToNextMins, typicalPostQty } so the in-flight strip can apply
+  // the same restock-during-flight override the web app does:
+  //
+  //   if depletion forecast hits 0 AND a restock is expected before
+  //   landing, replace 0 with typicalPostQty.
+  //
+  // Skips the confidence/MAD/MAE/uncertainty machinery — the strip only
+  // needs the median cadence + median post-restock qty.
+  function estimateRestockPlan(events, nowMs) {
+    if (!Array.isArray(events) || events.length < 2) return null;
+    const atTimes = events.map(function (e) { return e.at; })
+      .filter(Number.isFinite)
+      .sort(function (a, b) { return a - b; });
+    if (atTimes.length < 2) return null;
+    const gaps = [];
+    for (let i = 1; i < atTimes.length; i++) {
+      gaps.push((atTimes[i] - atTimes[i - 1]) / 60000);
+    }
+    const sortedGaps = gaps.slice().sort(function (a, b) { return a - b; });
+    const medianInterval = sortedGaps[Math.floor(sortedGaps.length / 2)];
+    if (!(medianInterval > 0)) return null;
+
+    const postQtys = events.map(function (e) { return e.postQty; })
+      .filter(Number.isFinite)
+      .sort(function (a, b) { return a - b; });
+    if (postQtys.length === 0) return null;
+    const typicalPostQty = postQtys[Math.floor(postQtys.length / 2)];
+
+    const lastRestockAt = atTimes[atTimes.length - 1];
+    const sinceLastMins = (nowMs - lastRestockAt) / 60000;
+    const timeToNextMins = Math.max(0, medianInterval - sinceLastMins);
+
+    return {
+      timeToNextMins: timeToNextMins,
+      typicalPostQty: typicalPostQty,
+      medianIntervalMins: medianInterval,
+    };
   }
 
   function formatRefillEta(mins) {
@@ -3010,17 +3060,20 @@
     }
 
     const itemIds = merged.map(function (r) { return r.item_id; });
-    // Sell prices for the buy→sell math, snapshots for the depletion-slope
-    // forecast. Both are pure reads; fire in parallel.
-    const [sellMap, snapshotsMap] = await Promise.all([
+    // Three parallel reads: sell prices for margin math, snapshots for
+    // depletion slope, restock events for during-flight refill modeling.
+    const [sellMap, snapshotsMap, restockMap] = await Promise.all([
       fetchSellPrices(itemIds),
       fetchYataSnapshots(itemIds, destination),
+      fetchRestockEvents(itemIds, destination),
     ]);
 
     const slots = getSlotCount();
     const ranked = [];
     let slopeHits = 0;
     let slopeMisses = 0;
+    let restockOverrides = 0;
+    const nowMs = Date.now();
     for (const r of merged) {
       const sell = sellMap.get(r.item_id);
       if (!sell || !Number.isFinite(sell.price)) continue;
@@ -3051,6 +3104,23 @@
           predicted = r.stock;
           slopeMisses++;
         }
+
+        // Restock-during-flight override (mirrors src/stock-forecast.js).
+        // If the depletion forecast bottomed out at 0 AND a restock is
+        // expected DURING this flight, replace 0 with the typical post-
+        // restock qty. Gated on timeToNextMins <= remainingMins so a
+        // restock that lands long after we'd be home doesn't inflate the
+        // arrival estimate (the Xanax-JPN failure mode in the web app's
+        // earlier history). predictedFromSlope flips true because this
+        // is a real signal-driven prediction, not a slope=0 guess.
+        if (predicted === 0) {
+          const plan = estimateRestockPlan(restockMap.get(r.item_id), nowMs);
+          if (plan && plan.timeToNextMins <= remainingMins && Number.isFinite(plan.typicalPostQty)) {
+            predicted = plan.typicalPostQty;
+            predictedFromSlope = true;
+            restockOverrides++;
+          }
+        }
       }
       ranked.push({
         item_id: r.item_id,
@@ -3071,7 +3141,8 @@
     if (DEBUG) {
       log('inflight: ' + destination + ' merged=' + merged.length +
         ' ranked=' + ranked.length + ' slopeHits=' + slopeHits +
-        ' slopeMisses=' + slopeMisses + ' remainingMins=' + remainingMins);
+        ' slopeMisses=' + slopeMisses + ' restockOverrides=' + restockOverrides +
+        ' remainingMins=' + remainingMins);
     }
 
     injectInFlightStyles();
