@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.12.1
+// @version      0.12.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.12.1';
+  const SCRIPT_VERSION = '0.12.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -72,6 +72,7 @@
   const SELL_PRICES_URL = SUPABASE_REST_URL + '/sell_prices';
   const BAZAAR_PRICES_URL = SUPABASE_REST_URL + '/bazaar_prices';
   const RESTOCK_EVENTS_URL = SUPABASE_REST_URL + '/restock_events';
+  const ABROAD_PRICES_URL = SUPABASE_REST_URL + '/abroad_prices';
 
   // Known Torn travel shop category names. Used as section anchors: the
   // parser looks for these in visible text to group items by shop.
@@ -2567,6 +2568,64 @@
     }
   }
 
+  // -- First-party scout scrapes (abroad_prices) -------------------------
+  // Mirrors the merge policy in src/log-sync.js: a Valigia Scout (any
+  // userscript user who's landed at the destination recently) writes
+  // freshly-scraped buy_price/stock into abroad_prices via the
+  // ingest-travel-shop edge function. Anything we observed within
+  // FIRST_PARTY_FRESH_MS overrides YATA — we trust our own scrape over a
+  // crowd-sourced reading that may be 10-30 min stale. Long-term goal:
+  // weaning the in-flight strip off YATA entirely once scout coverage is
+  // wide enough that every destination has a fresh first-party reading on
+  // every flight. This is the first step.
+  const FIRST_PARTY_FRESH_MS = 10 * 60 * 1000;
+  // Pad a couple minutes for clock skew when filtering server-side.
+  const FIRST_PARTY_QUERY_WINDOW_MS = 12 * 60 * 1000;
+
+  async function fetchAbroadScrapes(destination) {
+    if (!destination) return new Map();
+    const sinceIso = new Date(Date.now() - FIRST_PARTY_QUERY_WINDOW_MS).toISOString();
+    const url = ABROAD_PRICES_URL +
+      '?select=item_id,item_name,buy_price,stock,observed_at' +
+      '&destination=eq.' + encodeURIComponent(destination) +
+      '&observed_at=gte.' + encodeURIComponent(sinceIso) +
+      '&order=observed_at.desc';
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: url,
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) return new Map();
+      const rows = JSON.parse(res.responseText || '[]');
+      // Multiple scouts may land in the same window — keep the freshest
+      // observation per item_id. Rows arrived ordered desc by observed_at,
+      // so the first hit per item is already the freshest.
+      const freshest = new Map();
+      const cutoff = Date.now() - FIRST_PARTY_FRESH_MS;
+      for (const r of rows) {
+        if (!r || typeof r.item_id !== 'number') continue;
+        if (freshest.has(r.item_id)) continue;
+        const t = new Date(r.observed_at).getTime();
+        if (!Number.isFinite(t) || t < cutoff) continue;
+        freshest.set(r.item_id, {
+          item_id: r.item_id,
+          name: r.item_name || ('Item ' + r.item_id),
+          buy_price: Number(r.buy_price),
+          stock: Number.isFinite(Number(r.stock)) ? Number(r.stock) : null,
+          observedAt: t,
+        });
+      }
+      return freshest;
+    } catch (e) {
+      return new Map();
+    }
+  }
+
   // -- Depletion-slope fitter (slim port of stock-forecast.js) ------------
   // For each (item_id, destination) we want a per-minute steady-state
   // depletion rate so the strip can answer "how much will be left when I
@@ -2869,16 +2928,61 @@
     const existing = document.getElementById(INFLIGHT_BAR_ID);
     if (existing) existing.remove();
 
-    const yataRows = await fetchYataForDestination(destination);
-    if (yataRows.length === 0) {
-      log('inflight: no YATA rows for ' + destination);
+    // Fire YATA + first-party scrapes in parallel: YATA is the backbone
+    // (covers every destination), abroad_prices is fresher when we have it.
+    const [yataRows, scoutMap] = await Promise.all([
+      fetchYataForDestination(destination),
+      fetchAbroadScrapes(destination),
+    ]);
+
+    // Build the merged row list. Every YATA row is kept (so the strip
+    // covers items even when no scout has visited recently); when a fresh
+    // scout reading exists for the same item_id, its stock + buy_price
+    // override YATA's. We also surface scout-only items (e.g. a brand-new
+    // shelf YATA hasn't picked up yet) by appending them after the YATA pass.
+    const merged = [];
+    const seen = new Set();
+    for (const y of yataRows) {
+      const s = scoutMap.get(y.item_id);
+      if (s) {
+        merged.push({
+          item_id: y.item_id,
+          name: y.name || s.name,
+          buy_price: Number.isFinite(s.buy_price) ? s.buy_price : y.buy_price,
+          stock: s.stock != null ? s.stock : y.stock,
+          source: 'scout',
+        });
+      } else {
+        merged.push({
+          item_id: y.item_id,
+          name: y.name,
+          buy_price: y.buy_price,
+          stock: y.stock,
+          source: 'yata',
+        });
+      }
+      seen.add(y.item_id);
+    }
+    for (const [itemId, s] of scoutMap) {
+      if (seen.has(itemId)) continue;
+      if (!Number.isFinite(s.buy_price) || s.buy_price <= 0) continue;
+      merged.push({
+        item_id: itemId,
+        name: s.name,
+        buy_price: s.buy_price,
+        stock: s.stock,
+        source: 'scout',
+      });
+    }
+
+    if (merged.length === 0) {
+      log('inflight: no rows for ' + destination + ' (yata=0, scout=0)');
       return;
     }
 
-    const itemIds = yataRows.map(function (r) { return r.item_id; });
+    const itemIds = merged.map(function (r) { return r.item_id; });
     // Sell prices for the buy→sell math, snapshots for the depletion-slope
-    // forecast. Both are pure reads; fire in parallel so the strip pops in
-    // at max(sellLatency, snapshotLatency) instead of the sum.
+    // forecast. Both are pure reads; fire in parallel.
     const [sellMap, snapshotsMap] = await Promise.all([
       fetchSellPrices(itemIds),
       fetchYataSnapshots(itemIds, destination),
@@ -2886,7 +2990,7 @@
 
     const slots = getSlotCount();
     const ranked = [];
-    for (const r of yataRows) {
+    for (const r of merged) {
       const sell = sellMap.get(r.item_id);
       if (!sell || !Number.isFinite(sell.price)) continue;
       const netSell = sell.price * 0.95;
