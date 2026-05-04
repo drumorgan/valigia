@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.11.2
+// @version      0.11.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.11.2';
+  const SCRIPT_VERSION = '0.11.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -169,59 +169,59 @@
     return m ? m[1].trim() : null;
   }
 
-  // City names Torn shows during the in-flight banner ("Torn to Dubai...")
-  // mapped back to our canonical destination keys (matches YATA's COUNTRY_MAP
-  // values in src/log-sync.js). Most destinations Torn already labels with
-  // the country/region name; the one stable exception is UAE → "Dubai".
-  // Any unmapped value falls through as-is so a future Torn rename still has
-  // a chance of matching a YATA key.
+  // City names Torn shows in the flight banner, mapped back to our
+  // canonical destination keys (matching YATA's COUNTRY_MAP values in
+  // src/log-sync.js). Source: https://wiki.torn.com/wiki/Travel — the
+  // wiki's destination table lists the country name and the city Torn
+  // uses inside the banner. We map both forms because confirmed live
+  // observations show Torn writing "Torn to Tokyo" and "Torn to Dubai"
+  // (city), so the city is the form actually rendered; the country
+  // entries are kept as harmless fallbacks in case Torn ever changes.
+  // Note "Ciudad Juárez" — 'á' is escaped to keep the source pure
+  // ASCII for the FTP deploy.
   const CITY_TO_DESTINATION = {
-    // Confirmed live: Tokyo (Japan), Dubai (UAE).
-    // The rest are well-known Torn city names — harmless if Torn happens
-    // to use the country name instead, since both keys point to the same
-    // canonical destination.
-    'Dubai': 'UAE',
-    'UAE': 'UAE',
+    'Ciudad Ju\u00E1rez': 'Mexico',
     'Mexico': 'Mexico',
-    'Mexico City': 'Mexico',
+    'George Town': 'Caymans',
     'Cayman Islands': 'Caymans',
-    'Caymans': 'Caymans',
-    'Canada': 'Canada',
     'Toronto': 'Canada',
-    'Hawaii': 'Hawaii',
+    'Canada': 'Canada',
     'Honolulu': 'Hawaii',
-    'United Kingdom': 'UK',
-    'UK': 'UK',
+    'Hawaii': 'Hawaii',
     'London': 'UK',
-    'Argentina': 'Argentina',
+    'United Kingdom': 'UK',
     'Buenos Aires': 'Argentina',
-    'Switzerland': 'Switzerland',
+    'Argentina': 'Argentina',
     'Zurich': 'Switzerland',
-    'Japan': 'Japan',
+    'Switzerland': 'Switzerland',
     'Tokyo': 'Japan',
-    'China': 'China',
+    'Japan': 'Japan',
     'Beijing': 'China',
-    'Shanghai': 'China',
-    'South Africa': 'South Africa',
+    'China': 'China',
+    'Dubai': 'UAE',
+    'United Arab Emirates': 'UAE',
+    'UAE': 'UAE',
     'Johannesburg': 'South Africa',
-    'Cape Town': 'South Africa',
+    'South Africa': 'South Africa',
   };
 
   // In-flight banner reads: "Torn to {City}. Remaining Flight Time - HH:MM:SS"
   // (or the inverse "{City} to Torn..." when returning home — we only show
   // the strip on the outbound leg, since flying back the player can't shop
-  // at the origin anymore). Returns { destination, returning } or null.
+  // at the origin anymore). The city group matches anything except a period
+  // so accented chars (Ciudad Juárez) and multi-word names (Buenos Aires)
+  // both work. Returns { destination, returning } or null.
   function detectInFlight() {
     const body = document.body && document.body.innerText || '';
     if (!/Remaining Flight Time/i.test(body)) return null;
 
-    let m = body.match(/Torn to ([A-Z][A-Za-z ]+?)\.\s*Remaining Flight Time/);
+    let m = body.match(/Torn to ([^.]+?)\.\s*Remaining Flight Time/);
     if (m) {
       const city = m[1].trim();
       const dest = CITY_TO_DESTINATION[city] || city;
       return { destination: dest, returning: false };
     }
-    m = body.match(/([A-Z][A-Za-z ]+?) to Torn\.\s*Remaining Flight Time/);
+    m = body.match(/([^.]+?) to Torn\.\s*Remaining Flight Time/);
     if (m) {
       const city = m[1].trim();
       const dest = CITY_TO_DESTINATION[city] || city;
