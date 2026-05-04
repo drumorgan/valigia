@@ -496,6 +496,11 @@ async function startDashboard(playerId, playerName) {
   // Fire-and-forget: errors are swallowed inside both functions.
   prescanBazaarPool(playerId).then(() => findBestBazaarRun(playerId)).then(deal => {
     if (deal) setBestBazaarRun(deal);
+    // The pre-scan just wrote fresh rows to bazaar_prices; re-resolve
+    // watchlist matches so a player still on the Travel tab sees the
+    // newly-discovered hits in the card and the nav badge.
+    invalidateWatchlistCache();
+    refreshWatchlistSurfaces();
   });
 
   // Watchlist matches card + tab badge. The card lives above the controls,
@@ -674,6 +679,12 @@ async function switchTab(nextTab) {
     watchlistHost.hidden = false;
     watchlistHost.classList.add('tab-host--active');
     await renderWatchlistTab(watchlistHost);
+    // The tab body just re-fetched into matchesCache; sync the Travel-tab
+    // card and the nav badge to that fresh count. Without this, the badge
+    // stays pinned at whatever count refreshWatchlistSurfaces() captured
+    // on initial load — which often undercounts because the background
+    // bazaar pre-scan and sell_prices top-up hadn't completed yet.
+    refreshWatchlistSurfaces();
   } else if (nextTab === 'sell') {
     sellHost.hidden = false;
     sellHost.classList.add('tab-host--active');
