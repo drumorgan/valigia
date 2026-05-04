@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.12.3
+// @version      0.12.4
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.12.3';
+  const SCRIPT_VERSION = '0.12.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2637,7 +2637,15 @@
   // by restock boundaries (positive deltas), least-squares fit a slope per
   // segment, and weighted-median pool. Same algorithm as the web app's
   // pooledDepletionSlope(), just compressed.
-  const SNAPSHOTS_HISTORY_MINS = 120;
+  // Match the web app's HISTORY_WINDOW_MINS exactly (src/stock-forecast.js).
+  // Initial guess of 2h was wrong: yata_snapshots is dedup-on-write (only
+  // inserts when stock or buy_price changes), so a stable shelf can have
+  // < 2 samples over a 2-hour window even when it has dozens over 48
+  // hours. The web app's pooledDepletionSlope explicitly handles 48h of
+  // data — splits on restock boundaries and weighted-medians the
+  // per-segment slopes — so widening here doesn't dilute the fit, it
+  // just gives the fitter material to work with.
+  const SNAPSHOTS_HISTORY_MINS = 48 * 60;
   const YATA_SNAPSHOTS_URL = SUPABASE_REST_URL + '/yata_snapshots';
 
   async function fetchYataSnapshots(itemIds, destination) {
@@ -2651,7 +2659,7 @@
       '&destination=eq.' + encodeURIComponent(destination) +
       '&snapped_at=gte.' + encodeURIComponent(cutoffIso) +
       '&order=snapped_at.asc' +
-      '&limit=5000';
+      '&limit=20000';
     try {
       const res = await gmRequest({
         method: 'GET',
@@ -2903,8 +2911,10 @@
         stock.textContent = (r.stock != null ? r.stock.toLocaleString('en-US') : '?') + ' stock';
 
         // Predicted-arrival cell: green number when we have a slope and
-        // it leaves stock above 0; amber "may sell out" when it doesn't;
-        // muted dash when no history exists to fit a slope.
+        // Arrival cell: green when we have a real depletion fit, muted
+        // when we fell back to slope=0 (no observed depletion in the
+        // 2h window so the prediction equals current stock). Amber
+        // "may sell out" wins regardless of source when predicted hits 0.
         const arrival = document.createElement('span');
         arrival.className = 'vgl-if-arrival';
         if (r.predictedStock != null) {
@@ -2913,6 +2923,9 @@
             arrival.classList.add('vgl-if-arrival--empty');
           } else {
             arrival.textContent = '\u2248 ' + r.predictedStock.toLocaleString('en-US') + ' arr.';
+            if (!r.predictedFromSlope) {
+              arrival.classList.add('vgl-if-arrival--unknown');
+            }
           }
         } else {
           arrival.textContent = '\u2014 arr.';
@@ -3020,17 +3033,22 @@
       // slots only costs you 5 units' worth).
       const effectiveSlots = (r.stock != null && r.stock < slots) ? r.stock : slots;
       const runCost = r.buy_price * effectiveSlots;
-      // Predicted stock at arrival: current YATA reading minus the pooled
-      // depletion rate (units/min, ≤0) times remaining flight minutes.
-      // null when we have no slope or no remaining-time reading — UI
-      // falls back to showing current stock instead.
+      // Predicted stock at arrival = current_stock + slope * remainingMins,
+      // floor 0. Slope is units/min and always <= 0, so the formula
+      // works for the no-history case too: assume slope=0 (no observed
+      // depletion) and predicted = current_stock. Tracked separately as
+      // `predictedFromSlope` so the UI can mute that case visually
+      // (the user knows we're guessing rather than projecting).
       let predicted = null;
+      let predictedFromSlope = false;
       if (r.stock != null && Number.isFinite(remainingMins) && remainingMins > 0) {
         const slope = depletionRatePerMin(snapshotsMap.get(r.item_id));
         if (slope != null) {
           predicted = Math.max(0, Math.round(r.stock + slope * remainingMins));
+          predictedFromSlope = true;
           slopeHits++;
         } else {
+          predicted = r.stock;
           slopeMisses++;
         }
       }
@@ -3039,6 +3057,7 @@
         name: r.name,
         stock: r.stock,
         predictedStock: predicted,
+        predictedFromSlope: predictedFromSlope,
         buy_price: r.buy_price,
         runCost: runCost,
         netSell: netSell,
