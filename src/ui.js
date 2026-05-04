@@ -554,21 +554,32 @@ function renderStockCell(row) {
 
   if (now === 0 && restockConfident) {
     const mins = f.restockEtaMins;
-    const qty = Number(f.restockQty).toLocaleString('en-US');
+    // Use eta (post-refill, post-depletion) rather than restockQty
+    // (raw refill amount). The two diverge on popular shelves: a 1057
+    // refill that gets shaved by another 50 minutes of -21/min buyers
+    // before arrival lands closer to ~0. Showing the depleted number
+    // keeps this cell honest with the slot/profit math (which uses
+    // etaQty too). Hint label "post-refill" so the player knows the
+    // figure is conditional on the cadence holding.
+    const qty = Number(eta).toLocaleString('en-US');
     const minsLabel = mins === 0 ? 'imminent' : `~${mins}m`;
     const uncertLabel = f.restockUncertaintyMins != null && mins > 0
       ? ` ±${f.restockUncertaintyMins}m`
       : '';
-    const title = `Based on ${f.restockConfidence}-confidence restock cadence (${f.restockConfidence === 'high' ? 'tight' : 'rough'} interval)`;
-    etaLine = `<span class="stock-eta ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertLabel} → ${qty}</span>`;
+    const refillFull = Number(f.restockQty).toLocaleString('en-US');
+    const title = `Refills to ~${refillFull} but post-refill depletion at the steady-state slope leaves ~${qty} by your arrival. ${f.restockConfidence}-confidence cadence (${f.restockConfidence === 'high' ? 'tight' : 'rough'} interval).`;
+    etaLine = `<span class="stock-eta stock-eta--refill ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertLabel} → ${qty} <em class="stock-eta__tag">post-refill</em></span>`;
   } else if (eta > now && restockConfident) {
     const restockMins = f.restockEtaMins;
-    const qty = Number(f.restockQty).toLocaleString('en-US');
+    // Same post-refill semantics as the now=0 branch above — use eta
+    // (post-refill, post-depletion) rather than the raw refill amount.
+    const qty = Number(eta).toLocaleString('en-US');
     const emptyClause = f.timeToEmptyMins != null
       ? `empty ~${f.timeToEmptyMins}m · `
       : '';
-    const title = `Slope depletes the shelf mid-flight; restock cadence (${f.restockConfidence} conf) refills it to ~${qty} before you land`;
-    etaLine = `<span class="stock-eta stock-eta--refill ${restockConfClass}" title="${title}">${emptyClause}restock ~${restockMins}m → ${qty}</span>`;
+    const refillFull = Number(f.restockQty).toLocaleString('en-US');
+    const title = `Slope depletes the shelf mid-flight; restock cadence (${f.restockConfidence} conf) refills to ~${refillFull}, post-refill depletion leaves ~${qty} by arrival.`;
+    etaLine = `<span class="stock-eta stock-eta--refill ${restockConfClass}" title="${title}">${emptyClause}restock ~${restockMins}m → ${qty} <em class="stock-eta__tag">post-refill</em></span>`;
   } else if (now === 0 && canShowLeaveIn) {
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const uncertLabel = uncertainty > 0 ? ` ±${uncertainty}m` : '';
