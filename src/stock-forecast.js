@@ -648,6 +648,7 @@ function pooledDepletionSlope(segments) {
  * @returns {{
  *   nowQty: number|null,
  *   etaQty: number|null,
+ *   etaPostRefill: boolean,                  // true when etaQty depends on a restock event landing during this flight. UI may add a "post-refill" indicator so the player knows the prediction is conditional on the cadence holding.
  *   confidence: 'none'|'low'|'ok',          // depletion-slope fit confidence
  *   hasHistory: boolean,
  *   timeToEmptyMins: number|null,           // null if not depleting, > 24h, or no slope
@@ -736,6 +737,11 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     return {
       nowQty,
       etaQty: eta,
+      // No depletion slope on this branch (no snapshots), so a
+      // post-refill projection here is just bare typicalPostQty —
+      // unmarked. Marking it true would imply we modeled depletion
+      // when we didn't.
+      etaPostRefill: false,
       confidence: nowQty != null ? 'low' : 'none',
       hasHistory: restockCoversEmptyShelf || hasActionableCadence,
       timeToEmptyMins: null,
@@ -777,8 +783,9 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     // the refill; otherwise keep etaQty pinned to nowQty and mark low
     // confidence.
     const eta = (nowQty === 0 && restockEtaMins != null) ? restockQty : nowQty;
+    const etaPostRefill = (nowQty === 0 && restockEtaMins != null);
     return {
-      nowQty, etaQty: eta, confidence: 'low', hasHistory: true,
+      nowQty, etaQty: eta, etaPostRefill, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
       depletionPerMin: null,
       nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockIntervalMins, cadenceMAE, restockEventCount,
@@ -807,13 +814,27 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
 
   // Restock override: if the depletion forecast bottomed out at 0 AND a
   // restock is expected DURING THIS FLIGHT, replace the empty shelf with
-  // the typical post-restock quantity. Gated on `restockEtaMins` (during-
-  // flight) rather than `restockQty` (un-gated, set whenever cadence data
-  // exists) — otherwise we'd inflate arrival-time stock with a restock
-  // that won't land until long after the traveler is home. This is the
-  // classic Xanax-JPN failure mode at work on the depletion branch too.
+  // the typical post-restock quantity, then drain it by the steady-state
+  // depletion slope for the time between the restock event and arrival.
+  // Without the post-restock depletion the projection is wildly
+  // optimistic on popular shelves — Xanax-JPN sees ~21 units/min of
+  // buyers, so a 1057-unit refill at the 1-hour mark of a 4-hour flight
+  // realistically lands closer to empty than full.
+  //
+  // Gated on `restockEtaMins` (during-flight) rather than `restockQty`
+  // (un-gated, set whenever cadence data exists) — otherwise we'd
+  // inflate arrival-time stock with a restock that won't land until long
+  // after the traveler is home.
+  //
+  // Limitation: models only the *next* restock event. A shelf with a
+  // 1-hour cadence on a 4-hour flight can restock 3-4 times during
+  // flight, which we don't track. Single-event-plus-depletion is still
+  // strictly more accurate than no post-restock depletion.
+  let etaPostRefill = false;
   if (etaQty === 0 && restockEtaMins != null) {
-    etaQty = restockQty;
+    const minsAfterRestock = arrivalMins - restockEtaMins;
+    etaQty = Math.max(0, Math.round(restockQty + slope * minsAfterRestock));
+    etaPostRefill = true;
   }
 
   // Confidence tiers off the pooled totals. Observing the shelf through
@@ -828,7 +849,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   }
 
   return {
-    nowQty, etaQty, confidence, hasHistory: true,
+    nowQty, etaQty, etaPostRefill, confidence, hasHistory: true,
     timeToEmptyMins,
     depletionPerMin: slope,
     nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockIntervalMins, cadenceMAE, restockEventCount,

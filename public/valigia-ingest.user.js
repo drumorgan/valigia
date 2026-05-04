@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.14.0
+// @version      0.15.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.14.0';
+  const SCRIPT_VERSION = '0.15.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2993,7 +2993,11 @@
             arrival.textContent = 'may sell out';
             arrival.classList.add('vgl-if-arrival--empty');
           } else {
-            arrival.textContent = '\u2248 ' + r.predictedStock.toLocaleString('en-US') + ' arr.';
+            // "post-refill" suffix when the prediction depends on a
+            // restock event landing during the flight \u2014 the player
+            // should know they're betting on the cadence holding.
+            const suffix = r.postRefill ? ' post-refill' : ' arr.';
+            arrival.textContent = '\u2248 ' + r.predictedStock.toLocaleString('en-US') + suffix;
             if (!r.predictedFromSlope) {
               arrival.classList.add('vgl-if-arrival--unknown');
             }
@@ -3115,54 +3119,82 @@
       const netSell = sell.price * 0.95;
       const margin = netSell - r.buy_price;
       if (margin <= 0) continue;
-      if (r.stock != null && r.stock <= 0) continue;
-      // Run cost = unit price × player's slot count, capped by current
-      // stock when stock is the limiting factor (a 5-stock shelf with 29
-      // slots only costs you 5 units' worth).
-      const effectiveSlots = (r.stock != null && r.stock < slots) ? r.stock : slots;
-      const runCost = r.buy_price * effectiveSlots;
-      // Predicted stock at arrival = current_stock + slope * remainingMins,
-      // floor 0. Slope is units/min and always <= 0, so the formula
-      // works for the no-history case too: assume slope=0 (no observed
-      // depletion) and predicted = current_stock. Tracked separately as
-      // `predictedFromSlope` so the UI can mute that case visually
-      // (the user knows we're guessing rather than projecting).
+      // Don't early-drop stock=0 rows: they're exactly the case where
+      // the restock-during-flight model wins. Drop happens later if the
+      // predictor can't produce a positive arrival estimate.
+      const stockNow = r.stock;
+
+      // Predicted stock at arrival. Three branches:
+      //   A. stock > 0 with depletion slope: stock + slope * remainingMins.
+      //      If slope drives it to 0 AND a restock is due during flight,
+      //      apply the post-restock branch below to replace 0.
+      //   B. stock == 0: rely entirely on the restock-during-flight
+      //      branch — typicalPostQty + slope * (remainingMins -
+      //      timeToNext). When neither slope nor restock apply, drop.
+      //   C. stock > 0 with no slope data: assume slope=0 (predicted =
+      //      stock now). Muted in the UI to flag the guess.
       let predicted = null;
       let predictedFromSlope = false;
-      if (r.stock != null && Number.isFinite(remainingMins) && remainingMins > 0) {
+      let postRefill = false;
+      if (Number.isFinite(remainingMins) && remainingMins > 0) {
         const slope = depletionRatePerMin(snapshotsMap.get(r.item_id));
-        if (slope != null) {
-          predicted = Math.max(0, Math.round(r.stock + slope * remainingMins));
-          predictedFromSlope = true;
-          slopeHits++;
-        } else {
-          predicted = r.stock;
-          slopeMisses++;
-        }
+        const plan = estimateRestockPlan(restockMap.get(r.item_id), nowMs);
+        const restockDuringFlight = !!(plan &&
+          plan.timeToNextMins <= remainingMins &&
+          Number.isFinite(plan.typicalPostQty));
 
-        // Restock-during-flight override (mirrors src/stock-forecast.js).
-        // If the depletion forecast bottomed out at 0 AND a restock is
-        // expected DURING this flight, replace 0 with the typical post-
-        // restock qty. Gated on timeToNextMins <= remainingMins so a
-        // restock that lands long after we'd be home doesn't inflate the
-        // arrival estimate (the Xanax-JPN failure mode in the web app's
-        // earlier history). predictedFromSlope flips true because this
-        // is a real signal-driven prediction, not a slope=0 guess.
-        if (predicted === 0) {
-          const plan = estimateRestockPlan(restockMap.get(r.item_id), nowMs);
-          if (plan && plan.timeToNextMins <= remainingMins && Number.isFinite(plan.typicalPostQty)) {
-            predicted = plan.typicalPostQty;
+        if (stockNow != null && stockNow > 0) {
+          if (slope != null) {
+            predicted = Math.max(0, Math.round(stockNow + slope * remainingMins));
             predictedFromSlope = true;
+            slopeHits++;
+          } else {
+            predicted = stockNow;
+            slopeMisses++;
+          }
+          // Empty-shelf override: if depletion bottoms out at 0 and a
+          // restock is due, project post-restock depletion. Same math as
+          // branch B below.
+          if (predicted === 0 && restockDuringFlight) {
+            const slopeForProj = slope != null ? slope : 0;
+            const timeAfterRestock = remainingMins - plan.timeToNextMins;
+            predicted = Math.max(0, Math.round(
+              plan.typicalPostQty + slopeForProj * timeAfterRestock
+            ));
+            predictedFromSlope = true;
+            postRefill = true;
             restockOverrides++;
           }
+        } else if (stockNow === 0 && restockDuringFlight) {
+          // Branch B — currently empty, refilling during flight. Apply
+          // post-restock depletion using the steady-state slope (or 0
+          // when we have no slope data).
+          const slopeForProj = slope != null ? slope : 0;
+          const timeAfterRestock = remainingMins - plan.timeToNextMins;
+          predicted = Math.max(0, Math.round(
+            plan.typicalPostQty + slopeForProj * timeAfterRestock
+          ));
+          predictedFromSlope = true;
+          postRefill = true;
+          restockOverrides++;
         }
       }
+
+      // Drop rows with no actionable arrival count: stock=0 now AND no
+      // restock predicted during flight. Nothing to buy.
+      if (predicted == null || predicted <= 0) continue;
+      // Run cost: unit price × min(predicted, slots). Use predicted
+      // rather than current stock so a refilling shelf shows real
+      // expected spend, not $0 because it's empty right now.
+      const effectiveSlots = predicted < slots ? predicted : slots;
+      const runCost = r.buy_price * effectiveSlots;
       ranked.push({
         item_id: r.item_id,
         name: r.name,
         stock: r.stock,
         predictedStock: predicted,
         predictedFromSlope: predictedFromSlope,
+        postRefill: postRefill,
         buy_price: r.buy_price,
         runCost: runCost,
         netSell: netSell,
