@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.15.0
+// @version      0.15.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.15.0';
+  const SCRIPT_VERSION = '0.15.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -347,8 +347,14 @@
   }
 
   // -- Network -------------------------------------------------------------
+  // Tries three transports in order:
+  //   1. GM_xmlhttpRequest (classic Tampermonkey / older PDA builds)
+  //   2. GM.xmlHttpRequest (newer Greasemonkey-style)
+  //   3. PDA_httpGet / PDA_httpPost (Torn PDA's native cross-origin helpers,
+  //      promise-returning, sidestep the webview's CORS the same way GM_*
+  //      does). Some PDA builds don't expose GM_xmlhttpRequest at all, so
+  //      this fallback is what keeps the script alive there.
   function gmRequest(opts) {
-    // Support both GM_xmlhttpRequest (classic) and GM.xmlHttpRequest (promise-ish).
     return new Promise(function (resolve, reject) {
       const base = {
         method: opts.method || 'POST',
@@ -362,11 +368,54 @@
       };
       if (typeof GM_xmlhttpRequest === 'function') {
         GM_xmlhttpRequest(base);
-      } else if (typeof GM !== 'undefined' && GM.xmlHttpRequest) {
-        GM.xmlHttpRequest(base);
-      } else {
-        reject(new Error('No GM_xmlhttpRequest available - install as userscript in PDA'));
+        return;
       }
+      if (typeof GM !== 'undefined' && GM.xmlHttpRequest) {
+        GM.xmlHttpRequest(base);
+        return;
+      }
+      const method = (opts.method || 'POST').toUpperCase();
+      let pdaCall = null;
+      try {
+        if (method === 'GET' && typeof PDA_httpGet === 'function') {
+          // Newer PDA accepts (url, headers); older accepts (url) only.
+          // Pass headers when present and let PDA ignore the extra arg
+          // on builds that don't read it.
+          pdaCall = PDA_httpGet(opts.url, opts.headers || {});
+        } else if (method === 'POST' && typeof PDA_httpPost === 'function') {
+          pdaCall = PDA_httpPost(opts.url, opts.headers || {}, opts.data || '');
+        }
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      if (pdaCall && typeof pdaCall.then === 'function') {
+        const timer = setTimeout(function () {
+          reject(new Error('timeout'));
+        }, 15000);
+        pdaCall.then(function (res) {
+          clearTimeout(timer);
+          // PDA_httpGet/Post resolve with { status, responseText } on
+          // current builds. Some older builds resolved with a raw string —
+          // normalise both shapes so callers can read .status/.responseText.
+          let status = 200;
+          let body = '';
+          if (res && typeof res === 'object') {
+            if (res.status != null) status = res.status;
+            if (res.responseText != null) body = res.responseText;
+            else if (typeof res.body === 'string') body = res.body;
+            else if (typeof res.data === 'string') body = res.data;
+          } else if (typeof res === 'string') {
+            body = res;
+          }
+          resolve({ status: status, responseText: body });
+        }).catch(function (err) {
+          clearTimeout(timer);
+          reject(err);
+        });
+        return;
+      }
+      reject(new Error('No GM_xmlhttpRequest available - install as userscript in PDA'));
     });
   }
 
