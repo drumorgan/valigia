@@ -64,13 +64,6 @@ const checkedItems = new Set();  // itemIds where sell price has been looked up
 // Drives the category-filter "refresh anything >5min old" hook.
 const sellPriceFetchedAt = new Map(); // itemId → ms since epoch
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at, quantity }
-let bestBazaarRun = null;        // Optional verified bazaar deal, set by main.js
-
-// A bazaar purchase + re-list is a short, one-shot task. 5 min is a
-// defensible nominal duration: click bazaar link → buy → go to item market
-// → list. This is what we divide absolute profit by to compare against a
-// travel run's profit/hr.
-const BAZAAR_NOMINAL_TRANSACTION_MINS = 5;
 
 // ── Column definitions for sortable headers ───────────────────
 // Trimmed from 11 to 8: Margin $ / Run Cost / Flight folded into adjacent
@@ -290,16 +283,6 @@ export function setPlayerTravel(slots, airstrip) {
  */
 export function setKnownItems(rows) {
   knownItems = rows;
-}
-
-/**
- * Set a verified bazaar-deal candidate from main.js's background search.
- * When set, the "Best Run Right Now" card will compare this against the
- * top travel run by profit/hr and show whichever wins. Pass null to clear.
- */
-export function setBestBazaarRun(deal) {
-  bestBazaarRun = deal;
-  renderTable();
 }
 
 /**
@@ -841,65 +824,11 @@ function buildRows() {
 }
 
 /**
- * Normalize a verified bazaar deal into a "run" we can rank next to travel
- * runs. Uses a nominal transaction time + category sell-time so profit/hr
- * is comparable to a travel run under the same liquidity assumptions.
- * Returns null if the deal can't turn a profit.
- *
- * Quantity = `deal.bazaarQty`, NOT travel slot count. A bazaar purchase is
- * one in-city transaction — no flight, no cargo cap, so clamping by
- * `slotCount` would arbitrarily under-count a 100-unit listing as a 29-unit
- * one and make the headline lie.
- *
- * Why sell-time matters here too: before this was added, a $10M armour
- * bazaar "steal" would dominate the Best Run card because the math assumed
- * a flat 5-minute cycle. But you still have to *sell* the armour afterwards
- * on the same illiquid market. Folding in the same per-category sell-time
- * the travel rows use means armour bazaar deals get the same ~20x haircut
- * that armour travel runs do.
- *
- * In 'ideal' realism mode we skip the sell-time, matching the travel side.
- */
-function buildBazaarRun(deal) {
-  if (!deal) return null;
-  const qty = deal.bazaarQty;
-  if (!qty || qty <= 0) return null;
-
-  const profitPerRun = deal.savings * qty; // savings is already post-5%-fee
-  if (profitPerRun <= 0) return null;
-
-  const category = getItemTypeById(deal.itemId);
-  const sellTimeMins = realismMode === 'ideal' ? 0 : getSellTimeMins(category);
-  const cycleMins = BAZAAR_NOMINAL_TRANSACTION_MINS + sellTimeMins;
-  const profitPerHour = (profitPerRun / cycleMins) * 60;
-
-  return {
-    type: 'bazaar',
-    name: deal.itemName,
-    category,
-    bazaarOwnerId: deal.bazaarOwnerId,
-    bazaarPrice: deal.bazaarPrice,
-    marketPrice: deal.marketPrice,
-    savingsPerUnit: deal.savings,
-    metrics: {
-      profitPerRun,
-      profitPerHour,
-      marginPct: deal.savingsPct,
-      quantity: qty,
-      // roundTripMins stays as the bazaar transaction time alone so the UI
-      // can still say "5 min transaction" without the sell-time padding.
-      // cycleMins is the full number used for profit/hr.
-      roundTripMins: BAZAAR_NOMINAL_TRANSACTION_MINS,
-      sellTimeMins,
-      cycleMins,
-    },
-  };
-}
-
-/**
- * Pick the single best actionable run (travel OR bazaar) and render a
- * summary card above the table. Both are normalized to profit/hr for
- * comparison; the winner is shown in its own visual variant.
+ * Pick the single best actionable travel run and render a summary card
+ * above the table. Bazaar deals don't compete here — their profit/hr
+ * math (`bazaarQty / 5min`) inflates wildly at large listing sizes and
+ * the player can't realise it in practice. Bazaar opportunities live in
+ * the Watchlist matches card and the bazaar scan UI.
  */
 // ── Leave-in-X inline constants ──────────────────────────────
 // Shared between the Stock-cell render (per-row leave-in copy) and any
@@ -996,30 +925,12 @@ function renderBestRunCard(rows) {
       )[0]
     : null;
 
-  // Candidate 2: verified bazaar deal from main.js background search.
-  const bestBazaar = buildBazaarRun(bestBazaarRun);
-
-  // Pick the winner by profit/hr. A bazaar deal almost always wins on rate
-  // (short nominal time) — that's correct. It's a "grab it now" opportunity.
-  let winner = null;
-  if (bestTravel && bestBazaar) {
-    winner = bestBazaar.metrics.profitPerHour > bestTravel.metrics.profitPerHour
-      ? bestBazaar
-      : bestTravel;
-  } else {
-    winner = bestBazaar || bestTravel;
-  }
-
-  if (!winner) {
+  if (!bestTravel) {
     container.innerHTML = '';
     return;
   }
 
-  if (winner.type === 'bazaar') {
-    renderBazaarBestRun(container, winner);
-  } else {
-    renderTravelBestRun(container, winner);
-  }
+  renderTravelBestRun(container, bestTravel);
 }
 
 function renderTravelBestRun(container, best) {
@@ -1050,66 +961,6 @@ function renderTravelBestRun(container, best) {
       </div>
       <a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener"
          class="best-run-cta">Travel &rarr;</a>
-    </div>
-  `;
-}
-
-function renderBazaarBestRun(container, best) {
-  const bazaarUrl = `https://www.torn.com/bazaar.php?userId=${best.bazaarOwnerId}#/`;
-
-  // Liquidity badge — same visual language as the table rows, so the
-  // user can see at a glance whether this bazaar deal is on a fast-moving
-  // item (drugs) or one that's going to sit on their market for an hour.
-  // In Ideal mode we hide it since sell-time is zero by design.
-  const badge = realismMode === 'ideal' ? null : getLiquidityBadge(best.category);
-  const liquidityNote = badge
-    ? `<span class="best-run-sep">&middot;</span><span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>`
-    : '';
-
-  const priceLine = best.bazaarPrice != null && best.marketPrice != null
-    ? `<div class="best-run-prices">
-         <span class="best-run-price-pair">
-           <span class="best-run-price-label">Bazaar</span>
-           <span class="best-run-price-value">${formatMoney(best.bazaarPrice)}</span>
-         </span>
-         <span class="best-run-sep">&middot;</span>
-         <span class="best-run-price-pair">
-           <span class="best-run-price-label">Market</span>
-           <span class="best-run-price-value">${formatMoney(best.marketPrice)}</span>
-         </span>
-         <span class="best-run-sep">&middot;</span>
-         <span class="best-run-price-pair">
-           <span class="best-run-price-label">Save</span>
-           <span class="best-run-price-value">${formatMoney(best.savingsPerUnit)}/unit &times; ${best.metrics.quantity}</span>
-         </span>
-       </div>`
-    : '';
-
-  container.innerHTML = `
-    <div class="best-run-card best-run-card--bazaar">
-      <div class="best-run-label">
-        Best Run Right Now
-        <span class="best-run-badge" title="Live-verified bazaar listing — act fast">&#x26A1; Bazaar</span>
-      </div>
-      <div class="best-run-body">
-        <div class="best-run-item">
-          <span class="best-run-name">${best.name}</span>
-          <span class="best-run-dest">from bazaar</span>
-        </div>
-        <div class="best-run-rate">
-          <span class="best-run-rate-value">${formatMoney(best.metrics.profitPerHour)}</span>
-          <span class="best-run-rate-unit">/hr</span>
-        </div>
-      </div>
-      ${priceLine}
-      <div class="best-run-meta">
-        <span>${formatMoney(best.metrics.profitPerRun)} total profit</span>
-        <span class="best-run-sep">&middot;</span>
-        <span>${formatMarginPctCompact(best.metrics.marginPct)} off market</span>
-        ${liquidityNote}
-      </div>
-      <a href="${bazaarUrl}" target="_blank" rel="noopener"
-         class="best-run-cta best-run-cta--bazaar">Go to Bazaar &rarr;</a>
     </div>
   `;
 }

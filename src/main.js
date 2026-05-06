@@ -7,7 +7,7 @@ import { fetchAbroadPrices } from './log-sync.js';
 import { fetchAllSellPrices, refreshSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
-import { prescanBazaarPool, findBestBazaarRun } from './bazaar-scanner.js';
+import { prescanBazaarPool } from './bazaar-scanner.js';
 import { recordSnapshots, loadForecastData } from './stock-forecast.js';
 import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
@@ -21,7 +21,7 @@ import { initStatsPanel } from './stats-panel.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
-  setBestBazaarRun, getStaleItemIdsForCategory, getTopTravelCandidateIds
+  getStaleItemIdsForCategory, getTopTravelCandidateIds
 } from './ui.js';
 
 // Category chip clicks top up any sell prices in that category older than
@@ -489,13 +489,10 @@ async function startDashboard(playerId, playerName) {
   renderScanButton(bazaarContainer, playerId);
   renderCommunityStats(bazaarContainer);
 
-  // Silently pre-warm the bazaar pool in the background, THEN try to find
-  // a verified bazaar deal good enough to claim the "Best Run Right Now"
-  // slot. Running sequentially (not parallel) means the best-run search
-  // sees the freshest pool data that the pre-scan just wrote.
-  // Fire-and-forget: errors are swallowed inside both functions.
-  prescanBazaarPool(playerId).then(() => findBestBazaarRun(playerId)).then(deal => {
-    if (deal) setBestBazaarRun(deal);
+  // Silently pre-warm the bazaar pool in the background. Feeds the
+  // Watchlist matches card and the bazaar scan UI; the Best Run card is
+  // travel-only and ignores this pool. Fire-and-forget: errors swallowed.
+  prescanBazaarPool(playerId).then(() => {
     // The pre-scan just wrote fresh rows to bazaar_prices; re-resolve
     // watchlist matches so a player still on the Travel tab sees the
     // newly-discovered hits in the card and the nav badge.
