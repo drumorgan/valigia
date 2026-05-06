@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.16.0
+// @version      0.16.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.16.0';
+  const SCRIPT_VERSION = '0.16.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2125,6 +2125,7 @@
       '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-arrow { color: #8a8fa0; }',
       '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-mkt { color: #e8c84a; font-weight: 700; white-space: nowrap; }',
       '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-gain { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-label { color: #8a8fa0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 3px; }',
       // Narrow viewports: stack so nothing clips.
       '@media (max-width: 560px) {',
       '  #' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-row {',
@@ -2174,15 +2175,27 @@
 
       const baz = document.createElement('span');
       baz.className = 'vgl-bd-baz';
-      baz.textContent = formatMoneyCompact(d.bazaarPrice);
+      const bazLabel = document.createElement('span');
+      bazLabel.className = 'vgl-bd-label';
+      bazLabel.textContent = 'Bazaar';
+      baz.appendChild(bazLabel);
+      baz.appendChild(document.createTextNode(formatMoneyCompact(d.bazaarPrice)));
 
       const arrow = document.createElement('span');
       arrow.className = 'vgl-bd-arrow';
       arrow.textContent = '\u2192';
 
+      // Show the gross Item Market listing price so "Market $X" matches
+      // what the player would actually list at. The 5% fee is already
+      // applied inside d.profit / d.profitPct, so the gain column tells
+      // the truthful net story.
       const mkt = document.createElement('span');
       mkt.className = 'vgl-bd-mkt';
-      mkt.textContent = formatMoneyCompact(d.netSell);
+      const mktLabel = document.createElement('span');
+      mktLabel.className = 'vgl-bd-label';
+      mktLabel.textContent = 'Market';
+      mkt.appendChild(mktLabel);
+      mkt.appendChild(document.createTextNode(formatMoneyCompact(d.marketPrice)));
 
       const gain = document.createElement('span');
       gain.className = 'vgl-bd-gain';
@@ -2251,6 +2264,7 @@
         item_id: Number(it.item_id),
         name: itemNameFor(it.item_id),
         bazaarPrice: bazaarPrice,
+        marketPrice: marketPrice,
         netSell: netSell,
         profit: profit,
         profitPct: (profit / bazaarPrice) * 100,
