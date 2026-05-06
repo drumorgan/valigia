@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.15.1
+// @version      0.15.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.15.1';
+  const SCRIPT_VERSION = '0.15.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -283,6 +283,66 @@
     );
   }
 
+  // -- Parse-mismatch capture (TEMPORARY DIAGNOSTIC) -----------------------
+  // The travel-shop overlay badged Flail in UK as BEST when the real run
+  // is a multi-million-dollar loss — the scraper read $8,000,000 as ~$800
+  // because some other smaller `$N` token in the row was matched first.
+  // This block collects rows where the first-`$` parse and the largest-`$`
+  // parse disagree, and renderParseMismatchPanel() draws an unconditional
+  // amber panel with the raw outerHTML so we can lock the parser onto the
+  // right element. Remove the buffer, captureParseMismatch(), the
+  // renderParseMismatchPanel() call in runTravel(), and the capture block
+  // inside parseItemRow once the parser is hardened.
+  const parseMismatches = [];
+  const MAX_MISMATCH_CAPTURES = 5;
+
+  function captureParseMismatch(entry) {
+    if (parseMismatches.length >= MAX_MISMATCH_CAPTURES) return;
+    for (const m of parseMismatches) {
+      if (m.item_id === entry.item_id && m.firstDollar === entry.firstDollar) return;
+    }
+    parseMismatches.push(entry);
+  }
+
+  function renderParseMismatchPanel() {
+    if (parseMismatches.length === 0) return;
+    const existing = document.getElementById('valigia-parse-mismatch-panel');
+    if (existing) existing.remove();
+    const lines = [
+      'VALIGIA PARSER MISMATCH — please screenshot',
+      'v' + SCRIPT_VERSION + ' · ' + parseMismatches.length + ' row(s)',
+      '',
+    ];
+    for (const m of parseMismatches) {
+      lines.push('— ' + m.name + ' (id=' + m.item_id + ')');
+      lines.push('  first-$ = ' + m.firstDollar);
+      lines.push('  largest-$ = ' + m.largestDollar);
+      lines.push('  HTML: ' + m.htmlSnippet);
+      lines.push('');
+    }
+    const el = document.createElement('pre');
+    el.id = 'valigia-parse-mismatch-panel';
+    el.textContent = lines.join('\n');
+    Object.assign(el.style, {
+      position: 'fixed',
+      top: '60px',
+      left: '10px',
+      maxWidth: '45vw',
+      maxHeight: '70vh',
+      overflow: 'auto',
+      background: 'rgba(20,12,0,.92)',
+      color: '#ffd27a',
+      border: '2px solid #e8824a',
+      padding: '10px',
+      borderRadius: '6px',
+      zIndex: '999998',
+      font: '11px/1.35 ui-monospace, monospace',
+      whiteSpace: 'pre-wrap',
+      margin: '0',
+    });
+    document.body.appendChild(el);
+  }
+
   function parseItemRow(img) {
     const src = img.getAttribute('src') || '';
     const idMatch = src.match(/\/images\/items\/(\d+)\//);
@@ -309,6 +369,32 @@
     // Example row text: "Hammer\n1,000\n$25" or variations with tabs/spaces.
     const priceMatch = rowText.match(/\$\s*([\d,\.]+)/);
     const buy_price = priceMatch ? parseMoney(priceMatch[1]) : NaN;
+
+    // TEMP DIAGNOSTIC (see parseMismatches comment above): if the largest
+    // `$N` token in the row disagrees with the first one we picked, capture
+    // the row's HTML so we can fix the parser from real data.
+    const allDollarTokens = rowText.match(/\$\s*[\d,\.]+/g) || [];
+    let largestDollar = NaN;
+    for (const tok of allDollarTokens) {
+      const n = parseMoney(tok);
+      if (Number.isFinite(n) && (Number.isNaN(largestDollar) || n > largestDollar)) {
+        largestDollar = n;
+      }
+    }
+    if (
+      Number.isFinite(buy_price) &&
+      Number.isFinite(largestDollar) &&
+      buy_price !== largestDollar
+    ) {
+      const html = (row.outerHTML || '').replace(/\s+/g, ' ').trim();
+      captureParseMismatch({
+        name: altName || (rowText.split('\n')[0] || '').trim() || 'unknown',
+        item_id: item_id,
+        firstDollar: buy_price,
+        largestDollar: largestDollar,
+        htmlSnippet: html.length > 600 ? html.slice(0, 600) + '…' : html,
+      });
+    }
 
     // For stock, strip out the price portion first so its digits don't leak.
     const textWithoutPrice = rowText.replace(/\$\s*[\d,\.]+/g, ' ');
@@ -942,6 +1028,12 @@
       if (!r.metrics) continue;
       if (r.metrics.marginPerItem <= 0) continue;
       if (r.stock != null && r.stock <= 0) continue;
+      // Sanity cap: a real Torn travel margin doesn't run past +500% of
+      // the buy price. Anything bigger is a parse error (Flail in UK
+      // showed +831,249% when buy was misread), so refuse to crown a
+      // bogus winner. The numbers still render in the overlay so the
+      // player can see something is off.
+      if (r.metrics.marginPct > 500) continue;
       if (!best || r.metrics.marginPerItem > best.metrics.marginPerItem) best = r;
     }
 
@@ -3289,6 +3381,10 @@
 
   // -- Main ----------------------------------------------------------------
   async function runTravel() {
+    // TEMP DIAGNOSTIC: clear any prior parse-mismatch captures so a fresh
+    // scrape replaces a stale panel.
+    parseMismatches.length = 0;
+
     // In-flight branch: no shop DOM to scrape, but we can preview what's
     // available at the destination so the flight isn't dead time. Outbound
     // legs only; on the return leg the player can't shop anymore.
@@ -3327,6 +3423,12 @@
       if (DEBUG) debugPanel(['destination=' + destination, 'No items found.']);
       return;
     }
+
+    // TEMP DIAGNOSTIC: render any captured parse mismatches as soon as
+    // we have rows to show. Fires unconditionally (no DEBUG flag needed)
+    // so the user can screenshot it and we can fix the parser from real
+    // DOM. Remove this call once parser is hardened.
+    renderParseMismatchPanel();
 
     if (DEBUG) {
       const lines = ['destination=' + destination, 'shops=' + shops.length, 'items=' + totalItems, ''];
