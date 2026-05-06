@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.16.1
+// @version      0.17.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.16.1';
+  const SCRIPT_VERSION = '0.17.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2609,16 +2609,30 @@
     if (cached && cached.expiresAt > now) return cached.deals;
 
     const sellSinceIso = new Date(now - FLASH_DEAL_MARKET_MAX_AGE_MS).toISOString();
+    // Bazaar listings stay actionable for the same window we use on the
+    // Lowest Price Found bar — anything older than 30 min and the listing
+    // is likely sold or pulled.
+    const bazaarSinceIso = new Date(now - LOWEST_PRICE_BAZAAR_MAX_AGE_MS).toISOString();
     const tradeSinceIso = new Date(now - FLASH_DEAL_TRADER_MAX_AGE_MS).toISOString();
 
     let sellRows;
+    let bazaarRows;
     let teRows;
     if (itemIdFilter) {
-      [sellRows, teRows] = await Promise.all([
+      [sellRows, bazaarRows, teRows] = await Promise.all([
         fetchJSON(
           SELL_PRICES_URL +
           '?item_id=eq.' + encodeURIComponent(itemIdFilter) +
           '&select=item_id,price,min_price,updated_at'
+        ),
+        fetchJSON(
+          BAZAAR_PRICES_URL +
+          '?item_id=eq.' + encodeURIComponent(itemIdFilter) +
+          '&checked_at=gte.' + encodeURIComponent(bazaarSinceIso) +
+          '&price=gt.1' +
+          '&select=item_id,price,quantity,bazaar_owner_id,checked_at' +
+          '&order=price.asc' +
+          '&limit=20'
         ),
         fetchJSON(
           TE_BUY_PRICES_URL +
@@ -2630,35 +2644,52 @@
         ),
       ]);
     } else {
-      // Anchor on freshly-scraped market rows so the cross-reference
-      // set stays bounded — the IN clause below is capped by however
-      // many items the userbase has touched in the last 30 min.
-      sellRows = await fetchJSON(
-        SELL_PRICES_URL +
-        '?updated_at=gte.' + encodeURIComponent(sellSinceIso) +
-        '&min_price=gt.0' +
-        '&select=item_id,price,min_price,updated_at' +
-        '&order=updated_at.desc' +
-        '&limit=400'
-      );
-      const ids = Array.isArray(sellRows)
-        ? sellRows
-            .map(function (r) { return r && r.item_id; })
-            .filter(function (id) { return Number.isFinite(id); })
-        : [];
-      if (ids.length === 0) {
+      // Pool-wide: anchor on freshly-scraped market and bazaar rows so the
+      // trader IN-clause stays bounded. Bazaar items can be entirely absent
+      // from sell_prices (obscure stuff with no recent market activity but
+      // a cheap bazaar listing), so the trader query unions both id sets.
+      [sellRows, bazaarRows] = await Promise.all([
+        fetchJSON(
+          SELL_PRICES_URL +
+          '?updated_at=gte.' + encodeURIComponent(sellSinceIso) +
+          '&min_price=gt.0' +
+          '&select=item_id,price,min_price,updated_at' +
+          '&order=updated_at.desc' +
+          '&limit=400'
+        ),
+        fetchJSON(
+          BAZAAR_PRICES_URL +
+          '?checked_at=gte.' + encodeURIComponent(bazaarSinceIso) +
+          '&price=gt.1' +
+          '&select=item_id,price,quantity,bazaar_owner_id,checked_at' +
+          '&order=price.asc' +
+          '&limit=400'
+        ),
+      ]);
+      const idSet = new Set();
+      if (Array.isArray(sellRows)) {
+        for (const r of sellRows) {
+          if (r && Number.isFinite(r.item_id)) idSet.add(r.item_id);
+        }
+      }
+      if (Array.isArray(bazaarRows)) {
+        for (const r of bazaarRows) {
+          if (r && Number.isFinite(r.item_id)) idSet.add(r.item_id);
+        }
+      }
+      if (idSet.size === 0) {
         flashDealCache.set(cacheKey, { expiresAt: now + FLASH_DEAL_CACHE_TTL_MS, deals: [] });
         return [];
       }
       teRows = await fetchJSON(
         TE_BUY_PRICES_URL +
-        '?item_id=in.(' + ids.join(',') + ')' +
+        '?item_id=in.(' + Array.from(idSet).join(',') + ')' +
         '&updated_at=gte.' + encodeURIComponent(tradeSinceIso) +
         '&select=item_id,handle,buy_price,updated_at'
       );
     }
 
-    if (!Array.isArray(sellRows) || !Array.isArray(teRows) || teRows.length === 0) {
+    if (!Array.isArray(teRows) || teRows.length === 0) {
       flashDealCache.set(cacheKey, { expiresAt: now + FLASH_DEAL_CACHE_TTL_MS, deals: [] });
       return [];
     }
@@ -2678,39 +2709,97 @@
       }
     }
 
-    const deals = [];
-    for (const s of sellRows) {
-      if (!s || typeof s.item_id !== 'number') continue;
-      const floorRaw = s.min_price != null ? Number(s.min_price)
-        : (s.price != null ? Number(s.price) : NaN);
-      if (!Number.isFinite(floorRaw) || floorRaw <= 0) continue;
-      // The pool-wide query already filters by updated_at, but the
-      // single-item eq path doesn't — enforce the freshness gate here
-      // so both modes apply the same rule.
-      const observedAt = s.updated_at ? new Date(s.updated_at).getTime() : 0;
-      if (!observedAt || now - observedAt > FLASH_DEAL_MARKET_MAX_AGE_MS) continue;
+    // Cheapest fresh bazaar listing per item_id. Pool already excludes
+    // $1 placeholders and stale rows at the query layer; we just pick the
+    // floor here. Multiple bazaars per item end up represented by the
+    // single best deal — a player can drill into Item Market for that
+    // item to see the rest via Lowest Price Found.
+    const bestBazaar = new Map();
+    if (Array.isArray(bazaarRows)) {
+      for (const r of bazaarRows) {
+        if (!r || typeof r.item_id !== 'number') continue;
+        const price = Number(r.price);
+        if (!Number.isFinite(price) || price <= 1) continue;
+        const observedAt = r.checked_at ? new Date(r.checked_at).getTime() : 0;
+        if (!observedAt || now - observedAt > LOWEST_PRICE_BAZAAR_MAX_AGE_MS) continue;
+        const existing = bestBazaar.get(r.item_id);
+        if (!existing || price < existing.price) {
+          bestBazaar.set(r.item_id, { price, bazaar_owner_id: r.bazaar_owner_id, observed_at: observedAt });
+        }
+      }
+    }
 
-      const trader = bestTrader.get(s.item_id);
+    const deals = [];
+
+    // Source: market floor → trader. Selling to a trader is a direct
+    // cash trade (no Item Market 5% fee), so the gross trader_price is
+    // also the net you keep.
+    if (Array.isArray(sellRows)) {
+      for (const s of sellRows) {
+        if (!s || typeof s.item_id !== 'number') continue;
+        const floorRaw = s.min_price != null ? Number(s.min_price)
+          : (s.price != null ? Number(s.price) : NaN);
+        if (!Number.isFinite(floorRaw) || floorRaw <= 0) continue;
+        const observedAt = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+        if (!observedAt || now - observedAt > FLASH_DEAL_MARKET_MAX_AGE_MS) continue;
+
+        const trader = bestTrader.get(s.item_id);
+        if (!trader) continue;
+        const traderPrice = Number(trader.buy_price);
+        if (!Number.isFinite(traderPrice) || traderPrice <= 0) continue;
+
+        const profit = traderPrice - floorRaw;
+        if (profit < FLASH_DEAL_MIN_PROFIT) continue;
+
+        deals.push({
+          source: 'market',
+          item_id: s.item_id,
+          buy_price: floorRaw,
+          buy_label: 'Item Market',
+          buy_link: 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + s.item_id,
+          sell_price: traderPrice,
+          sell_label: 'Trader',
+          trader_handle: trader.handle,
+          profit: profit,
+          profit_pct: (profit / floorRaw) * 100,
+          buy_observed_at: observedAt,
+          sell_observed_at: trader.updated_at ? new Date(trader.updated_at).getTime() : 0,
+        });
+      }
+    }
+
+    // Source: bazaar listing → trader. Same fee rationale (no Item Market
+    // fee on a trader sell). Click target is the specific bazaar.
+    for (const [itemId, b] of bestBazaar) {
+      const trader = bestTrader.get(itemId);
       if (!trader) continue;
       const traderPrice = Number(trader.buy_price);
       if (!Number.isFinite(traderPrice) || traderPrice <= 0) continue;
 
-      const profit = traderPrice - floorRaw;
+      const profit = traderPrice - b.price;
       if (profit < FLASH_DEAL_MIN_PROFIT) continue;
 
       deals.push({
-        item_id: s.item_id,
-        market_price: floorRaw,
-        trader_price: traderPrice,
+        source: 'bazaar',
+        item_id: itemId,
+        buy_price: b.price,
+        buy_label: 'Bazaar',
+        buy_link: 'https://www.torn.com/bazaar.php?userId=' + b.bazaar_owner_id,
+        sell_price: traderPrice,
+        sell_label: 'Trader',
         trader_handle: trader.handle,
         profit: profit,
-        profit_pct: (profit / floorRaw) * 100,
-        market_observed_at: observedAt,
-        trader_observed_at: trader.updated_at ? new Date(trader.updated_at).getTime() : 0,
+        profit_pct: (profit / b.price) * 100,
+        buy_observed_at: b.observed_at,
+        sell_observed_at: trader.updated_at ? new Date(trader.updated_at).getTime() : 0,
       });
     }
+
     deals.sort(function (a, b) { return b.profit - a.profit; });
-    const trimmed = itemIdFilter ? deals.slice(0, 1) : deals.slice(0, FLASH_DEAL_MAX_ROWS);
+    // Single-item mode lets both source variants through (one market +
+    // one bazaar at most) so the player can compare; pool-wide caps at
+    // FLASH_DEAL_MAX_ROWS.
+    const trimmed = itemIdFilter ? deals.slice(0, 5) : deals.slice(0, FLASH_DEAL_MAX_ROWS);
 
     flashDealCache.set(cacheKey, { expiresAt: now + FLASH_DEAL_CACHE_TTL_MS, deals: trimmed });
     return trimmed;
@@ -2798,6 +2887,7 @@
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-handle { color: #8a8fa0; font-size: 11px; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-profit { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-arrow { color: #e8c84a; font-weight: 700; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-label { color: #8a8fa0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }',
     ].join('\n');
     const style = document.createElement('style');
     style.id = 'valigia-flash-deals-styles';
@@ -2829,7 +2919,10 @@
     for (const d of deals) {
       const row = document.createElement('a');
       row.className = 'vgl-fd-row';
-      row.href = 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + d.item_id;
+      // Click target = the buy side (where the player has to act first).
+      // Bazaar deals link to the specific bazaar; market deals link to
+      // the Item Market search for that item.
+      row.href = d.buy_link;
       row.target = '_top';
       row.rel = 'noopener';
 
@@ -2839,16 +2932,22 @@
 
       const buy = document.createElement('span');
       buy.className = 'vgl-fd-buy';
+      const buyLabel = document.createElement('span');
+      buyLabel.className = 'vgl-fd-label';
+      buyLabel.textContent = d.buy_label;
       const buyStrong = document.createElement('strong');
-      buyStrong.textContent = formatMoney(d.market_price);
-      buy.appendChild(document.createTextNode('buy '));
+      buyStrong.textContent = formatMoney(d.buy_price);
+      buy.appendChild(buyLabel);
       buy.appendChild(buyStrong);
 
       const sell = document.createElement('span');
       sell.className = 'vgl-fd-sell';
+      const sellLabel = document.createElement('span');
+      sellLabel.className = 'vgl-fd-label';
+      sellLabel.textContent = d.sell_label;
       const sellStrong = document.createElement('strong');
-      sellStrong.textContent = formatMoney(d.trader_price);
-      sell.appendChild(document.createTextNode('sell '));
+      sellStrong.textContent = formatMoney(d.sell_price);
+      sell.appendChild(sellLabel);
       sell.appendChild(sellStrong);
       sell.appendChild(document.createTextNode(' '));
       const handle = document.createElement('span');

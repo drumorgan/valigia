@@ -407,18 +407,34 @@ view or when the pool has no fresh hit.
 
 The Item Market runner also injects a **Flash Deals bar** — a pool-wide
 collapsed banner (gold border, matches the visual language of the
-other bars) that surfaces every fresh `sell_prices.min_price` floor
-priced below what the highest fresh `te_buy_prices` trader will pay.
-Each row deep-links the buy side to that item's Item Market search and
-shows the trader handle on the sell side, sorted by absolute profit
-desc and capped at 15 rows. On the catalog landing view it scans the
-whole pool; when the player drills into a single item (`itemID=N` in
-the hash) it scopes to that item only, surfacing one row when the
-flip exists. Freshness gates: market floor ≤30 min, trader offer ≤24 h.
-A $10K minimum profit per unit filters click-cost noise. Hidden when
-no opportunities clear the bar. Race-safe stacking: each bar fights
-for its own slot, so the final order ends up Watchlist → Lowest Price
-Found → Flash Deals regardless of fetch ordering.
+other bars) that surfaces every flippable item the pool currently has
+data for. Two flip directions feed into the same sorted list:
+
+1. **Item Market → Trader** — fresh `sell_prices.min_price` floors
+   priced below the highest fresh `te_buy_prices` offer.
+2. **Bazaar → Trader** — cheapest fresh `bazaar_prices` listing
+   priced below the same trader offer.
+
+Each row carries explicit "where" labels — `ITEM MARKET $X` /
+`BAZAAR $X` on the buy side, `TRADER $Y @handle` on the sell side —
+and deep-links to the buy venue (Item Market search or the specific
+bazaar). Selling to a trader is a direct cash trade (no Item Market
+5% fee), so trader profit math uses the gross trader buy_price as
+the net keep. The 5% fee only applies when the planned sell venue
+is the Item Market itself, which is the case in the Bazaar Deals
+bar — see below.
+
+Sorted by absolute profit desc, capped at 15 rows pool-wide. On the
+catalog landing view it scans the whole pool; when the player drills
+into a single item (`itemID=N` in the hash) it scopes to that item
+only and lets up to 5 rows through so both source variants can show
+side-by-side when both are flippable. Freshness gates: market floor
+≤30 min, bazaar listing ≤30 min (aligned with Lowest Price Found),
+trader offer ≤24 h. A $10K minimum profit per unit filters click-cost
+noise. Hidden when no opportunities clear the bar. Race-safe stacking:
+each bar fights for its own slot, so the final order ends up
+Watchlist → Lowest Price Found → Flash Deals regardless of fetch
+ordering.
 
 The bazaar runner additionally injects a **Bazaar Deals bar** at the
 top of the page (same visual language as the Watchlist Matches bar).
