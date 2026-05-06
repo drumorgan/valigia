@@ -405,6 +405,21 @@ Stacks directly below the Watchlist Matches bar when both fire,
 otherwise sits at the top alone. Hidden entirely on the catalog landing
 view or when the pool has no fresh hit.
 
+The Item Market runner also injects a **Flash Deals bar** — a pool-wide
+collapsed banner (gold border, matches the visual language of the
+other bars) that surfaces every fresh `sell_prices.min_price` floor
+priced below what the highest fresh `te_buy_prices` trader will pay.
+Each row deep-links the buy side to that item's Item Market search and
+shows the trader handle on the sell side, sorted by absolute profit
+desc and capped at 15 rows. On the catalog landing view it scans the
+whole pool; when the player drills into a single item (`itemID=N` in
+the hash) it scopes to that item only, surfacing one row when the
+flip exists. Freshness gates: market floor ≤30 min, trader offer ≤24 h.
+A $10K minimum profit per unit filters click-cost noise. Hidden when
+no opportunities clear the bar. Race-safe stacking: each bar fights
+for its own slot, so the final order ends up Watchlist → Lowest Price
+Found → Flash Deals regardless of fetch ordering.
+
 The bazaar runner additionally injects a **Bazaar Deals bar** at the
 top of the page (same visual language as the Watchlist Matches bar).
 For every scraped listing whose bazaar price is below the current Item

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.15.2
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, and (when filtered to a single item) show the cheapest fresh bazaar listing for that item, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
+// @version      0.16.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.15.2';
+  const SCRIPT_VERSION = '0.16.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1224,6 +1224,10 @@
     // item from the shared pool. Silent no-op on the catalog landing
     // view or when the pool has no fresh hit.
     injectLowestPriceBar();
+    // Pool-wide flip surface: cross-references fresh sell_prices floors
+    // against the highest fresh te_buy_prices offer per item. Scopes to
+    // a single item when itemID=N is in the hash.
+    injectFlashDealsBar();
 
     // Poll briefly for listings to hydrate - the Item Market page is SPA-ish.
     const start = Date.now();
@@ -2547,6 +2551,362 @@
     const watchlistBar = document.getElementById(WATCHLIST_BAR_ID);
     if (watchlistBar && watchlistBar.parentNode === host) {
       host.insertBefore(bar, watchlistBar.nextSibling);
+    } else {
+      host.insertBefore(bar, host.firstChild);
+    }
+  }
+
+  // -- Flash Deals bar -----------------------------------------------------
+  // Pool-wide discovery surface on the Item Market page: cross-references
+  // every fresh sell_prices floor against the highest fresh te_buy_prices
+  // offer per item_id. When a market listing is priced below what the
+  // best TornExchange trader will pay, the bar surfaces it as a one-tap
+  // flip opportunity. Hidden when there are zero opportunities.
+  //
+  // When the player has filtered to a single item (hash carries
+  // itemID=N), the bar scopes to that item only — same data path,
+  // tighter query.
+
+  const FLASH_DEALS_BAR_ID = 'valigia-flash-deals-bar';
+  // Mirror the watchlist Item Market freshness window — a "fresh" market
+  // floor must have been observed within the last 30 minutes for us to
+  // claim it as a current opportunity. Stricter than the watchlist (1h)
+  // because flash deals get acted on immediately, not tracked over time.
+  const FLASH_DEAL_MARKET_MAX_AGE_MS = 30 * 60 * 1000;
+  // Trader offers stay live for days; 24h matches the Sell-tab matcher.
+  const FLASH_DEAL_TRADER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  // Below this absolute profit per unit, skip — the click cost on iPad
+  // outweighs the gain. Empirical pick; tune if it filters real deals.
+  const FLASH_DEAL_MIN_PROFIT = 10_000;
+  // Cap rows in pool-wide mode. Bar is collapsed by default so a long
+  // list has no UI cost, but iPad players generally only chase the top
+  // handful and we want to keep the DOM bounded.
+  const FLASH_DEAL_MAX_ROWS = 15;
+
+  const FLASH_DEAL_CACHE_TTL_MS = 30_000;
+  // Keyed by 'all' or `item:N` so a single-item drill doesn't poison
+  // the pool-wide cache and vice-versa.
+  const flashDealCache = new Map();
+
+  async function fetchFlashDeals(itemIdFilter) {
+    const cacheKey = itemIdFilter ? 'item:' + itemIdFilter : 'all';
+    const now = Date.now();
+    const cached = flashDealCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) return cached.deals;
+
+    const sellSinceIso = new Date(now - FLASH_DEAL_MARKET_MAX_AGE_MS).toISOString();
+    const tradeSinceIso = new Date(now - FLASH_DEAL_TRADER_MAX_AGE_MS).toISOString();
+
+    let sellRows;
+    let teRows;
+    if (itemIdFilter) {
+      [sellRows, teRows] = await Promise.all([
+        fetchJSON(
+          SELL_PRICES_URL +
+          '?item_id=eq.' + encodeURIComponent(itemIdFilter) +
+          '&select=item_id,price,min_price,updated_at'
+        ),
+        fetchJSON(
+          TE_BUY_PRICES_URL +
+          '?item_id=eq.' + encodeURIComponent(itemIdFilter) +
+          '&updated_at=gte.' + encodeURIComponent(tradeSinceIso) +
+          '&select=item_id,handle,buy_price,updated_at' +
+          '&order=buy_price.desc' +
+          '&limit=5'
+        ),
+      ]);
+    } else {
+      // Anchor on freshly-scraped market rows so the cross-reference
+      // set stays bounded — the IN clause below is capped by however
+      // many items the userbase has touched in the last 30 min.
+      sellRows = await fetchJSON(
+        SELL_PRICES_URL +
+        '?updated_at=gte.' + encodeURIComponent(sellSinceIso) +
+        '&min_price=gt.0' +
+        '&select=item_id,price,min_price,updated_at' +
+        '&order=updated_at.desc' +
+        '&limit=400'
+      );
+      const ids = Array.isArray(sellRows)
+        ? sellRows
+            .map(function (r) { return r && r.item_id; })
+            .filter(function (id) { return Number.isFinite(id); })
+        : [];
+      if (ids.length === 0) {
+        flashDealCache.set(cacheKey, { expiresAt: now + FLASH_DEAL_CACHE_TTL_MS, deals: [] });
+        return [];
+      }
+      teRows = await fetchJSON(
+        TE_BUY_PRICES_URL +
+        '?item_id=in.(' + ids.join(',') + ')' +
+        '&updated_at=gte.' + encodeURIComponent(tradeSinceIso) +
+        '&select=item_id,handle,buy_price,updated_at'
+      );
+    }
+
+    if (!Array.isArray(sellRows) || !Array.isArray(teRows) || teRows.length === 0) {
+      flashDealCache.set(cacheKey, { expiresAt: now + FLASH_DEAL_CACHE_TTL_MS, deals: [] });
+      return [];
+    }
+
+    // Highest buy_price per item_id; updated_at breaks ties so a
+    // newly-scraped trader wins over a stale one at the same price.
+    const bestTrader = new Map();
+    for (const r of teRows) {
+      if (!r || typeof r.item_id !== 'number' || typeof r.buy_price !== 'number') continue;
+      const existing = bestTrader.get(r.item_id);
+      if (
+        !existing
+        || r.buy_price > existing.buy_price
+        || (r.buy_price === existing.buy_price && (r.updated_at || '') > (existing.updated_at || ''))
+      ) {
+        bestTrader.set(r.item_id, r);
+      }
+    }
+
+    const deals = [];
+    for (const s of sellRows) {
+      if (!s || typeof s.item_id !== 'number') continue;
+      const floorRaw = s.min_price != null ? Number(s.min_price)
+        : (s.price != null ? Number(s.price) : NaN);
+      if (!Number.isFinite(floorRaw) || floorRaw <= 0) continue;
+      // The pool-wide query already filters by updated_at, but the
+      // single-item eq path doesn't — enforce the freshness gate here
+      // so both modes apply the same rule.
+      const observedAt = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+      if (!observedAt || now - observedAt > FLASH_DEAL_MARKET_MAX_AGE_MS) continue;
+
+      const trader = bestTrader.get(s.item_id);
+      if (!trader) continue;
+      const traderPrice = Number(trader.buy_price);
+      if (!Number.isFinite(traderPrice) || traderPrice <= 0) continue;
+
+      const profit = traderPrice - floorRaw;
+      if (profit < FLASH_DEAL_MIN_PROFIT) continue;
+
+      deals.push({
+        item_id: s.item_id,
+        market_price: floorRaw,
+        trader_price: traderPrice,
+        trader_handle: trader.handle,
+        profit: profit,
+        profit_pct: (profit / floorRaw) * 100,
+        market_observed_at: observedAt,
+        trader_observed_at: trader.updated_at ? new Date(trader.updated_at).getTime() : 0,
+      });
+    }
+    deals.sort(function (a, b) { return b.profit - a.profit; });
+    const trimmed = itemIdFilter ? deals.slice(0, 1) : deals.slice(0, FLASH_DEAL_MAX_ROWS);
+
+    flashDealCache.set(cacheKey, { expiresAt: now + FLASH_DEAL_CACHE_TTL_MS, deals: trimmed });
+    return trimmed;
+  }
+
+  function injectFlashDealsStyles() {
+    if (document.getElementById('valigia-flash-deals-styles')) return;
+    const css = [
+      '#' + FLASH_DEALS_BAR_ID + ' {',
+      '  all: initial;',
+      '  display: block;',
+      '  margin: 8px auto 12px;',
+      '  max-width: 1100px;',
+      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  color: #c8cdd8;',
+      '  background: #161a22;',
+      '  border: 1px solid #252a35;',
+      '  border-left: 3px solid #e8c84a;',
+      '  border-radius: 4px;',
+      '  box-sizing: border-box;',
+      '  overflow: hidden;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-head {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '  padding: 8px 12px;',
+      '  cursor: pointer;',
+      '  user-select: none;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-title {',
+      '  color: #e8c84a;',
+      '  font-weight: 700;',
+      '  font-size: 12px;',
+      '  letter-spacing: 0.12em;',
+      '  text-transform: uppercase;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-count {',
+      '  background: #e8c84a;',
+      '  color: #0d0f14;',
+      '  font-weight: 700;',
+      '  font-size: 11px;',
+      '  padding: 1px 7px;',
+      '  border-radius: 999px;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-caret {',
+      '  margin-left: auto;',
+      '  color: #e8c84a;',
+      '  font-size: 11px;',
+      '  transition: transform 150ms;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + '.vgl-fd-open .vgl-fd-caret {',
+      '  transform: rotate(180deg);',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-body {',
+      '  display: none;',
+      '  padding: 4px 10px 10px;',
+      '  gap: 4px;',
+      '  flex-direction: column;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + '.vgl-fd-open .vgl-fd-body {',
+      '  display: flex;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-row {',
+      '  display: grid;',
+      '  grid-template-columns: minmax(0,1.4fr) auto auto auto auto;',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '  padding: 6px 8px;',
+      '  border: 1px solid #252a35;',
+      '  border-radius: 3px;',
+      '  background: rgba(232,200,74,0.04);',
+      '  color: #c8cdd8;',
+      '  text-decoration: none;',
+      '  font-size: 12px;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-row:active {',
+      '  background: rgba(232,200,74,0.12);',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-item { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-buy { color: #c8cdd8; white-space: nowrap; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-buy strong { color: #e8c84a; font-weight: 700; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-sell { color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-sell strong { color: #4ae8a0; font-weight: 700; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-handle { color: #8a8fa0; font-size: 11px; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-profit { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-arrow { color: #e8c84a; font-weight: 700; }',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-flash-deals-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function buildFlashDealsBar(deals) {
+    const bar = document.createElement('div');
+    bar.id = FLASH_DEALS_BAR_ID;
+
+    const head = document.createElement('div');
+    head.className = 'vgl-fd-head';
+    const title = document.createElement('span');
+    title.className = 'vgl-fd-title';
+    title.textContent = 'Flash Deals';
+    const count = document.createElement('span');
+    count.className = 'vgl-fd-count';
+    count.textContent = String(deals.length);
+    const caret = document.createElement('span');
+    caret.className = 'vgl-fd-caret';
+    caret.textContent = '\u25BE';
+    head.appendChild(title);
+    head.appendChild(count);
+    head.appendChild(caret);
+
+    const body = document.createElement('div');
+    body.className = 'vgl-fd-body';
+    for (const d of deals) {
+      const row = document.createElement('a');
+      row.className = 'vgl-fd-row';
+      row.href = 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + d.item_id;
+      row.target = '_top';
+      row.rel = 'noopener';
+
+      const name = document.createElement('span');
+      name.className = 'vgl-fd-item';
+      name.textContent = itemNameFor(d.item_id);
+
+      const buy = document.createElement('span');
+      buy.className = 'vgl-fd-buy';
+      const buyStrong = document.createElement('strong');
+      buyStrong.textContent = formatMoney(d.market_price);
+      buy.appendChild(document.createTextNode('buy '));
+      buy.appendChild(buyStrong);
+
+      const sell = document.createElement('span');
+      sell.className = 'vgl-fd-sell';
+      const sellStrong = document.createElement('strong');
+      sellStrong.textContent = formatMoney(d.trader_price);
+      sell.appendChild(document.createTextNode('sell '));
+      sell.appendChild(sellStrong);
+      sell.appendChild(document.createTextNode(' '));
+      const handle = document.createElement('span');
+      handle.className = 'vgl-fd-handle';
+      handle.textContent = '@' + d.trader_handle;
+      sell.appendChild(handle);
+
+      const profit = document.createElement('span');
+      profit.className = 'vgl-fd-profit';
+      profit.textContent = '+' + formatMoney(d.profit);
+
+      const arrow = document.createElement('span');
+      arrow.className = 'vgl-fd-arrow';
+      arrow.textContent = '\u2192';
+
+      row.appendChild(name);
+      row.appendChild(buy);
+      row.appendChild(sell);
+      row.appendChild(profit);
+      row.appendChild(arrow);
+      body.appendChild(row);
+    }
+
+    head.addEventListener('click', function () {
+      bar.classList.toggle('vgl-fd-open');
+    });
+
+    bar.appendChild(head);
+    bar.appendChild(body);
+    return bar;
+  }
+
+  /**
+   * Top-level entry. Safe to call on every Item Market dispatch — it
+   * tears down any prior instance and silently no-ops when there are
+   * no opportunities. When the user has drilled into a single item
+   * (hash itemID=N) the bar scopes to that item; otherwise it surfaces
+   * the top FLASH_DEAL_MAX_ROWS pool-wide opportunities.
+   *
+   * Stacks below the Watchlist Matches and Lowest Price Found bars
+   * when present. Race-safe: each bar fights for its own slot, so the
+   * final order ends up Watchlist → Lowest → Flash regardless of
+   * fetch ordering.
+   */
+  async function injectFlashDealsBar() {
+    const existing = document.getElementById(FLASH_DEALS_BAR_ID);
+    if (existing) existing.remove();
+
+    const itemIdFilter = detectItemMarketSingleItemId();
+
+    const [deals] = await Promise.all([
+      fetchFlashDeals(itemIdFilter),
+      ensureItemCatalog(),
+    ]);
+    if (!deals || deals.length === 0) return;
+
+    injectFlashDealsStyles();
+    const bar = buildFlashDealsBar(deals);
+
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+
+    const lowestBar = document.getElementById(LOWEST_PRICE_BAR_ID);
+    const watchlistBar = document.getElementById(WATCHLIST_BAR_ID);
+    const anchor = (lowestBar && lowestBar.parentNode === host) ? lowestBar
+      : (watchlistBar && watchlistBar.parentNode === host) ? watchlistBar
+      : null;
+    if (anchor) {
+      host.insertBefore(bar, anchor.nextSibling);
     } else {
       host.insertBefore(bar, host.firstChild);
     }
