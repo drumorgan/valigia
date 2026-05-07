@@ -222,14 +222,18 @@ async function refreshOne(
 
   if (!scrape.ok || scrape.rows.length === 0) {
     const nextFails = (trader.consecutive_fails ?? 0) + 1;
-    await supabase.from('te_traders').upsert({
-      handle: trader.handle,
-      torn_player_id: trader.torn_player_id,
+    // UPDATE (not upsert) — cron never adds new traders; the row always
+    // exists. Upsert would attempt INSERT first, which fails the
+    // submitted_by NOT NULL constraint that we have no value for.
+    const { error: uErr } = await supabase.from('te_traders').update({
       last_scraped_at: nowIso,
       last_scrape_ok: false,
       last_scrape_error: scrape.error?.slice(0, 200) ?? 'unknown',
       consecutive_fails: nextFails,
-    }, { onConflict: 'handle' });
+    }).eq('handle', trader.handle);
+    if (uErr) {
+      return { handle: trader.handle, ok: false, error: `db_update_failed: ${uErr.message}` };
+    }
     return { handle: trader.handle, ok: false, error: scrape.error };
   }
 
@@ -241,26 +245,32 @@ async function refreshOne(
 
   if (resolved.length === 0) {
     const nextFails = (trader.consecutive_fails ?? 0) + 1;
-    await supabase.from('te_traders').upsert({
-      handle: trader.handle,
-      torn_player_id: trader.torn_player_id,
+    const { error: uErr } = await supabase.from('te_traders').update({
       last_scraped_at: nowIso,
       last_scrape_ok: false,
       last_scrape_error: 'no_items_resolved',
       consecutive_fails: nextFails,
-    }, { onConflict: 'handle' });
+    }).eq('handle', trader.handle);
+    if (uErr) {
+      return { handle: trader.handle, ok: false, error: `db_update_failed: ${uErr.message}` };
+    }
     return { handle: trader.handle, ok: false, error: 'no_items_resolved' };
   }
 
-  await supabase.from('te_traders').upsert({
-    handle: trader.handle,
-    torn_player_id: trader.torn_player_id,
+  const { error: uErr } = await supabase.from('te_traders').update({
     last_scraped_at: nowIso,
     last_scrape_ok: true,
     last_scrape_error: null,
     consecutive_fails: 0,
     item_count: resolved.length,
-  }, { onConflict: 'handle' });
+  }).eq('handle', trader.handle);
+  if (uErr) {
+    // Until we caught this, an upsert NOT NULL violation on submitted_by
+    // returned `succeeded: 32` for the run while no last_scraped_at
+    // actually moved — make it impossible to silently swallow that
+    // failure mode again by surfacing the DB error in the result.
+    return { handle: trader.handle, ok: false, error: `db_update_failed: ${uErr.message}` };
+  }
 
   const priceRows = resolved.map((r) => ({
     handle: trader.handle,
@@ -269,7 +279,12 @@ async function refreshOne(
     buy_price: r.buy_price,
     updated_at: nowIso,
   }));
-  await supabase.from('te_buy_prices').upsert(priceRows, { onConflict: 'handle,item_id' });
+  const { error: pErr } = await supabase
+    .from('te_buy_prices')
+    .upsert(priceRows, { onConflict: 'handle,item_id' });
+  if (pErr) {
+    return { handle: trader.handle, ok: false, error: `price_upsert_failed: ${pErr.message}` };
+  }
 
   const keptIds = resolved.map((r) => r.item_id);
   if (keptIds.length > 0) {
