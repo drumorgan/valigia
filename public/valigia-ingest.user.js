@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.17.0
+// @version      0.17.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.17.0';
+  const SCRIPT_VERSION = '0.17.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2865,7 +2865,7 @@
       '}',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-row {',
       '  display: grid;',
-      '  grid-template-columns: minmax(0,1.4fr) auto auto auto auto;',
+      '  grid-template-columns: minmax(0,1.4fr) auto auto auto auto auto;',
       '  align-items: center;',
       '  gap: 8px;',
       '  padding: 6px 8px;',
@@ -2873,21 +2873,28 @@
       '  border-radius: 3px;',
       '  background: rgba(232,200,74,0.04);',
       '  color: #c8cdd8;',
-      '  text-decoration: none;',
       '  font-size: 12px;',
       '}',
-      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-row:active {',
-      '  background: rgba(232,200,74,0.12);',
-      '}',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-item { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
-      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-buy { color: #c8cdd8; white-space: nowrap; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-buy, #' + FLASH_DEALS_BAR_ID + ' .vgl-fd-sell {',
+      '  color: #c8cdd8;',
+      '  white-space: nowrap;',
+      '  text-decoration: none;',
+      '  display: inline-flex;',
+      '  align-items: baseline;',
+      '  gap: 4px;',
+      '  padding: 2px 4px;',
+      '  border-radius: 2px;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-buy:active { background: rgba(232,200,74,0.18); }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-sell:active { background: rgba(74,232,160,0.18); }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-buy strong { color: #e8c84a; font-weight: 700; }',
-      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-sell { color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-sell strong { color: #4ae8a0; font-weight: 700; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-handle { color: #8a8fa0; font-size: 11px; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-profit { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
-      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-arrow { color: #e8c84a; font-weight: 700; }',
-      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-label { color: #8a8fa0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-arrow, #' + FLASH_DEALS_BAR_ID + ' .vgl-fd-equals { color: #e8c84a; font-weight: 700; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-prefix { color: #8a8fa0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-label { color: #8a8fa0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }',
     ].join('\n');
     const style = document.createElement('style');
     style.id = 'valigia-flash-deals-styles';
@@ -2917,57 +2924,73 @@
     const body = document.createElement('div');
     body.className = 'vgl-fd-body';
     for (const d of deals) {
-      const row = document.createElement('a');
+      // Two independent click targets per row \u2014 buy side opens the
+      // venue (Item Market search or specific bazaar), sell side opens
+      // the trader's TornExchange profile. Nested <a> isn't valid, so
+      // the row container is a <div>.
+      const row = document.createElement('div');
       row.className = 'vgl-fd-row';
-      // Click target = the buy side (where the player has to act first).
-      // Bazaar deals link to the specific bazaar; market deals link to
-      // the Item Market search for that item.
-      row.href = d.buy_link;
-      row.target = '_top';
-      row.rel = 'noopener';
 
       const name = document.createElement('span');
       name.className = 'vgl-fd-item';
       name.textContent = itemNameFor(d.item_id);
 
-      const buy = document.createElement('span');
+      const buy = document.createElement('a');
       buy.className = 'vgl-fd-buy';
+      buy.href = d.buy_link;
+      buy.target = '_top';
+      buy.rel = 'noopener';
+      const buyPrefix = document.createElement('span');
+      buyPrefix.className = 'vgl-fd-prefix';
+      buyPrefix.textContent = 'Buy';
+      const buyStrong = document.createElement('strong');
+      buyStrong.textContent = formatMoney(d.buy_price);
       const buyLabel = document.createElement('span');
       buyLabel.className = 'vgl-fd-label';
       buyLabel.textContent = d.buy_label;
-      const buyStrong = document.createElement('strong');
-      buyStrong.textContent = formatMoney(d.buy_price);
-      buy.appendChild(buyLabel);
+      buy.appendChild(buyPrefix);
       buy.appendChild(buyStrong);
-
-      const sell = document.createElement('span');
-      sell.className = 'vgl-fd-sell';
-      const sellLabel = document.createElement('span');
-      sellLabel.className = 'vgl-fd-label';
-      sellLabel.textContent = d.sell_label;
-      const sellStrong = document.createElement('strong');
-      sellStrong.textContent = formatMoney(d.sell_price);
-      sell.appendChild(sellLabel);
-      sell.appendChild(sellStrong);
-      sell.appendChild(document.createTextNode(' '));
-      const handle = document.createElement('span');
-      handle.className = 'vgl-fd-handle';
-      handle.textContent = '@' + d.trader_handle;
-      sell.appendChild(handle);
-
-      const profit = document.createElement('span');
-      profit.className = 'vgl-fd-profit';
-      profit.textContent = '+' + formatMoney(d.profit);
+      buy.appendChild(buyLabel);
 
       const arrow = document.createElement('span');
       arrow.className = 'vgl-fd-arrow';
       arrow.textContent = '\u2192';
 
+      const sell = document.createElement('a');
+      sell.className = 'vgl-fd-sell';
+      sell.href = 'https://tornexchange.com/prices/' + encodeURIComponent(d.trader_handle) + '/';
+      sell.target = '_top';
+      sell.rel = 'noopener';
+      const sellPrefix = document.createElement('span');
+      sellPrefix.className = 'vgl-fd-prefix';
+      sellPrefix.textContent = 'Sell';
+      const sellStrong = document.createElement('strong');
+      sellStrong.textContent = formatMoney(d.sell_price);
+      const sellLabel = document.createElement('span');
+      sellLabel.className = 'vgl-fd-label';
+      sellLabel.textContent = d.sell_label;
+      const handle = document.createElement('span');
+      handle.className = 'vgl-fd-handle';
+      handle.textContent = '@' + d.trader_handle;
+      sell.appendChild(sellPrefix);
+      sell.appendChild(sellStrong);
+      sell.appendChild(sellLabel);
+      sell.appendChild(handle);
+
+      const equals = document.createElement('span');
+      equals.className = 'vgl-fd-equals';
+      equals.textContent = '=';
+
+      const profit = document.createElement('span');
+      profit.className = 'vgl-fd-profit';
+      profit.textContent = '+' + formatMoney(d.profit);
+
       row.appendChild(name);
       row.appendChild(buy);
-      row.appendChild(sell);
-      row.appendChild(profit);
       row.appendChild(arrow);
+      row.appendChild(sell);
+      row.appendChild(equals);
+      row.appendChild(profit);
       body.appendChild(row);
     }
 
