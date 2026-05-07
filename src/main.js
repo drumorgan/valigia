@@ -11,7 +11,7 @@ import { prescanBazaarPool } from './bazaar-scanner.js';
 import { recordSnapshots, loadForecastData } from './stock-forecast.js';
 import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
-  renderMatchesCard, renderWatchlistTab, invalidateWatchlistCache,
+  renderWatchlistTab, invalidateWatchlistCache, getMatchCount,
 } from './watchlist-ui.js';
 import { safeGetItem, safeSetItem } from './storage.js';
 import { setAbroadSnapshot, listAlerts } from './watchlist.js';
@@ -334,7 +334,6 @@ async function startDashboard(playerId, playerName) {
   maybeRefreshMyOwnTraderPage(playerId, playerName).catch(() => {});
   screenContainer.innerHTML = `
     <div id="${TAB_CONTAINER_IDS.travel}" class="tab-host tab-host--active">
-      <div id="watchlist-matches-card"></div>
       <div id="controls-bar"></div>
       <div id="best-run-container"></div>
       <div id="table-container"></div>
@@ -432,7 +431,7 @@ async function startDashboard(playerId, playerName) {
   // Fetch live sell prices for every abroad item AND every watchlisted
   // item. Two separate calls because their staleness budgets differ: the
   // Travel table's profit math is fine with a 4-hour-old floor (abroad
-  // sell prices move slowly), but the Watchlist matches card has to be
+  // sell prices move slowly), but the Watchlist matches have to be
   // truthful against what the Item Market is showing *right now* — an
   // hour-old $1.4M floor for Gold Noble Coin is worse than useless when
   // the current floor has since jumped to $2.3M and the alert no longer
@@ -490,20 +489,17 @@ async function startDashboard(playerId, playerName) {
   renderCommunityStats(bazaarContainer);
 
   // Silently pre-warm the bazaar pool in the background. Feeds the
-  // Watchlist matches card and the bazaar scan UI; the Best Run card is
+  // watchlist matcher and the bazaar scan UI; the Best Run card is
   // travel-only and ignores this pool. Fire-and-forget: errors swallowed.
   prescanBazaarPool(playerId).then(() => {
     // The pre-scan just wrote fresh rows to bazaar_prices; re-resolve
-    // watchlist matches so a player still on the Travel tab sees the
-    // newly-discovered hits in the card and the nav badge.
+    // watchlist matches so the nav badge reflects the newly-discovered hits.
     invalidateWatchlistCache();
     refreshWatchlistSurfaces();
   });
 
-  // Watchlist matches card + tab badge. The card lives above the controls,
-  // so it's the first thing a user with active alerts sees on login. The
-  // tab badge reflects the same count so unvisited matches are obvious.
-  // Fire-and-forget: both surfaces hide themselves if anything fails.
+  // Watchlist tab badge — surfaces unvisited matches without forcing the
+  // user onto the Watchlist tab. Fire-and-forget: hides itself on error.
   refreshWatchlistSurfaces();
 }
 
@@ -544,26 +540,18 @@ async function maybeRefreshMyOwnTraderPage(playerId, playerName) {
 
 // ── Watchlist matches surfacing ───────────────────────────────
 async function refreshWatchlistSurfaces() {
-  const card = document.getElementById('watchlist-matches-card');
   const badge = document.getElementById('tab-watchlist-badge');
-  if (!card) return;
+  if (!badge) return;
   try {
-    await renderMatchesCard(card);
-    // Derive the tab badge from the card's rendered content — we keep a
-    // single source of truth (watchlist-ui.js owns cache) rather than
-    // re-querying here.
-    const matchCountEl = card.querySelector('.wl-card-badge');
-    if (badge) {
-      const count = matchCountEl ? matchCountEl.textContent.trim() : '';
-      if (count && count !== '0') {
-        badge.textContent = count;
-        badge.hidden = false;
-      } else {
-        badge.hidden = true;
-      }
+    const count = await getMatchCount();
+    if (count > 0) {
+      badge.textContent = String(count);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
     }
   } catch {
-    // Silent — the card's own error path hides itself.
+    badge.hidden = true;
   }
 }
 
@@ -668,19 +656,19 @@ async function switchTab(nextTab) {
     travelHost.hidden = false;
     travelHost.classList.add('tab-host--active');
     // The underlying sell/bazaar/abroad tables may have changed while
-    // the user was on another tab — re-render matches so the card stays
-    // truthful.
+    // the user was on another tab — invalidate so the badge reflects
+    // a fresh match count next time it's read.
     invalidateWatchlistCache();
     refreshWatchlistSurfaces();
   } else if (nextTab === 'watchlist') {
     watchlistHost.hidden = false;
     watchlistHost.classList.add('tab-host--active');
     await renderWatchlistTab(watchlistHost);
-    // The tab body just re-fetched into matchesCache; sync the Travel-tab
-    // card and the nav badge to that fresh count. Without this, the badge
-    // stays pinned at whatever count refreshWatchlistSurfaces() captured
-    // on initial load — which often undercounts because the background
-    // bazaar pre-scan and sell_prices top-up hadn't completed yet.
+    // The tab body just re-fetched into matchesCache; sync the nav badge
+    // to that fresh count. Without this, the badge stays pinned at whatever
+    // count refreshWatchlistSurfaces() captured on initial load — which
+    // often undercounts because the background bazaar pre-scan and
+    // sell_prices top-up hadn't completed yet.
     refreshWatchlistSurfaces();
   } else if (nextTab === 'sell') {
     sellHost.hidden = false;

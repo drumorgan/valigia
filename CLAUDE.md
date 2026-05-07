@@ -563,11 +563,12 @@ the script to see drip activity in the on-page panel.
 - **Watchlist alerts** — Per-player price-drop watchlist scoped to one or
   more venues (Item Market, crowd-sourced bazaars, first-party abroad
   scrapes). On login the dashboard cross-references every alert against
-  the three price pools and surfaces hits two ways: a compact "Watchlist
-  matches" card above the Travel table, and a dedicated **Watchlist**
-  tab with an add-alert form + full match list. Writes flow through the
-  session-gated `watchlist` edge function; reads are public. No push or
-  email alerts yet — matches only appear on page load.
+  the three price pools. Hits live on the dedicated **Watchlist** tab
+  (add-alert form + full match list); the tab nav badge surfaces the
+  current match count so users know to look without cluttering the
+  Travel view. Writes flow through the session-gated `watchlist` edge
+  function; reads are public. No push or email alerts yet — matches
+  only appear on page load.
 - **Sell tab (TornExchange)** — Submit any TornExchange trader page
   (full URL or bare handle) and the `ingest-te-trader` edge function
   scrapes their standing buy-offers with a desktop UA. Prices land in
