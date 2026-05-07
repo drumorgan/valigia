@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.17.3
+// @version      0.17.4
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.17.3';
+  const SCRIPT_VERSION = '0.17.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1041,12 +1041,14 @@
       if (!r.metrics) continue;
       if (r.metrics.marginPerItem <= 0) continue;
       if (r.stock != null && r.stock <= 0) continue;
-      // Sanity cap: a real Torn travel margin doesn't run past +500% of
-      // the buy price. Anything bigger is a parse error (Flail in UK
-      // showed +831,249% when buy was misread), so refuse to crown a
-      // bogus winner. The numbers still render in the overlay so the
-      // player can see something is off.
-      if (r.metrics.marginPct > 500) continue;
+      // Sanity cap: catches parser blow-ups like the historical Flail UK
+      // bug (+831,249% when $8M was misread as ~$800) without excluding
+      // legitimate UK collectibles, plushies, and flowers, which routinely
+      // run past +3000% (Heather +602%, Inkwell +3429%, etc.). A 100,000%
+      // ceiling is well above any real Torn travel margin and still flags
+      // gross parse errors. The numbers still render in the overlay either
+      // way so the player can see when something's off.
+      if (r.metrics.marginPct > 100000) continue;
       if (!best || r.metrics.marginPerItem > best.metrics.marginPerItem) best = r;
     }
 
