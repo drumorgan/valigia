@@ -415,14 +415,14 @@ data for. Two flip directions feed into the same sorted list:
 2. **Bazaar → Trader** — cheapest fresh `bazaar_prices` listing
    priced below the same trader offer.
 
-Each row carries explicit "where" labels — `ITEM MARKET $X` /
-`BAZAAR $X` on the buy side, `TRADER $Y @handle` on the sell side —
-and deep-links to the buy venue (Item Market search or the specific
-bazaar). Selling to a trader is a direct cash trade (no Item Market
-5% fee), so trader profit math uses the gross trader buy_price as
-the net keep. The 5% fee only applies when the planned sell venue
-is the Item Market itself, which is the case in the Bazaar Deals
-bar — see below.
+Each row reads `Buy $X (where) → Sell $Y Trader @handle = +$profit`
+with two independent click targets: the buy side opens the buy venue
+(Item Market search or the specific bazaar), and the sell side opens
+the trader's TornExchange profile (`tornexchange.com/prices/<handle>/`).
+Selling to a trader is a direct cash trade (no Item Market 5% fee), so
+trader profit math uses the gross trader buy_price as the net keep.
+The 5% fee only applies when the planned sell venue is the Item Market
+itself, which is the case in the Bazaar Deals bar — see below.
 
 Sorted by absolute profit desc, capped at 15 rows pool-wide. On the
 catalog landing view it scans the whole pool; when the player drills
