@@ -593,13 +593,16 @@ the script to see drip activity in the on-page panel.
   UTC that fires `pg_net.http_post` against the `cron-refresh-traders`
   edge function, which walks every `te_traders` row sequentially with a
   500 ms politeness delay and re-scrapes each TornExchange page. The
-  cron path uses `CRON_SECRET` for auth (no player session) and a
-  baked-in `SERVICE_TORN_API_KEY` for the items catalog lookup. Pages
-  with `consecutive_fails ≥ 3` get a 24 h cooldown so dead handles
-  don't burn the budget every night; sending `{"force": true}` in the
-  POST body bypasses the cooldown for manual debugging. The per-trader
-  on-demand REFRESH button still works exactly as before — the cron is
-  purely additive.
+  secret + target URL live in **Supabase Vault** (`vault.secrets`),
+  read at cron-runtime via `vault.decrypted_secrets`; using custom
+  `ALTER DATABASE SET` GUCs is rejected by the Supabase SQL Editor
+  role. The cron path uses `CRON_SECRET` for auth (no player session)
+  and a baked-in `SERVICE_TORN_API_KEY` for the items catalog lookup.
+  Pages with `consecutive_fails ≥ 3` get a 24 h cooldown so dead
+  handles don't burn the budget every night; sending
+  `{"force": true}` in the POST body bypasses the cooldown for manual
+  debugging. The per-trader on-demand REFRESH button still works
+  exactly as before — the cron is purely additive.
 
 ### Known Limitations
 - **Slots** — Auto-detect misses faction perks; user overrides manually.

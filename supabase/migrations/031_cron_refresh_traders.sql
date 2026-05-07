@@ -1,13 +1,20 @@
 -- Migration 031: schedule the daily TornExchange trader pool refresh.
 --
 -- Wires up pg_cron + pg_net to call the cron-refresh-traders edge
--- function once a day. Torn's daily price update happens at 00:00 UTC
--- (= midnight Torn Time); the 5-minute offset gives traders a moment
--- to publish new buy offers before we re-scrape the whole pool.
+-- function once a day at 00:05 UTC (5 min after midnight Torn Time).
+-- Torn's daily price update happens at 00:00 UTC; the offset gives
+-- TornExchange traders a moment to publish their new buy offers
+-- before we re-scrape the whole pool.
+--
+-- The cron secret + target URL live in Supabase Vault (pgsodium-
+-- encrypted at rest), not in custom Postgres GUCs. The SQL Editor's
+-- `postgres` role on Supabase doesn't have permission to do
+-- `ALTER DATABASE postgres SET app.foo = ...` for custom variables,
+-- so a Vault-based read is the canonical Supabase pattern.
 --
 -- BEFORE running this migration, do these in order:
 --
--- 1) Generate a strong random secret (any 32+ chars), e.g.:
+-- 1) Generate a strong random secret (any 32+ chars):
 --      openssl rand -base64 32
 --
 -- 2) In the Supabase Dashboard, set TWO Edge Function secrets:
@@ -19,19 +26,23 @@
 --
 -- 3) Deploy the cron-refresh-traders edge function.
 --
--- 4) In the SQL Editor, set TWO database parameters with the same
---    secret and your project's edge-function URL. These persist across
---    pg_cron worker sessions and are what the schedule below reads at
---    runtime — keeping the secret out of the migration history.
+-- 4) In the SQL Editor, store the SAME secret + your project's edge-
+--    function URL in Supabase Vault. Replace the placeholders with
+--    your real values:
 --
---      ALTER DATABASE postgres
---        SET app.cron_secret = '<the same secret from step 1>';
---      ALTER DATABASE postgres
---        SET app.cron_target_url =
---          'https://<your-project-ref>.supabase.co/functions/v1/cron-refresh-traders';
+--      SELECT vault.create_secret(
+--        '<the same secret from step 1>',
+--        'cron_secret'
+--      );
+--      SELECT vault.create_secret(
+--        'https://<your-project-ref>.supabase.co/functions/v1/cron-refresh-traders',
+--        'cron_target_url'
+--      );
 --
---    To rotate later, just re-run the ALTER DATABASE — pg_cron picks up
---    new values on its next worker session.
+--    Already created and need to rotate? Drop and re-create:
+--      DELETE FROM vault.secrets WHERE name = 'cron_secret';
+--      SELECT vault.create_secret('<new secret>', 'cron_secret');
+--    pg_cron picks up the new value on its next run.
 --
 -- 5) Then run this migration.
 
@@ -39,7 +50,8 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pg_net;
 
 -- Idempotent: drop any previous schedule before re-creating, so this
--- migration can be re-run safely if the cron expression changes.
+-- migration can be re-run safely if the cron expression or auth shape
+-- changes.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'refresh-te-traders') THEN
@@ -52,10 +64,20 @@ SELECT cron.schedule(
   '5 0 * * *',  -- 00:05 UTC daily
   $cron$
   SELECT net.http_post(
-    url := current_setting('app.cron_target_url'),
+    url := (
+      SELECT decrypted_secret
+      FROM vault.decrypted_secrets
+      WHERE name = 'cron_target_url'
+      LIMIT 1
+    ),
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'Authorization', 'Bearer ' || current_setting('app.cron_secret')
+      'Authorization', 'Bearer ' || (
+        SELECT decrypted_secret
+        FROM vault.decrypted_secrets
+        WHERE name = 'cron_secret'
+        LIMIT 1
+      )
     ),
     body := '{}'::jsonb,
     timeout_milliseconds := 300000
