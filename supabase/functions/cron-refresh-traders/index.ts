@@ -192,13 +192,33 @@ interface RefreshResult {
   error?: string;
 }
 
+// One retry on HTTP 429. TornExchange's web tier doesn't publish a rate
+// limit, but firing 50+ scrapes back-to-back from a single Supabase
+// egress IP is loud enough to trip whatever they have. Sleep 15-30 s
+// (jittered) on the first 429 and try once more before giving up.
+async function scrapeTEPageWithRetry(handle: string): Promise<ScrapeResult> {
+  const first = await scrapeTEPage(handle);
+  if (first.http_status !== 429) return first;
+  await sleep(15000 + Math.floor(Math.random() * 15000));
+  return await scrapeTEPage(handle);
+}
+
 async function refreshOne(
   supabase: SupabaseClient,
   catalog: Map<string, { id: number; canonical: string }>,
   trader: { handle: string; torn_player_id: number | null; consecutive_fails: number | null },
 ): Promise<RefreshResult> {
-  const scrape = await scrapeTEPage(trader.handle);
+  const scrape = await scrapeTEPageWithRetry(trader.handle);
   const nowIso = new Date().toISOString();
+
+  // Treat persistent 429 as a transient outage rather than a real
+  // failure: don't bump consecutive_fails (otherwise the 24 h cooldown
+  // would quarantine traders that were never actually broken) and
+  // don't move last_scraped_at (so this trader sorts first on the
+  // next run when TE has had a moment to cool off).
+  if (scrape.http_status === 429) {
+    return { handle: trader.handle, ok: false, error: 'rate_limited' };
+  }
 
   if (!scrape.ok || scrape.rows.length === 0) {
     const nextFails = (trader.consecutive_fails ?? 0) + 1;
@@ -343,10 +363,13 @@ serve(async (req) => {
     if (result.ok) succeeded++; else failed++;
     results.push(result);
 
-    // Politeness delay between TE page fetches. Half a second × 50 traders
-    // = 25 s of sleep per run, comfortably under the function's wall clock
-    // and far below any reasonable rate limit on tornexchange.com.
-    await sleep(500);
+    // Politeness delay between TE page fetches. 2 s base + up to 1 s
+    // jitter so 50 traders take ~100-150 s instead of bursting in 25 s.
+    // The earlier 500 ms cadence tripped TornExchange's 429 throttle on
+    // a manual smoke test — this cadence is what keeps the daily run
+    // under their threshold while still finishing inside the function's
+    // 300 s timeout.
+    await sleep(2000 + Math.floor(Math.random() * 1000));
   }
 
   return json({
