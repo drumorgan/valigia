@@ -592,7 +592,12 @@ the script to see drip activity in the on-page panel.
   the minutes after. Migration 031 schedules a `pg_cron` job at 00:05
   UTC that fires `pg_net.http_post` against the `cron-refresh-traders`
   edge function, which walks every `te_traders` row sequentially with a
-  500 ms politeness delay and re-scrapes each TornExchange page. The
+  ~2-3 s jittered delay and re-scrapes each TornExchange page (initial
+  500 ms cadence tripped TE's web-tier 429 throttle; 2-3 s is the
+  empirical floor that keeps the run under their limit). On HTTP 429
+  the function sleeps 15-30 s and retries once; persistent 429s skip
+  the trader without bumping `consecutive_fails` so a transient TE
+  outage doesn't quarantine the whole pool. The
   secret + target URL live in **Supabase Vault** (`vault.secrets`),
   read at cron-runtime via `vault.decrypted_secrets`; using custom
   `ALTER DATABASE SET` GUCs is rejected by the Supabase SQL Editor
