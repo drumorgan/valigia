@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.17.1
+// @version      0.17.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.17.1';
+  const SCRIPT_VERSION = '0.17.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -862,6 +862,19 @@
     return label + ' (' + rowCount + '): ' + raw;
   }
 
+  // Failures the user can't act on — rate-limit gating and transient
+  // network/5xx errors that exhausted retries — shouldn't paint a red
+  // toast. The next scrape will succeed on its own (the iPad is the only
+  // surface and there's no DevTools to read the message anyway). Real
+  // key/permission errors still toast: those need user action in PDA's
+  // Script Manager.
+  function isSilentIngestError(result) {
+    if (!result || result.ok) return false;
+    if (result.retried) return true;
+    const lower = String(result.error || '').toLowerCase();
+    return lower.indexOf('rate_limited') !== -1 || lower.indexOf('rate limit') !== -1;
+  }
+
   // -- Per-item profit math ------------------------------------------------
   // The overlay only displays per-item values, so we only compute them.
   // Net sell is after Torn's 5% item-market fee. Returns null when inputs
@@ -1264,6 +1277,8 @@
     if (result.ok) {
       toast('Item Market: ' + result.count + ' prices', 'success');
       pingActivity('item_market');
+    } else if (isSilentIngestError(result)) {
+      log('Item Market ingest skipped (silent):', result.error);
     } else {
       toast(friendlyIngestError('Market', upsertRows.length, result), 'error');
     }
@@ -1418,6 +1433,8 @@
     if (result.ok) {
       toast('Bazaar: ' + result.count + ' prices', 'success');
       pingActivity('bazaar');
+    } else if (isSilentIngestError(result)) {
+      log('Bazaar ingest skipped (silent):', result.error);
     } else {
       toast(friendlyIngestError('Bazaar', rows.length, result), 'error');
     }
@@ -3975,6 +3992,8 @@
           : '';
         const toneForUnknown = unknownCount > 0 ? 'warning' : 'success';
         toast(destination + ': ' + result.count + ' prices' + suffix, toneForUnknown);
+      } else if (isSilentIngestError(result)) {
+        log('Travel ' + destination + ' ingest skipped (silent):', result.error);
       } else {
         toast(friendlyIngestError('Travel ' + destination, totalItems, result), 'error');
       }
