@@ -2688,59 +2688,7 @@ tr.row--negative td {
 
 .tab-host[hidden] { display: none; }
 
-/* ── Watchlist match card (above Best Run on Travel tab) ──────── */
-
-.wl-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--positive);
-  border-radius: 4px;
-  padding: 0.75rem 0.9rem;
-  margin-bottom: 1rem;
-}
-
-.wl-card-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-  font-family: 'Syne', sans-serif;
-  font-size: 0.75rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.wl-card-title {
-  color: var(--positive);
-  font-weight: 700;
-}
-
-.wl-card-badge {
-  background: var(--positive);
-  color: #0d0f14;
-  font-family: 'Syne Mono', monospace;
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 0.05rem 0.45rem;
-  border-radius: 999px;
-  letter-spacing: 0;
-}
-
-.wl-card-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.wl-card-more {
-  margin-top: 0.45rem;
-  font-size: 0.72rem;
-  color: var(--muted);
-  font-family: 'Syne Mono', monospace;
-  letter-spacing: 0.04em;
-}
-
-/* ── Match row (shared by card + tab) ─────────────────────────── */
+/* ── Match row (Watchlist tab) ────────────────────────────────── */
 
 .wl-match-row {
   display: grid;

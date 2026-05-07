@@ -1,14 +1,11 @@
-// Watchlist UI — tab content + compact matches card.
+// Watchlist UI — tab content + match-count helper.
 //
-// Two surfaces:
-//   1) renderMatchesCard(container)  — slim card at the top of the Travel
-//      tab. Shows the top few matches with direct links. Hidden if no
-//      matches, so non-watchlist users never see it.
-//   2) renderWatchlistTab(container) — the full tab: add-alert form,
+// Surfaces:
+//   1) renderWatchlistTab(container) — the full tab: add-alert form,
 //      existing-alerts table, and a matches panel below.
-//
-// Both surfaces share the same local alerts cache so flipping between
-// Travel ↔ Watchlist doesn't require a re-fetch.
+//   2) getMatchCount() — returns the current match count, used by main.js
+//      to populate the tab nav badge. Shares the local alerts cache with
+//      the tab body so flipping tabs doesn't trigger a re-fetch.
 
 import { listAlerts, upsertAlert, deleteAlert, findMatches, ALL_VENUES } from './watchlist.js';
 import { ABROAD_ITEMS } from './data/abroad-items.js';
@@ -269,40 +266,17 @@ function matchRowHtml(match) {
   `;
 }
 
-// ── Matches card (lives above Best Run on the Travel tab) ──────
+// ── Match count (drives the tab nav badge) ─────────────────────
 
 /**
- * Render a slim "Watchlist matches" card. Hidden entirely if the user has
- * no alerts or no current matches. Uses the shared cache — safe to call
- * on every tab switch.
+ * Current number of watchlist matches. Returns 0 if the user has no
+ * alerts or no hits. Uses the shared cache — safe to call on every tab
+ * switch.
  */
-export async function renderMatchesCard(container) {
-  if (!container) return;
+export async function getMatchCount() {
   if (alertsCache == null) await refreshAlertsAndMatches();
-  if (!alertsCache || alertsCache.length === 0 || !matchesCache || matchesCache.length === 0) {
-    container.innerHTML = '';
-    return;
-  }
-
-  const MAX_PREVIEW = 5;
-  const preview = matchesCache.slice(0, MAX_PREVIEW);
-  const moreCount = matchesCache.length - preview.length;
-  const moreLine = moreCount > 0
-    ? `<div class="wl-card-more">+${moreCount} more on the Watchlist tab</div>`
-    : '';
-
-  container.innerHTML = `
-    <div class="wl-card">
-      <div class="wl-card-header">
-        <span class="wl-card-title">WATCHLIST MATCHES</span>
-        <span class="wl-card-badge">${matchesCache.length}</span>
-      </div>
-      <div class="wl-card-rows">
-        ${preview.map(matchRowHtml).join('')}
-      </div>
-      ${moreLine}
-    </div>
-  `;
+  if (!alertsCache || alertsCache.length === 0) return 0;
+  return matchesCache ? matchesCache.length : 0;
 }
 
 // ── Full Watchlist tab ─────────────────────────────────────────
@@ -317,8 +291,7 @@ export async function renderWatchlistTab(container) {
         <p class="wl-sub">
           Pin items you want to buy under a target price. Every time you
           open Valigia, we check the Item Market, every crowd-sourced
-          bazaar, and every scraped travel shop — any hit surfaces here
-          and on the Travel tab.
+          bazaar, and every scraped travel shop — any hit surfaces here.
         </p>
       </div>
 
