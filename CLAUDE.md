@@ -316,6 +316,7 @@ valigia.girovagabondo.com/
 │   │   ├── ingest-travel-shop/   — validates PDA userscript travel scrapes, upserts abroad_prices
 │   │   ├── watchlist/            — session-gated CRUD on watchlist_alerts
 │   │   ├── ingest-te-trader/     — session-gated TornExchange page scraper → te_traders + te_buy_prices
+│   │   ├── cron-refresh-traders/ — daily pg_cron-triggered bulk refresh of every te_traders row
 │   │   └── _shared/              — cors + crypto helpers
 │   └── migrations/
 │       ├── 001_initial_schema.sql
@@ -345,7 +346,10 @@ valigia.girovagabondo.com/
 │       ├── 025_snapshot_from_abroad_prices.sql
 │       ├── 026_yata_snapshots_dedup_index.sql
 │       ├── 027_ingest_rate_limits.sql
-│       └── 028_te_traders.sql
+│       ├── 028_te_traders.sql
+│       ├── 029_get_stats_snapshot.sql
+│       ├── 030_restock_cadence_filter.sql
+│       └── 031_cron_refresh_traders.sql
 ├── .env
 ├── vite.config.js
 └── .github/
@@ -582,6 +586,20 @@ the script to see drip activity in the on-page panel.
   loose tag scan) and echoes a `debug_sample` of raw HTML on failure
   for remote iteration. Rate-limited to one scrape per submitter per
   10 s via `ingest_rate_check`.
+
+  **Daily pool refresh** — Torn's price update happens at midnight Torn
+  Time (= 00:00 UTC); traders typically rebalance their buy offers in
+  the minutes after. Migration 031 schedules a `pg_cron` job at 00:05
+  UTC that fires `pg_net.http_post` against the `cron-refresh-traders`
+  edge function, which walks every `te_traders` row sequentially with a
+  500 ms politeness delay and re-scrapes each TornExchange page. The
+  cron path uses `CRON_SECRET` for auth (no player session) and a
+  baked-in `SERVICE_TORN_API_KEY` for the items catalog lookup. Pages
+  with `consecutive_fails ≥ 3` get a 24 h cooldown so dead handles
+  don't burn the budget every night; sending `{"force": true}` in the
+  POST body bypasses the cooldown for manual debugging. The per-trader
+  on-demand REFRESH button still works exactly as before — the cron is
+  purely additive.
 
 ### Known Limitations
 - **Slots** — Auto-detect misses faction perks; user overrides manually.
