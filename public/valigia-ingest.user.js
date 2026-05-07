@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.17.2
+// @version      0.17.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -30,7 +30,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.17.2';
+  const SCRIPT_VERSION = '0.17.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2619,6 +2619,14 @@
   // the pool-wide cache and vice-versa.
   const flashDealCache = new Map();
 
+  // Generation guard: SPA hash navigation can spawn multiple
+  // injectFlashDealsBar() calls in flight before any one has finished
+  // its fetch + insert, and each call's "remove existing" check happens
+  // before the await — so multiple calls all see "no existing" and stack
+  // their bars at the end. Bumping this on every call and bailing if our
+  // generation isn't current makes only the latest call paint.
+  let flashDealsGeneration = 0;
+
   async function fetchFlashDeals(itemIdFilter) {
     const cacheKey = itemIdFilter ? 'item:' + itemIdFilter : 'all';
     const now = Date.now();
@@ -2880,11 +2888,15 @@
       '#' + FLASH_DEALS_BAR_ID + '.vgl-fd-open .vgl-fd-body {',
       '  display: flex;',
       '}',
+      // Two-row layout: item name + profit on the header line, then
+      // buy → sell on a wrap-friendly second line. Avoids the prior
+      // single-line grid where 9-digit dollar amounts on a phone-width
+      // screen forced the item-name column to 0px and clipped the
+      // profit off the right edge under overflow:hidden.
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-row {',
-      '  display: grid;',
-      '  grid-template-columns: minmax(0,1.4fr) auto auto auto auto auto;',
-      '  align-items: center;',
-      '  gap: 8px;',
+      '  display: flex;',
+      '  flex-direction: column;',
+      '  gap: 4px;',
       '  padding: 6px 8px;',
       '  border: 1px solid #252a35;',
       '  border-radius: 3px;',
@@ -2892,13 +2904,32 @@
       '  color: #c8cdd8;',
       '  font-size: 12px;',
       '}',
-      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-item { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-head-line {',
+      '  display: flex;',
+      '  align-items: baseline;',
+      '  gap: 8px;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-trade-line {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  flex-wrap: wrap;',
+      '  gap: 4px 8px;',
+      '}',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-item {',
+      '  font-weight: 700;',
+      '  color: #c8cdd8;',
+      '  flex: 1 1 auto;',
+      '  min-width: 0;',
+      '  overflow: hidden;',
+      '  text-overflow: ellipsis;',
+      '  white-space: nowrap;',
+      '}',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-buy, #' + FLASH_DEALS_BAR_ID + ' .vgl-fd-sell {',
       '  color: #c8cdd8;',
-      '  white-space: nowrap;',
       '  text-decoration: none;',
       '  display: inline-flex;',
       '  align-items: baseline;',
+      '  flex-wrap: wrap;',
       '  gap: 4px;',
       '  padding: 2px 4px;',
       '  border-radius: 2px;',
@@ -2908,8 +2939,8 @@
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-buy strong { color: #e8c84a; font-weight: 700; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-sell strong { color: #4ae8a0; font-weight: 700; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-handle { color: #8a8fa0; font-size: 11px; }',
-      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-profit { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
-      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-arrow, #' + FLASH_DEALS_BAR_ID + ' .vgl-fd-equals { color: #e8c84a; font-weight: 700; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-profit { color: #4ae8a0; font-weight: 700; white-space: nowrap; flex: 0 0 auto; }',
+      '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-arrow { color: #e8c84a; font-weight: 700; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-prefix { color: #8a8fa0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }',
       '#' + FLASH_DEALS_BAR_ID + ' .vgl-fd-label { color: #8a8fa0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }',
     ].join('\n');
@@ -2948,9 +2979,21 @@
       const row = document.createElement('div');
       row.className = 'vgl-fd-row';
 
+      // Header line: item name (truncating) + profit pinned right.
+      const headLine = document.createElement('div');
+      headLine.className = 'vgl-fd-head-line';
       const name = document.createElement('span');
       name.className = 'vgl-fd-item';
       name.textContent = itemNameFor(d.item_id);
+      const profit = document.createElement('span');
+      profit.className = 'vgl-fd-profit';
+      profit.textContent = '+' + formatMoney(d.profit);
+      headLine.appendChild(name);
+      headLine.appendChild(profit);
+
+      // Trade line: buy \u2192 sell, wrapping if it doesn't fit.
+      const tradeLine = document.createElement('div');
+      tradeLine.className = 'vgl-fd-trade-line';
 
       const buy = document.createElement('a');
       buy.className = 'vgl-fd-buy';
@@ -2994,20 +3037,12 @@
       sell.appendChild(sellLabel);
       sell.appendChild(handle);
 
-      const equals = document.createElement('span');
-      equals.className = 'vgl-fd-equals';
-      equals.textContent = '=';
+      tradeLine.appendChild(buy);
+      tradeLine.appendChild(arrow);
+      tradeLine.appendChild(sell);
 
-      const profit = document.createElement('span');
-      profit.className = 'vgl-fd-profit';
-      profit.textContent = '+' + formatMoney(d.profit);
-
-      row.appendChild(name);
-      row.appendChild(buy);
-      row.appendChild(arrow);
-      row.appendChild(sell);
-      row.appendChild(equals);
-      row.appendChild(profit);
+      row.appendChild(headLine);
+      row.appendChild(tradeLine);
       body.appendChild(row);
     }
 
@@ -3033,8 +3068,10 @@
    * fetch ordering.
    */
   async function injectFlashDealsBar() {
-    const existing = document.getElementById(FLASH_DEALS_BAR_ID);
-    if (existing) existing.remove();
+    const myGeneration = ++flashDealsGeneration;
+    // Sweep any already-rendered bars before fetching too — keeps the
+    // page tidy if a prior generation already painted.
+    document.querySelectorAll('#' + FLASH_DEALS_BAR_ID).forEach(function (n) { n.remove(); });
 
     const itemIdFilter = detectItemMarketSingleItemId();
 
@@ -3042,6 +3079,7 @@
       fetchFlashDeals(itemIdFilter),
       ensureItemCatalog(),
     ]);
+    if (myGeneration !== flashDealsGeneration) return;
     if (!deals || deals.length === 0) return;
 
     injectFlashDealsStyles();
@@ -3052,6 +3090,12 @@
       document.querySelector('.content-wrapper') ||
       document.querySelector('#mainContainer') ||
       document.body;
+
+    // Final sweep right before insert: a parallel call from an earlier
+    // generation could have completed its fetch and inserted between our
+    // generation check and now. querySelectorAll catches every duplicate
+    // (getElementById would only return the first).
+    document.querySelectorAll('#' + FLASH_DEALS_BAR_ID).forEach(function (n) { n.remove(); });
 
     const lowestBar = document.getElementById(LOWEST_PRICE_BAR_ID);
     const watchlistBar = document.getElementById(WATCHLIST_BAR_ID);
