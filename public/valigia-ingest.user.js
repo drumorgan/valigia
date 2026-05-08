@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.17.4
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from four pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack.
+// @version      0.18.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from five pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
 // @match        https://www.torn.com/bazaar.php*
 // @match        https://www.torn.com/item.php*
+// @match        https://www.torn.com/museum.php*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
@@ -30,7 +31,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.17.4';
+  const SCRIPT_VERSION = '0.18.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4468,6 +4469,360 @@
     // scouts counter is vanity.
   }
 
+  // -- Museum page (museum.php) -------------------------------------------
+  // Players visiting the museum want to know whether to grind for missing
+  // artifact pieces or just buy them from the market / a bazaar. This
+  // runner injects an expandable bar at the top of the page listing every
+  // Torn-classified artifact alongside its current Item Market floor and
+  // the cheapest fresh bazaar listing in the shared pool. Pure read
+  // surface — no scraping, no writes.
+
+  const MUSEUM_BAR_ID = 'valigia-museum-bar';
+  // Match the Lowest Price Found freshness window — anything older and
+  // the bazaar listing is likely sold or pulled.
+  const MUSEUM_BAZAAR_MAX_AGE_MS = 30 * 60 * 1000;
+  // Drop the locked / troll listings same as Lowest Price Found.
+  const MUSEUM_TOO_GOOD_THRESHOLD = 0.10;
+  // Cap displayed rows. Torn currently lists ~40 artifact items in the
+  // catalog; a bounded list keeps the DOM small even if more are added.
+  const MUSEUM_MAX_ROWS = 60;
+
+  function injectMuseumStyles() {
+    if (document.getElementById('valigia-museum-styles')) return;
+    const css = [
+      '#' + MUSEUM_BAR_ID + ' {',
+      '  all: initial;',
+      '  display: block;',
+      '  margin: 8px auto 12px;',
+      '  max-width: 1100px;',
+      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  color: #c8cdd8;',
+      '  background: #161a22;',
+      '  border: 1px solid #252a35;',
+      '  border-left: 3px solid #e8c84a;',
+      '  border-radius: 4px;',
+      '  box-sizing: border-box;',
+      '  overflow: hidden;',
+      '}',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-head {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '  padding: 8px 12px;',
+      '  cursor: pointer;',
+      '  user-select: none;',
+      '}',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-title {',
+      '  color: #e8c84a;',
+      '  font-weight: 700;',
+      '  font-size: 12px;',
+      '  letter-spacing: 0.12em;',
+      '  text-transform: uppercase;',
+      '}',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-count {',
+      '  background: #e8c84a;',
+      '  color: #0d0f14;',
+      '  font-weight: 700;',
+      '  font-size: 11px;',
+      '  padding: 1px 7px;',
+      '  border-radius: 999px;',
+      '}',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-caret {',
+      '  margin-left: auto;',
+      '  color: #e8c84a;',
+      '  font-size: 11px;',
+      '  transition: transform 150ms;',
+      '}',
+      '#' + MUSEUM_BAR_ID + '.vgl-mu-open .vgl-mu-caret {',
+      '  transform: rotate(180deg);',
+      '}',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-body {',
+      '  display: none;',
+      '  padding: 4px 10px 10px;',
+      '  gap: 4px;',
+      '  flex-direction: column;',
+      '}',
+      '#' + MUSEUM_BAR_ID + '.vgl-mu-open .vgl-mu-body {',
+      '  display: flex;',
+      '}',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-row {',
+      '  display: grid;',
+      '  grid-template-columns: minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.2fr);',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '  padding: 6px 8px;',
+      '  border: 1px solid #252a35;',
+      '  border-radius: 3px;',
+      '  background: rgba(232,200,74,0.04);',
+      '  font-size: 12px;',
+      '}',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-item { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-cell a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 6px; min-width: 0; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-cell a:active { opacity: 0.7; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-label {',
+      '  font-size: 10px;',
+      '  font-weight: 700;',
+      '  letter-spacing: 0.06em;',
+      '  text-transform: uppercase;',
+      '  padding: 2px 6px;',
+      '  border-radius: 2px;',
+      '  white-space: nowrap;',
+      '}',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-label--market { background: rgba(232,200,74,0.18); color: #e8c84a; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-label--bazaar { background: rgba(74,232,160,0.18); color: #4ae8a0; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-price { color: #e8c84a; font-weight: 700; white-space: nowrap; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-price--bazaar { color: #4ae8a0; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-empty { color: #5a6070; white-space: nowrap; font-style: italic; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-age { color: #8a8fa0; font-size: 10px; white-space: nowrap; }',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-museum-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  /**
+   * Pull every Artifact-typed item from the warm catalog. Returns an
+   * array of { id, name } sorted by name for stable rendering before
+   * we know prices.
+   */
+  function listArtifactItems() {
+    if (!itemMetaCache) return [];
+    const out = [];
+    itemMetaCache.forEach(function (meta, id) {
+      if (meta && meta.type === 'Artifact' && meta.name) {
+        out.push({ id: id, name: meta.name });
+      }
+    });
+    out.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    return out;
+  }
+
+  /**
+   * Bulk-read sell_prices and bazaar_prices for the given ids in two
+   * PostgREST round-trips. Returns { market: Map<id, {price, min_price,
+   * updated_at}>, bazaar: Map<id, {price, quantity, owner_id, observed_at}> }
+   * — bazaar map only contains the cheapest fresh, scam-filtered
+   * listing per id.
+   */
+  async function fetchMuseumPrices(ids) {
+    if (!ids || ids.length === 0) {
+      return { market: new Map(), bazaar: new Map() };
+    }
+    const idList = ids.join(',');
+    const sinceIso = new Date(Date.now() - MUSEUM_BAZAAR_MAX_AGE_MS).toISOString();
+    const [sellRows, bazaarRows] = await Promise.all([
+      fetchJSON(
+        SELL_PRICES_URL +
+        '?item_id=in.(' + idList + ')' +
+        '&select=item_id,price,min_price,updated_at'
+      ),
+      fetchJSON(
+        BAZAAR_PRICES_URL +
+        '?item_id=in.(' + idList + ')' +
+        '&checked_at=gte.' + encodeURIComponent(sinceIso) +
+        '&price=gt.1' +
+        '&select=item_id,price,quantity,bazaar_owner_id,checked_at' +
+        '&order=price.asc'
+      ),
+    ]);
+
+    const market = new Map();
+    if (Array.isArray(sellRows)) {
+      for (const r of sellRows) {
+        if (!r || typeof r.item_id !== 'number') continue;
+        market.set(r.item_id, {
+          price: Number(r.price),
+          min_price: r.min_price != null ? Number(r.min_price) : null,
+          updated_at: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+        });
+      }
+    }
+
+    const bazaar = new Map();
+    if (Array.isArray(bazaarRows)) {
+      for (const r of bazaarRows) {
+        if (!r || typeof r.item_id !== 'number') continue;
+        if (bazaar.has(r.item_id)) continue; // already have the cheapest
+        const price = Number(r.price);
+        if (!Number.isFinite(price) || price <= 1) continue;
+        // Filter scam listings against the same market floor the Lowest
+        // Price Found bar uses.
+        const m = market.get(r.item_id);
+        const floor = m && m.min_price != null ? m.min_price : (m ? m.price : null);
+        if (Number.isFinite(floor) && floor > 0 && price < floor * MUSEUM_TOO_GOOD_THRESHOLD) {
+          continue;
+        }
+        bazaar.set(r.item_id, {
+          price: price,
+          quantity: Number(r.quantity) || 1,
+          owner_id: r.bazaar_owner_id,
+          observed_at: r.checked_at ? new Date(r.checked_at).getTime() : 0,
+        });
+      }
+    }
+
+    return { market: market, bazaar: bazaar };
+  }
+
+  function buildMuseumBar(rows) {
+    const bar = document.createElement('div');
+    bar.id = MUSEUM_BAR_ID;
+
+    const head = document.createElement('div');
+    head.className = 'vgl-mu-head';
+    const title = document.createElement('span');
+    title.className = 'vgl-mu-title';
+    title.textContent = 'Artifact Prices';
+    const count = document.createElement('span');
+    count.className = 'vgl-mu-count';
+    count.textContent = String(rows.length);
+    const caret = document.createElement('span');
+    caret.className = 'vgl-mu-caret';
+    // Unicode escape, not the literal glyph: cPanel serves .user.js as
+    // Latin-1 so multi-byte UTF-8 mis-decodes in PDA's webview. Same
+    // workaround the other bars use.
+    caret.textContent = '\u25BE';
+    head.appendChild(title);
+    head.appendChild(count);
+    head.appendChild(caret);
+
+    const body = document.createElement('div');
+    body.className = 'vgl-mu-body';
+
+    for (const r of rows) {
+      const row = document.createElement('div');
+      row.className = 'vgl-mu-row';
+
+      const name = document.createElement('span');
+      name.className = 'vgl-mu-item';
+      name.textContent = r.name;
+
+      // Market cell: tappable, deep-links to the Item Market search.
+      const marketCell = document.createElement('span');
+      marketCell.className = 'vgl-mu-cell';
+      const marketLink = document.createElement('a');
+      marketLink.href =
+        'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + r.id;
+      marketLink.target = '_top';
+      marketLink.rel = 'noopener';
+      const marketLabel = document.createElement('span');
+      marketLabel.className = 'vgl-mu-label vgl-mu-label--market';
+      marketLabel.textContent = 'Market';
+      marketLink.appendChild(marketLabel);
+      if (r.market != null) {
+        const price = document.createElement('span');
+        price.className = 'vgl-mu-price';
+        price.textContent = formatMoney(r.market);
+        marketLink.appendChild(price);
+      } else {
+        const empty = document.createElement('span');
+        empty.className = 'vgl-mu-empty';
+        empty.textContent = 'no listings';
+        marketLink.appendChild(empty);
+      }
+      marketCell.appendChild(marketLink);
+
+      // Bazaar cell: tappable when we have a fresh deal, plain text otherwise.
+      const bazaarCell = document.createElement('span');
+      bazaarCell.className = 'vgl-mu-cell';
+      const bazaarLabel = document.createElement('span');
+      bazaarLabel.className = 'vgl-mu-label vgl-mu-label--bazaar';
+      bazaarLabel.textContent = 'Bazaar';
+      if (r.bazaar) {
+        const link = document.createElement('a');
+        link.href = 'https://www.torn.com/bazaar.php?userId=' + r.bazaar.owner_id;
+        link.target = '_top';
+        link.rel = 'noopener';
+        link.appendChild(bazaarLabel);
+        const price = document.createElement('span');
+        price.className = 'vgl-mu-price vgl-mu-price--bazaar';
+        price.textContent = formatMoney(r.bazaar.price);
+        link.appendChild(price);
+        const age = document.createElement('span');
+        age.className = 'vgl-mu-age';
+        age.textContent = formatAge(r.bazaar.observed_at);
+        link.appendChild(age);
+        bazaarCell.appendChild(link);
+      } else {
+        bazaarCell.appendChild(bazaarLabel);
+        const empty = document.createElement('span');
+        empty.className = 'vgl-mu-empty';
+        empty.textContent = 'none fresh';
+        bazaarCell.appendChild(empty);
+      }
+
+      row.appendChild(name);
+      row.appendChild(marketCell);
+      row.appendChild(bazaarCell);
+      body.appendChild(row);
+    }
+
+    head.addEventListener('click', function () {
+      bar.classList.toggle('vgl-mu-open');
+    });
+
+    bar.appendChild(head);
+    bar.appendChild(body);
+    return bar;
+  }
+
+  /**
+   * Top-level entry. Idempotent: tears down any prior bar before
+   * fetching, no-ops silently when the catalog hasn't warmed yet or
+   * Torn currently lists no Artifact items.
+   */
+  async function runMuseum() {
+    const existing = document.getElementById(MUSEUM_BAR_ID);
+    if (existing) existing.remove();
+
+    await ensureItemCatalog();
+    const items = listArtifactItems();
+    if (items.length === 0) {
+      log('museum: no artifacts in catalog');
+      return;
+    }
+
+    const ids = items.map(function (i) { return i.id; });
+    const { market, bazaar } = await fetchMuseumPrices(ids);
+
+    // Compose rows: only keep artifacts that have at least one of
+    // (market price, fresh bazaar listing). Sort by market price desc
+    // — most valuable first — with bazaar-only rows tail-sorted by
+    // bazaar price desc.
+    const rows = [];
+    for (const it of items) {
+      const m = market.get(it.id);
+      const b = bazaar.get(it.id);
+      const marketPrice = m ? Number(m.price) : null;
+      if (marketPrice == null && !b) continue;
+      rows.push({
+        id: it.id,
+        name: it.name,
+        market: Number.isFinite(marketPrice) ? marketPrice : null,
+        bazaar: b || null,
+      });
+    }
+    rows.sort(function (a, b) {
+      const av = a.market != null ? a.market : (a.bazaar ? a.bazaar.price : 0);
+      const bv = b.market != null ? b.market : (b.bazaar ? b.bazaar.price : 0);
+      return bv - av;
+    });
+    const trimmed = rows.slice(0, MUSEUM_MAX_ROWS);
+    if (trimmed.length === 0) return;
+
+    injectMuseumStyles();
+    const bar = buildMuseumBar(trimmed);
+
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(bar, host.firstChild);
+  }
+
   // -- Drip-scrape -----------------------------------------------------------
   // Background bazaar-pool maintenance. On every dispatch (except the
   // bazaar runner, which already writes heavily to bazaar_prices via DOM
@@ -4707,6 +5062,7 @@
     if (/\/page\.php\?.*sid=ItemMarket\b/i.test(url)) return 'itemmarket';
     if (/\/bazaar\.php/i.test(url)) return 'bazaar';
     if (/\/item\.php/i.test(url)) return 'itempage';
+    if (/\/museum\.php/i.test(url)) return 'museum';
     return null;
   }
 
@@ -4735,6 +5091,7 @@
       case 'itemmarket': return runItemMarket();
       case 'bazaar':     return runBazaar();
       case 'itempage':   return runItemPage();
+      case 'museum':     return runMuseum();
       default:
         log('Unmatched page - skipping. url=' + location.href);
     }
