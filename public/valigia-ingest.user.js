@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.19.2
+// @version      0.20.0
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.19.2';
+  const SCRIPT_VERSION = '0.20.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -74,6 +74,7 @@
   const SELL_PRICES_URL = SUPABASE_REST_URL + '/sell_prices';
   const BAZAAR_PRICES_URL = SUPABASE_REST_URL + '/bazaar_prices';
   const RESTOCK_EVENTS_URL = SUPABASE_REST_URL + '/restock_events';
+  const POINTS_RATE_URL = SUPABASE_REST_URL + '/points_market_rate';
   const ABROAD_PRICES_URL = SUPABASE_REST_URL + '/abroad_prices';
 
   // Known Torn travel shop category names. Used as section anchors: the
@@ -2274,9 +2275,11 @@
     const ids = [...new Set(scrapedItems.map(function (r) { return r.item_id; }))];
     if (ids.length === 0) return;
 
-    // Warm the items catalog in parallel with the sell-prices read so
-    // the bar has real names for every row, and so the museum-set
-    // resolver can map item names → ids.
+    // Warm the items catalog and the shared Points Market rate in
+    // parallel with the sell-prices read so the bar has real names for
+    // every row, the museum-set resolver can map item names → ids,
+    // and the points-arb route can fire even for players who've never
+    // visited pmarket.php (rate falls through to the community pool).
     const [sellRows] = await Promise.all([
       fetchJSON(
         SELL_PRICES_URL +
@@ -2284,6 +2287,7 @@
         '&select=item_id,price'
       ),
       ensureItemCatalog(),
+      ensurePointsRate(),
     ]);
 
     const marketByItem = new Map();
@@ -4676,9 +4680,12 @@
     return set.points * thisItemMarket / totalSetMarket;
   }
 
-  // Read the captured Points Market rate. Returns null if missing or
-  // older than POINTS_RATE_TTL_MS — caller treats null as "no points
-  // signal possible" and silently falls back to market-only deals.
+  // Read the captured Points Market rate from the local cache only.
+  // Returns null if missing or older than POINTS_RATE_TTL_MS. Callers
+  // that can tolerate one round-trip should `await ensurePointsRate()`
+  // first to populate the local cache from the shared Supabase pool;
+  // those that cant (sync render paths) just live with an occasional
+  // null when this user has never warmed the cache.
   function getPointsRate() {
     try {
       const raw = localStorage.getItem(POINTS_RATE_KEY);
@@ -4690,6 +4697,51 @@
     } catch (_) { return null; }
   }
 
+  // Warm the local cache from the shared Supabase pool when it's missing
+  // or stale. Lets a player who has never visited pmarket.php still see
+  // BUY UNDER thresholds in the museum bar and POINTS BUY rows in the
+  // bazaar Deals bar — provided some other Valigia user pushed a fresh
+  // rate in the last POINTS_RATE_TTL_MS. Silent no-op on any failure
+  // (network, parse, missing seed): the consumer falls back to "no
+  // rate" placeholders, which is the same UX as before this change.
+  async function ensurePointsRate() {
+    if (getPointsRate() != null) return;
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: POINTS_RATE_URL + '?id=eq.1&select=rate,updated_at',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) return;
+      const rows = JSON.parse(res.responseText || '[]');
+      const row = Array.isArray(rows) ? rows[0] : null;
+      if (!row || !Number.isFinite(Number(row.rate))) return;
+      const observedAt = row.updated_at ? new Date(row.updated_at).getTime() : 0;
+      // Honour the same 24h freshness gate as locally-captured rates.
+      // Catches the seed-row case (observed_at = 1970) and any pool
+      // that's gone collectively cold.
+      if (!observedAt || Date.now() - observedAt > POINTS_RATE_TTL_MS) return;
+      try {
+        localStorage.setItem(POINTS_RATE_KEY, JSON.stringify({
+          rate: Number(row.rate),
+          observed_at: observedAt,
+        }));
+      } catch (_) { /* storage full — non-fatal */ }
+    } catch (e) {
+      log('points rate Supabase read failed:', e);
+    }
+  }
+
+  // Push a freshly-captured rate to both the local cache (immediate
+  // truth for this browser) and the shared Supabase pool (benefits
+  // every other Valigia user for the next 24h). Supabase write is
+  // fire-and-forget — the user's own banner shows success the moment
+  // localStorage is written; a network failure on the pool write is
+  // logged but never blocks the visible UX.
   function setPointsRate(rate) {
     try {
       localStorage.setItem(POINTS_RATE_KEY, JSON.stringify({
@@ -4697,6 +4749,26 @@
         observed_at: Date.now(),
       }));
     } catch (_) { /* storage full / disabled — non-fatal */ }
+    pushPointsRateToSupabase(rate).catch(function (e) {
+      log('points rate Supabase write failed:', e);
+    });
+  }
+
+  async function pushPointsRateToSupabase(rate) {
+    await gmRequest({
+      method: 'PATCH',
+      url: POINTS_RATE_URL + '?id=eq.1',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+        'Prefer': 'return=minimal',
+      },
+      data: JSON.stringify({
+        rate: Math.round(rate),
+        updated_at: new Date().toISOString(),
+      }),
+    });
   }
 
   // -- Museum page (museum.php) -------------------------------------------
@@ -5075,7 +5147,15 @@
     }
 
     const ids = items.map(function (i) { return i.id; });
-    const { market, bazaar } = await fetchMuseumPrices(ids);
+    // Fetch museum prices and warm the Points Market rate from the
+    // shared Supabase pool in parallel — the latter falls through to
+    // localStorage cache when fresh, otherwise pulls the community
+    // rate so a player who's never visited pmarket.php still sees
+    // BUY UNDER thresholds.
+    const [{ market, bazaar }] = await Promise.all([
+      fetchMuseumPrices(ids),
+      ensurePointsRate(),
+    ]);
 
     // Flatten the {price, min_price, updated_at} shape into the simple
     // Map<id, number> that computePointsForItem() expects. We feed it
