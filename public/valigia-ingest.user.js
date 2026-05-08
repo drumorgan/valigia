@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.19.0
+// @version      0.19.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.19.0';
+  const SCRIPT_VERSION = '0.19.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4614,10 +4614,10 @@
       { name: 'White Senet Pawn',  qty: 5 },
       { name: 'Black Senet Pawn',  qty: 5 },
     ]},
-    { name: 'Quran Script Set',  points: 1000,  items: [
-      { name: 'Quran Script : Ali',                  qty: 1 },
-      { name: 'Quran Script : Ibn Masud',            qty: 1 },
-      { name: "Script from the Quran: Ubay Ibn Ka'b", qty: 1 },
+    { name: 'Companion Script Set', points: 1000, items: [
+      { name: 'Companion Script : Abdullah', qty: 1 },
+      { name: 'Companion Script : Ali',      qty: 1 },
+      { name: 'Companion Script : Ubay',     qty: 1 },
     ]},
     { name: 'Egyptian Amulet',   points: 10000, items: [{ name: 'Egyptian Amulet', qty: 1 }] },
   ];
@@ -4777,7 +4777,7 @@
       '}',
       '#' + MUSEUM_BAR_ID + ' .vgl-mu-row {',
       '  display: grid;',
-      '  grid-template-columns: minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.2fr);',
+      '  grid-template-columns: minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr);',
       '  align-items: center;',
       '  gap: 8px;',
       '  padding: 6px 8px;',
@@ -4801,10 +4801,26 @@
       '}',
       '#' + MUSEUM_BAR_ID + ' .vgl-mu-label--market { background: rgba(232,200,74,0.18); color: #e8c84a; }',
       '#' + MUSEUM_BAR_ID + ' .vgl-mu-label--bazaar { background: rgba(74,232,160,0.18); color: #4ae8a0; }',
+      // Buy-under cell uses an orange/amber palette so it visually
+      // separates from the gold market price + green bazaar price — a
+      // third distinct semantic (a target threshold, not an observed
+      // price). Sits in the rightmost cell so the eye sweeps left-to-
+      // right: name → what it costs → what its going for → buy if under X.
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-label--buy { background: rgba(232,130,74,0.18); color: #e8a14a; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-price--buy { color: #e8a14a; font-weight: 700; white-space: nowrap; }',
       '#' + MUSEUM_BAR_ID + ' .vgl-mu-price { color: #e8c84a; font-weight: 700; white-space: nowrap; }',
       '#' + MUSEUM_BAR_ID + ' .vgl-mu-price--bazaar { color: #4ae8a0; }',
       '#' + MUSEUM_BAR_ID + ' .vgl-mu-empty { color: #5a6070; white-space: nowrap; font-style: italic; }',
       '#' + MUSEUM_BAR_ID + ' .vgl-mu-age { color: #8a8fa0; font-size: 10px; white-space: nowrap; }',
+      // Header rate caption: tucks under the title row, small grey text
+      // that explains where the BUY UNDER thresholds come from. Tinted
+      // amber when stale/missing so the user knows to visit Points Market.
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-rate { font-size: 11px; color: #8a8fa0; margin-left: 12px; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-rate strong { color: #e8c84a; font-weight: 700; }',
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-rate--missing { color: #e8a14a; }',
+      // Hit signal: when bazaar < buyUnder, highlight the row gold so a
+      // scanning eye lands on the actionable rows first.
+      '#' + MUSEUM_BAR_ID + ' .vgl-mu-row--hit { border-color: rgba(232,200,74,0.45); background: rgba(232,200,74,0.10); }',
     ].join('\n');
     const style = document.createElement('style');
     style.id = 'valigia-museum-styles';
@@ -4896,7 +4912,7 @@
     return { market: market, bazaar: bazaar };
   }
 
-  function buildMuseumBar(rows) {
+  function buildMuseumBar(rows, pointsRate) {
     const bar = document.createElement('div');
     bar.id = MUSEUM_BAR_ID;
 
@@ -4908,6 +4924,22 @@
     const count = document.createElement('span');
     count.className = 'vgl-mu-count';
     count.textContent = String(rows.length);
+
+    // Inline rate caption next to the count. Tells the user where the
+    // BUY UNDER thresholds come from + nudges them to refresh by visiting
+    // Points Market when the rate is missing/stale.
+    const rateCaption = document.createElement('span');
+    if (Number.isFinite(pointsRate)) {
+      rateCaption.className = 'vgl-mu-rate';
+      rateCaption.appendChild(document.createTextNode('Points rate '));
+      const strong = document.createElement('strong');
+      strong.textContent = formatMoneyCompact(pointsRate) + '/pt';
+      rateCaption.appendChild(strong);
+    } else {
+      rateCaption.className = 'vgl-mu-rate vgl-mu-rate--missing';
+      rateCaption.textContent = 'Visit Points Market for buy thresholds';
+    }
+
     const caret = document.createElement('span');
     caret.className = 'vgl-mu-caret';
     // Unicode escape, not the literal glyph: cPanel serves .user.js as
@@ -4916,6 +4948,7 @@
     caret.textContent = '\u25BE';
     head.appendChild(title);
     head.appendChild(count);
+    head.appendChild(rateCaption);
     head.appendChild(caret);
 
     const body = document.createElement('div');
@@ -4923,7 +4956,10 @@
 
     for (const r of rows) {
       const row = document.createElement('div');
-      row.className = 'vgl-mu-row';
+      // Highlight the row when the cheapest fresh bazaar listing is at
+      // or under the points-buy threshold — the actionable state.
+      const isHit = r.bazaar && Number.isFinite(r.buyUnder) && r.bazaar.price <= r.buyUnder;
+      row.className = 'vgl-mu-row' + (isHit ? ' vgl-mu-row--hit' : '');
 
       const name = document.createElement('span');
       name.className = 'vgl-mu-item';
@@ -4983,9 +5019,33 @@
         bazaarCell.appendChild(empty);
       }
 
+      // Buy-under cell: amber threshold price computed from the items
+      // share of its museum-set points × current Points Market rate ×
+      // (1 - POINTS_BUY_DISCOUNT). When we cant compute it (no rate
+      // cached, or item not in any set), show a dim placeholder so the
+      // column still aligns.
+      const buyCell = document.createElement('span');
+      buyCell.className = 'vgl-mu-cell';
+      const buyLabel = document.createElement('span');
+      buyLabel.className = 'vgl-mu-label vgl-mu-label--buy';
+      buyLabel.textContent = 'Buy Under';
+      buyCell.appendChild(buyLabel);
+      if (Number.isFinite(r.buyUnder)) {
+        const buyPrice = document.createElement('span');
+        buyPrice.className = 'vgl-mu-price--buy';
+        buyPrice.textContent = formatMoney(r.buyUnder);
+        buyCell.appendChild(buyPrice);
+      } else {
+        const empty = document.createElement('span');
+        empty.className = 'vgl-mu-empty';
+        empty.textContent = r.buyUnderReason || '—';
+        buyCell.appendChild(empty);
+      }
+
       row.appendChild(name);
       row.appendChild(marketCell);
       row.appendChild(bazaarCell);
+      row.appendChild(buyCell);
       body.appendChild(row);
     }
 
@@ -5017,21 +5077,56 @@
     const ids = items.map(function (i) { return i.id; });
     const { market, bazaar } = await fetchMuseumPrices(ids);
 
-    // Compose rows: only keep artifacts that have at least one of
-    // (market price, fresh bazaar listing). Sort by market price desc
-    // — most valuable first — with bazaar-only rows tail-sorted by
-    // bazaar price desc.
+    // Flatten the {price, min_price, updated_at} shape into the simple
+    // Map<id, number> that computePointsForItem() expects. We feed it
+    // every artifact market price we already fetched — set members live
+    // in there too because listArtifactItems() returns every Artifact-
+    // typed catalog entry (Senet pawns, board, etc. are all Artifacts).
+    const marketByItem = new Map();
+    market.forEach(function (m, id) {
+      if (m && Number.isFinite(m.price)) marketByItem.set(id, m.price);
+    });
+
+    const pointsRate = getPointsRate();
+
+    // Compose rows: keep artifacts with any of (market price, fresh
+    // bazaar listing, computed buy-under threshold). Sort by market
+    // price desc — most valuable first — with bazaar-only rows tail-
+    // sorted by bazaar price desc.
     const rows = [];
     for (const it of items) {
       const m = market.get(it.id);
       const b = bazaar.get(it.id);
       const marketPrice = m ? Number(m.price) : null;
-      if (marketPrice == null && !b) continue;
+
+      // Buy-under threshold: per-item points value × current pmarket
+      // rate × (1 - POINTS_BUY_DISCOUNT). Falls through to null with a
+      // human-readable reason when we cant compute it, so the cell
+      // shows a meaningful placeholder instead of an empty box.
+      let buyUnder = null;
+      let buyUnderReason = null;
+      const set = setForItemId(it.id);
+      if (!set) {
+        buyUnderReason = 'no set';
+      } else if (!pointsRate) {
+        buyUnderReason = 'no rate';
+      } else {
+        const ptsForItem = computePointsForItem(it.id, set, marketByItem);
+        if (Number.isFinite(ptsForItem) && ptsForItem > 0) {
+          buyUnder = ptsForItem * pointsRate * (1 - POINTS_BUY_DISCOUNT);
+        } else {
+          buyUnderReason = 'set incomplete';
+        }
+      }
+
+      if (marketPrice == null && !b && buyUnder == null) continue;
       rows.push({
         id: it.id,
         name: it.name,
         market: Number.isFinite(marketPrice) ? marketPrice : null,
         bazaar: b || null,
+        buyUnder: buyUnder,
+        buyUnderReason: buyUnderReason,
       });
     }
     rows.sort(function (a, b) {
@@ -5043,7 +5138,7 @@
     if (trimmed.length === 0) return;
 
     injectMuseumStyles();
-    const bar = buildMuseumBar(trimmed);
+    const bar = buildMuseumBar(trimmed, pointsRate);
 
     const host =
       document.querySelector('#mainContainer .content-wrapper') ||
