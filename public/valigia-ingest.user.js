@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.20.1
+// @version      0.20.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.20.1';
+  const SCRIPT_VERSION = '0.20.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4893,6 +4893,23 @@
       // Hit signal: when bazaar < buyUnder, highlight the row gold so a
       // scanning eye lands on the actionable rows first.
       '#' + MUSEUM_BAR_ID + ' .vgl-mu-row--hit { border-color: rgba(232,200,74,0.45); background: rgba(232,200,74,0.10); }',
+      // Narrow screens (phone): stack each rows cells vertically. The
+      // name keeps its prominence on its own line, and each price cell
+      // (Market / Bazaar / Buy Under) drops below it. Without this, the
+      // 4-column grid + long values like "$599M" pushed past the
+      // viewport on phones. Head row also wraps and the rate caption
+      // gets its own line so the title + count chip dont smush.
+      '@media (max-width: 700px) {',
+      '  #' + MUSEUM_BAR_ID + ' .vgl-mu-row {',
+      '    grid-template-columns: 1fr;',
+      '    gap: 3px;',
+      '    padding: 8px;',
+      '  }',
+      '  #' + MUSEUM_BAR_ID + ' .vgl-mu-item { padding-bottom: 2px; border-bottom: 1px solid #252a35; margin-bottom: 4px; }',
+      '  #' + MUSEUM_BAR_ID + ' .vgl-mu-head { flex-wrap: wrap; }',
+      '  #' + MUSEUM_BAR_ID + ' .vgl-mu-rate { margin-left: 0; flex-basis: 100%; }',
+      '  #' + MUSEUM_BAR_ID + ' .vgl-mu-caret { margin-left: auto; }',
+      '}',
     ].join('\n');
     const style = document.createElement('style');
     style.id = 'valigia-museum-styles';
@@ -5052,7 +5069,9 @@
       if (r.market != null) {
         const price = document.createElement('span');
         price.className = 'vgl-mu-price';
-        price.textContent = formatMoney(r.market);
+        // formatMoneyCompact ($600M) over formatMoney ($599,999,999) so
+        // the row fits on phone width without horizontal overflow.
+        price.textContent = formatMoneyCompact(r.market);
         marketLink.appendChild(price);
       } else {
         const empty = document.createElement('span');
@@ -5076,7 +5095,7 @@
         link.appendChild(bazaarLabel);
         const price = document.createElement('span');
         price.className = 'vgl-mu-price vgl-mu-price--bazaar';
-        price.textContent = formatMoney(r.bazaar.price);
+        price.textContent = formatMoneyCompact(r.bazaar.price);
         link.appendChild(price);
         const age = document.createElement('span');
         age.className = 'vgl-mu-age';
@@ -5105,7 +5124,7 @@
       if (Number.isFinite(r.buyUnder)) {
         const buyPrice = document.createElement('span');
         buyPrice.className = 'vgl-mu-price--buy';
-        buyPrice.textContent = formatMoney(r.buyUnder);
+        buyPrice.textContent = formatMoneyCompact(r.buyUnder);
         buyCell.appendChild(buyPrice);
       } else {
         const empty = document.createElement('span');
