@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.20.0
+// @version      0.20.1
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.20.0';
+  const SCRIPT_VERSION = '0.20.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5230,15 +5230,18 @@
 
   // -- Points Market (pmarket.php) ----------------------------------------
   // Captures the cheapest cash-per-point listing so the Bazaar Deals bar
-  // can flag listings priced under their museum-points-equivalent value.
+  // and Museum bar can flag listings priced under their museum-points-
+  // equivalent value.
   //
-  // Uses the Torn API's `market/?selections=pointsmarket` selection rather
-  // than DOM scraping — the API is one round-trip per visit (well under
-  // the 100/min key budget), returns normalized data, and survives Torn's
-  // ongoing v1→v2 page redesigns. The DOM here is also unusually variable
-  // (offer count fluctuates, paginated UI), so trying to scrape it would
-  // be all downside. Caches result in localStorage with a 24h TTL via
-  // setPointsRate(); subsequent pages read it via getPointsRate().
+  // DOM-scrape only. We considered using market/?selections=pointsmarket
+  // for cleaner data but Torn returns "API error 16: Access level not
+  // high enough" on the standard PDA-injected key tier, and we cant
+  // upgrade the key from script. The DOM is right there on the page
+  // and sees the currently-rendered cheapest ~20 listings — plenty,
+  // since "cheapest" is exactly what we need.
+  //
+  // Caches result in localStorage AND the shared Supabase
+  // points_market_rate row via setPointsRate().
 
   const POINTS_RATE_BAR_ID = 'valigia-points-rate-bar';
 
@@ -5320,80 +5323,59 @@
     host.insertBefore(bar, host.firstChild);
   }
 
-  async function runPointsMarket() {
-    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return;
-
-    try {
-      const res = await gmRequest({
-        method: 'GET',
-        url: 'https://api.torn.com/market/?selections=pointsmarket&key=' +
-             encodeURIComponent(TORN_API_KEY),
-        headers: { 'Accept': 'application/json' },
-      });
-      let data = null;
-      try { data = JSON.parse(res.responseText); } catch (_) { /* ignore */ }
-      if (!data || data.error) {
-        const code = data && data.error && data.error.code;
-        const msg = data && data.error && data.error.error;
-        log('pmarket: API error', data && data.error);
-        showPointsRateBanner(null, true,
-          'API error ' + (code != null ? code : '?') +
-          (msg ? ': ' + msg : ''));
-        return;
-      }
-
-      const offers = data.pointsmarket || {};
-      const offerIds = Object.keys(offers);
-      let cheapest = null;
-      let sample = null;
-      let rejectedQty = 0;
-      let rejectedRange = 0;
-      for (const id in offers) {
-        const offer = offers[id];
-        if (!offer) continue;
-        // Torns pointsmarket selection returns `cost` as the per-point
-        // rate already (NOT total cost — `total_cost` is qty × cost),
-        // so we use it directly. v0.19.1 mistakenly divided by quantity
-        // which yielded sub-$1k rates that all failed the sanity gate.
-        const cost = Number(offer.cost);
-        const qty = Number(offer.quantity);
-        if (sample == null) {
-          sample = { cost: offer.cost, quantity: offer.quantity, total_cost: offer.total_cost };
-        }
-        if (!Number.isFinite(cost) || !Number.isFinite(qty) || qty <= 0) {
-          rejectedQty++;
-          continue;
-        }
-        const rate = cost;
-        // Sanity bounds: real Points Market sits in the tens-of-thousands
-        // per point. Anything outside this window is a parse error or a
-        // troll listing — drop it.
-        if (rate < 1000 || rate > 1_000_000) {
-          rejectedRange++;
-          continue;
-        }
-        if (cheapest == null || rate < cheapest) cheapest = rate;
-      }
-
-      if (cheapest == null) {
-        const sampleStr = sample ? JSON.stringify(sample) : 'none';
-        log('pmarket: no valid offers — count=' + offerIds.length +
-            ' rejQty=' + rejectedQty + ' rejRange=' + rejectedRange +
-            ' sample=' + sampleStr);
-        showPointsRateBanner(null, true,
-          offerIds.length === 0
-            ? 'API returned 0 offers'
-            : 'parsed ' + offerIds.length + ' offers, none in valid range; sample=' + sampleStr);
-        return;
-      }
-
-      setPointsRate(cheapest);
-      log('pmarket: captured rate=' + cheapest);
-      showPointsRateBanner(cheapest, false);
-    } catch (e) {
-      log('pmarket fetch error:', e);
-      showPointsRateBanner(null, true, 'fetch threw: ' + (e && e.message ? e.message : e));
+  // Scrape leaf elements whose entire textContent is a bare "$X" amount
+  // in the per-point sanity range — the per-listing price labels in
+  // pmarket.php's row layout. Both v1-table and modern div layouts emit
+  // that pattern. Real Torn Points Market rates have ranged $20-80k
+  // over time; the 5k-200k window allows surge spikes while excluding
+  // sub-5k mis-parses and total-cost labels in the millions.
+  function scrapePointsMarketDOM() {
+    const all = document.querySelectorAll('*');
+    const allMatches = [];
+    const sample = [];
+    for (const el of all) {
+      if (el.children && el.children.length > 0) continue;
+      const text = (el.textContent || '').trim();
+      if (!text) continue;
+      const m = text.match(/^\$\s*([\d,]+(?:\.\d+)?)\s*$/);
+      if (!m) continue;
+      const v = parseMoney(m[1]);
+      if (!Number.isFinite(v)) continue;
+      allMatches.push(v);
+      if (sample.length < 8) sample.push(m[0]);
     }
+    const valid = allMatches.filter(function (v) { return v >= 5000 && v <= 200000; });
+    if (valid.length === 0) {
+      return {
+        rate: null,
+        error: 'DOM scrape: ' + allMatches.length + ' $ leaves found, ' +
+               'none in 5k-200k range. samples=' + (sample.join(',') || '(empty)'),
+      };
+    }
+    return { rate: Math.min.apply(null, valid), error: null };
+  }
+
+  async function runPointsMarket() {
+    // Hydration-poll for up to 8s like the other runners — Torn's SPA
+    // may not have rendered the listings yet on the first dispatch
+    // tick, especially on slower connections.
+    const start = Date.now();
+    let result = { rate: null, error: 'not yet attempted' };
+    while (Date.now() - start < 8000) {
+      result = scrapePointsMarketDOM();
+      if (result.rate != null) break;
+      await new Promise(function (r) { setTimeout(r, 500); });
+    }
+
+    if (result.rate != null) {
+      setPointsRate(result.rate);
+      log('pmarket: captured rate=' + result.rate);
+      showPointsRateBanner(result.rate, false);
+      return;
+    }
+
+    log('pmarket: scrape failed — ' + result.error);
+    showPointsRateBanner(null, true, result.error);
   }
 
   // -- Drip-scrape -----------------------------------------------------------
