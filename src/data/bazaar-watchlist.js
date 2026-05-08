@@ -46,4 +46,15 @@ export const BAZAAR_WATCHLIST = [
   'Obsidian Point',
   'Quartz Point',
   'Chalcedony Point',
+  // Medieval Coin Set components
+  'Leopard Coin',
+  'Florin Coin',
+  'Gold Noble Coin',
+  // Higher-tier museum singletons / sets
+  'Vairocana Buddha',
+  'Ganesha Sculpture',
+  'Shabti Sculpture',
+  'Companion Scripts',
+  'Senet Game Set',
+  'Egyptian Amulet',
 ];
