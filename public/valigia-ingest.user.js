@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.20.2
+// @version      0.20.3
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.20.2';
+  const SCRIPT_VERSION = '0.20.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4738,37 +4738,53 @@
 
   // Push a freshly-captured rate to both the local cache (immediate
   // truth for this browser) and the shared Supabase pool (benefits
-  // every other Valigia user for the next 24h). Supabase write is
-  // fire-and-forget — the user's own banner shows success the moment
-  // localStorage is written; a network failure on the pool write is
-  // logged but never blocks the visible UX.
-  function setPointsRate(rate) {
+  // every other Valigia user for the next 24h). Returns true if the
+  // shared write also landed; false if only the local cache was
+  // updated. The caller surfaces this distinction in the success
+  // banner so the player knows whether their capture is helping the
+  // community pool or just their own browser.
+  async function setPointsRate(rate) {
     try {
       localStorage.setItem(POINTS_RATE_KEY, JSON.stringify({
         rate: rate,
         observed_at: Date.now(),
       }));
     } catch (_) { /* storage full / disabled — non-fatal */ }
-    pushPointsRateToSupabase(rate).catch(function (e) {
+    try {
+      await pushPointsRateToSupabase(rate);
+      return true;
+    } catch (e) {
       log('points rate Supabase write failed:', e);
-    });
+      return false;
+    }
   }
 
+  // POST + resolution=merge-duplicates is the proven upsert pattern
+  // used by sell_prices and bazaar_prices ingest in this same script.
+  // We tried PATCH /points_market_rate?id=eq.1 in v0.20.0–0.20.2 and
+  // it silently no-op'd inside PDA's gmRequest — writes appeared to
+  // succeed client-side but the seeded row never updated. Migration
+  // 033 added the INSERT policy that makes this upsert path legal.
   async function pushPointsRateToSupabase(rate) {
-    await gmRequest({
-      method: 'PATCH',
-      url: POINTS_RATE_URL + '?id=eq.1',
+    const res = await gmRequest({
+      method: 'POST',
+      url: POINTS_RATE_URL,
       headers: {
         'Content-Type': 'application/json',
         'apikey': SUPABASE_ANON_KEY,
         'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
-        'Prefer': 'return=minimal',
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
       },
       data: JSON.stringify({
+        id: 1,
         rate: Math.round(rate),
         updated_at: new Date().toISOString(),
       }),
     });
+    if (res && res.status != null && (res.status < 200 || res.status >= 300)) {
+      throw new Error('Supabase upsert non-2xx: ' + res.status +
+        (res.responseText ? ' body=' + res.responseText.slice(0, 200) : ''));
+    }
   }
 
   // -- Museum page (museum.php) -------------------------------------------
@@ -5387,9 +5403,12 @@
     }
 
     if (result.rate != null) {
-      setPointsRate(result.rate);
-      log('pmarket: captured rate=' + result.rate);
-      showPointsRateBanner(result.rate, false);
+      const shared = await setPointsRate(result.rate);
+      log('pmarket: captured rate=' + result.rate + ' shared=' + shared);
+      showPointsRateBanner(result.rate, false,
+        shared
+          ? 'shared with community pool · 24h cache'
+          : 'local only — community pool write failed (see logs)');
       return;
     }
 
