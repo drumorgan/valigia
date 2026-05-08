@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.18.0
-// @description  Inside Torn PDA, contribute to Valigia's shared price pool from five pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact.
+// @version      0.19.0
+// @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
 // @match        https://www.torn.com/bazaar.php*
 // @match        https://www.torn.com/item.php*
 // @match        https://www.torn.com/museum.php*
+// @match        https://www.torn.com/pmarket.php*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
@@ -31,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.18.0';
+  const SCRIPT_VERSION = '0.19.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1430,7 +1431,7 @@
     // Surface any flippable listings in a top-of-page bar (mirrors the
     // Watchlist Matches bar's UX). Fire-and-forget: any failure is
     // silent so the primary ingest path is never blocked.
-    injectBazaarDealsBar(items).catch(function (e) { log('deals bar error', e); });
+    injectBazaarDealsBar(items, ownerId).catch(function (e) { log('deals bar error', e); });
 
     const result = await postIngestRows(INGEST_BAZAAR_URL, rows);
     if (result.ok) {
@@ -2146,6 +2147,13 @@
       '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-mkt { color: #e8c84a; font-weight: 700; white-space: nowrap; }',
       '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-gain { color: #4ae8a0; font-weight: 700; white-space: nowrap; }',
       '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-label { color: #8a8fa0; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 3px; }',
+      // Points-arb route: gold badge + tinted left edge so a quick scan
+      // distinguishes "flip on Item Market" rows from "complete a museum
+      // set" rows. Same row layout so the eye doesnt have to retrain.
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-row--points { background: rgba(232,200,74,0.04); border-left: 2px solid rgba(232,200,74,0.45); padding-left: 6px; }',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-mkt--points { color: #e8c84a; }',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-route { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 2px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }',
+      '#' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-route--points { background: rgba(232,200,74,0.18); color: #e8c84a; }',
       // Narrow viewports: stack so nothing clips.
       '@media (max-width: 560px) {',
       '  #' + BAZAAR_DEALS_BAR_ID + ' .vgl-bd-row {',
@@ -2183,9 +2191,17 @@
     const body = document.createElement('div');
     body.className = 'vgl-bd-body';
     for (const d of deals) {
+      const isPoints = d.route === 'points';
+
       const row = document.createElement('a');
-      row.className = 'vgl-bd-row';
-      row.href = 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + d.item_id;
+      row.className = 'vgl-bd-row' + (isPoints ? ' vgl-bd-row--points' : '');
+      // Market-flip rows deep-link to the Item Market search (where the
+      // player will resell). Points rows deep-link back to the listings
+      // bazaar so the player can buy it directly \u2014 theres nothing to
+      // search for, the bazaar IS the action.
+      row.href = isPoints
+        ? 'https://www.torn.com/bazaar.php?userId=' + d.bazaar_owner_id
+        : 'https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=' + d.item_id;
       row.target = '_top';
       row.rel = 'noopener';
 
@@ -2205,17 +2221,21 @@
       arrow.className = 'vgl-bd-arrow';
       arrow.textContent = '\u2192';
 
-      // Show the gross Item Market listing price so "Market $X" matches
-      // what the player would actually list at. The 5% fee is already
-      // applied inside d.profit / d.profitPct, so the gain column tells
-      // the truthful net story.
-      const mkt = document.createElement('span');
-      mkt.className = 'vgl-bd-mkt';
-      const mktLabel = document.createElement('span');
-      mktLabel.className = 'vgl-bd-label';
-      mktLabel.textContent = 'Market';
-      mkt.appendChild(mktLabel);
-      mkt.appendChild(document.createTextNode(formatMoneyCompact(d.marketPrice)));
+      // Right-side cell flips between two routes:
+      //   - market: gross Item Market price (the 5% fee is already baked
+      //     into d.profit, so the gain column tells the truthful net
+      //     story).
+      //   - points: cash-equivalent of this items share of its museum
+      //     set, computed at evaluation time as
+      //     setPoints * itemMarketShare * pointsRate.
+      const dest = document.createElement('span');
+      dest.className = 'vgl-bd-mkt' + (isPoints ? ' vgl-bd-mkt--points' : '');
+      const destLabel = document.createElement('span');
+      destLabel.className = 'vgl-bd-label';
+      destLabel.textContent = isPoints ? 'Points' : 'Market';
+      dest.appendChild(destLabel);
+      const destValue = isPoints ? d.pointsCash : d.marketPrice;
+      dest.appendChild(document.createTextNode(formatMoneyCompact(destValue)));
 
       const gain = document.createElement('span');
       gain.className = 'vgl-bd-gain';
@@ -2225,7 +2245,7 @@
       row.appendChild(name);
       row.appendChild(baz);
       row.appendChild(arrow);
-      row.appendChild(mkt);
+      row.appendChild(dest);
       row.appendChild(gain);
       body.appendChild(row);
     }
@@ -2245,7 +2265,7 @@
    * bar at the top of the page. Silent no-op on zero flips or any
    * failure along the way so the ingest path is never blocked.
    */
-  async function injectBazaarDealsBar(scrapedItems) {
+  async function injectBazaarDealsBar(scrapedItems, ownerId) {
     // Remove any prior instance so SPA nav doesn't stack duplicates.
     const existing = document.getElementById(BAZAAR_DEALS_BAR_ID);
     if (existing) existing.remove();
@@ -2255,7 +2275,8 @@
     if (ids.length === 0) return;
 
     // Warm the items catalog in parallel with the sell-prices read so
-    // the bar has real names for every row.
+    // the bar has real names for every row, and so the museum-set
+    // resolver can map item names → ids.
     const [sellRows] = await Promise.all([
       fetchJSON(
         SELL_PRICES_URL +
@@ -2264,31 +2285,112 @@
       ),
       ensureItemCatalog(),
     ]);
-    if (!Array.isArray(sellRows) || sellRows.length === 0) return;
 
     const marketByItem = new Map();
-    for (const r of sellRows) {
-      if (r.price != null) marketByItem.set(Number(r.item_id), Number(r.price));
+    if (Array.isArray(sellRows)) {
+      for (const r of sellRows) {
+        if (r.price != null) marketByItem.set(Number(r.item_id), Number(r.price));
+      }
+    }
+
+    // Points-arb prework: if the bazaar contains any item thats a
+    // member of a museum set AND we have a fresh Points Market rate,
+    // also fetch market prices for the OTHER set members so we can
+    // compute proportional per-item points value (set is worth N points,
+    // each members share is its proportion of total set market value).
+    const pointsRate = getPointsRate();
+    if (pointsRate) {
+      const extraIds = new Set();
+      for (const it of scrapedItems) {
+        const set = setForItemId(Number(it.item_id));
+        if (!set) continue;
+        for (const member of set.items) {
+          const memberId = itemIdForName(member.name);
+          if (memberId && !marketByItem.has(memberId)) extraIds.add(memberId);
+        }
+      }
+      if (extraIds.size > 0) {
+        const extraRows = await fetchJSON(
+          SELL_PRICES_URL +
+          '?item_id=in.(' + [...extraIds].join(',') + ')' +
+          '&select=item_id,price'
+        );
+        if (Array.isArray(extraRows)) {
+          for (const r of extraRows) {
+            if (r.price != null) marketByItem.set(Number(r.item_id), Number(r.price));
+          }
+        }
+      }
     }
 
     const deals = [];
     for (const it of scrapedItems) {
-      const marketPrice = marketByItem.get(Number(it.item_id));
-      if (!Number.isFinite(marketPrice)) continue;
+      const itemId = Number(it.item_id);
       const bazaarPrice = Number(it.price);
       if (!Number.isFinite(bazaarPrice) || bazaarPrice <= 0) continue;
-      const netSell = marketPrice * (1 - MARKET_FEE_RATE);
-      const profit = netSell - bazaarPrice;
-      if (profit <= 0) continue; // only flippable rows
-      deals.push({
-        item_id: Number(it.item_id),
-        name: itemNameFor(it.item_id),
+
+      // Route 1: market flip (existing behavior). Only valid when we
+      // have a market floor AND the bazaar price beats net-sell.
+      let marketDeal = null;
+      const marketPrice = marketByItem.get(itemId);
+      if (Number.isFinite(marketPrice)) {
+        const netSell = marketPrice * (1 - MARKET_FEE_RATE);
+        const profit = netSell - bazaarPrice;
+        if (profit > 0) {
+          marketDeal = {
+            route: 'market',
+            marketPrice: marketPrice,
+            netSell: netSell,
+            profit: profit,
+            profitPct: (profit / bazaarPrice) * 100,
+          };
+        }
+      }
+
+      // Route 2: museum-points exchange. Buy bazaar → complete set →
+      // exchange at museum for N points → sell points at current
+      // pmarket rate. Only fires if the listing is at least
+      // POINTS_BUY_DISCOUNT under the points-equivalent cash value, so
+      // we dont flag rows that are just barely-below — a 1% under
+      // bazaar isnt worth the friction of completing a set.
+      let pointsDeal = null;
+      if (pointsRate) {
+        const set = setForItemId(itemId);
+        if (set) {
+          const ptsForItem = computePointsForItem(itemId, set, marketByItem);
+          if (Number.isFinite(ptsForItem) && ptsForItem > 0) {
+            const pointsCash = ptsForItem * pointsRate;
+            const profit = pointsCash - bazaarPrice;
+            if (profit > pointsCash * POINTS_BUY_DISCOUNT) {
+              pointsDeal = {
+                route: 'points',
+                pointsPerItem: ptsForItem,
+                pointsCash: pointsCash,
+                setName: set.name,
+                profit: profit,
+                profitPct: (profit / bazaarPrice) * 100,
+              };
+            }
+          }
+        }
+      }
+
+      // Pick the better route for this item — bigger absolute profit
+      // wins. We surface only one row per item to keep the bar tight;
+      // both routes triggering on the same item is rare and the loser
+      // is always strictly less profitable, so dropping it costs the
+      // user nothing actionable.
+      const winner = (marketDeal && pointsDeal)
+        ? (pointsDeal.profit > marketDeal.profit ? pointsDeal : marketDeal)
+        : (marketDeal || pointsDeal);
+      if (!winner) continue;
+
+      deals.push(Object.assign({
+        item_id: itemId,
+        name: itemNameFor(itemId),
         bazaarPrice: bazaarPrice,
-        marketPrice: marketPrice,
-        netSell: netSell,
-        profit: profit,
-        profitPct: (profit / bazaarPrice) * 100,
-      });
+        bazaar_owner_id: ownerId,
+      }, winner));
     }
     if (deals.length === 0) return;
 
@@ -4469,6 +4571,134 @@
     // scouts counter is vanity.
   }
 
+  // -- Museum sets + points-arb data --------------------------------------
+  // Source of truth for "this item participates in a museum set worth N
+  // points." Used by the bazaar Deals bar to flag listings priced under
+  // their museum-points-equivalent value (the player buys cheap, completes
+  // a set, and exchanges at the museum for points worth more cash via the
+  // current Points Market rate).
+  //
+  // Per-item points value is computed dynamically at evaluation time:
+  //   ptsForItem = setPoints * marketPrice(item) / sum(marketPrice(member) * qty)
+  // ...so a set with one expensive piece and many cheap pieces (Senet:
+  // 1 board + 10 pawns, where pawns dominate market value 17:1) auto-
+  // rebalances without us having to ship userscript updates every time
+  // the floor moves. For singletons this collapses to setPoints; for
+  // uniform sets (Coins, Arrowheads) it collapses to setPoints / N.
+  //
+  // Item names must match Torn's catalog exactly. The resolver silently
+  // skips any name that doesn't resolve, so a typo just means that
+  // member won't contribute to set valuation — the rest of the set still
+  // works. Verify against itemMetaCache when adding new sets.
+  const MUSEUM_SETS = [
+    { name: 'Arrowhead Set',     points: 25,    items: [
+      { name: 'Chert Point',     qty: 1 },
+      { name: 'Quartzite Point', qty: 1 },
+      { name: 'Basalt Point',    qty: 1 },
+      { name: 'Obsidian Point',  qty: 1 },
+      { name: 'Quartz Point',    qty: 1 },
+      { name: 'Chalcedony Point', qty: 1 },
+    ]},
+    { name: 'Medieval Coin Set', points: 100,   items: [
+      { name: 'Leopard Coin',    qty: 1 },
+      { name: 'Florin Coin',     qty: 1 },
+      { name: 'Gold Noble Coin', qty: 1 },
+    ]},
+    { name: 'Patagonian Fossil', points: 20,    items: [{ name: 'Patagonian Fossil', qty: 1 }] },
+    { name: 'Meteorite Fragment', points: 15,   items: [{ name: 'Meteorite Fragment', qty: 1 }] },
+    { name: 'Vairocana Buddha',  points: 100,   items: [{ name: 'Vairocana Buddha Sculpture', qty: 1 }] },
+    { name: 'Ganesha Sculpture', points: 250,   items: [{ name: 'Ganesha Sculpture', qty: 1 }] },
+    { name: 'Shabti Sculpture',  points: 500,   items: [{ name: 'Shabti Sculpture', qty: 1 }] },
+    { name: 'Senet Game Set',    points: 2000,  items: [
+      { name: 'Senet Board',       qty: 1 },
+      { name: 'White Senet Pawn',  qty: 5 },
+      { name: 'Black Senet Pawn',  qty: 5 },
+    ]},
+    { name: 'Quran Script Set',  points: 1000,  items: [
+      { name: 'Quran Script : Ali',                  qty: 1 },
+      { name: 'Quran Script : Ibn Masud',            qty: 1 },
+      { name: "Script from the Quran: Ubay Ibn Ka'b", qty: 1 },
+    ]},
+    { name: 'Egyptian Amulet',   points: 10000, items: [{ name: 'Egyptian Amulet', qty: 1 }] },
+  ];
+
+  // Buy-signal threshold: bazaar < pointsCash * (1 - this) → fire signal.
+  const POINTS_BUY_DISCOUNT = 0.10;
+
+  // localStorage key + freshness window for the captured Points Market rate.
+  const POINTS_RATE_KEY = 'valigia.pointsRate';
+  const POINTS_RATE_TTL_MS = 24 * 60 * 60 * 1000;
+
+  // Resolve item names to ids via the warm catalog. Reverse-index built
+  // lazily on first call. Returns null when the catalog isn't warm OR
+  // the name doesn't match anything (typo / Torn renamed it).
+  let itemNameToIdCache = null;
+  function itemIdForName(name) {
+    if (!itemMetaCache || itemMetaCache.size === 0) return null;
+    if (!itemNameToIdCache) {
+      itemNameToIdCache = new Map();
+      itemMetaCache.forEach(function (meta, id) {
+        if (meta && meta.name) itemNameToIdCache.set(meta.name, id);
+      });
+    }
+    return itemNameToIdCache.get(name) || null;
+  }
+
+  // Find which set (if any) an item id belongs to. Returns the set object
+  // with item names already resolved to ids, or null if the id isn't part
+  // of any set we know about.
+  function setForItemId(itemId) {
+    if (!Number.isFinite(itemId)) return null;
+    for (const set of MUSEUM_SETS) {
+      for (const member of set.items) {
+        if (itemIdForName(member.name) === itemId) return set;
+      }
+    }
+    return null;
+  }
+
+  // Compute per-unit points value for an item in a set, weighted by
+  // current market prices. Returns null if we can't price every member
+  // (one missing market price would skew the proportion — better to
+  // suppress the signal than flash a wrong number).
+  function computePointsForItem(itemId, set, marketByItem) {
+    let totalSetMarket = 0;
+    let thisItemMarket = null;
+    for (const member of set.items) {
+      const memberId = itemIdForName(member.name);
+      if (!memberId) return null;
+      const memberPrice = marketByItem.get(memberId);
+      if (!Number.isFinite(memberPrice) || memberPrice <= 0) return null;
+      totalSetMarket += memberPrice * member.qty;
+      if (memberId === itemId) thisItemMarket = memberPrice;
+    }
+    if (thisItemMarket == null || totalSetMarket <= 0) return null;
+    return set.points * thisItemMarket / totalSetMarket;
+  }
+
+  // Read the captured Points Market rate. Returns null if missing or
+  // older than POINTS_RATE_TTL_MS — caller treats null as "no points
+  // signal possible" and silently falls back to market-only deals.
+  function getPointsRate() {
+    try {
+      const raw = localStorage.getItem(POINTS_RATE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Number.isFinite(parsed.rate) || !parsed.observed_at) return null;
+      if (Date.now() - parsed.observed_at > POINTS_RATE_TTL_MS) return null;
+      return parsed.rate;
+    } catch (_) { return null; }
+  }
+
+  function setPointsRate(rate) {
+    try {
+      localStorage.setItem(POINTS_RATE_KEY, JSON.stringify({
+        rate: rate,
+        observed_at: Date.now(),
+      }));
+    } catch (_) { /* storage full / disabled — non-fatal */ }
+  }
+
   // -- Museum page (museum.php) -------------------------------------------
   // Players visiting the museum want to know whether to grind for missing
   // artifact pieces or just buy them from the market / a bazaar. This
@@ -4823,6 +5053,144 @@
     host.insertBefore(bar, host.firstChild);
   }
 
+  // -- Points Market (pmarket.php) ----------------------------------------
+  // Captures the cheapest cash-per-point listing so the Bazaar Deals bar
+  // can flag listings priced under their museum-points-equivalent value.
+  //
+  // Uses the Torn API's `market/?selections=pointsmarket` selection rather
+  // than DOM scraping — the API is one round-trip per visit (well under
+  // the 100/min key budget), returns normalized data, and survives Torn's
+  // ongoing v1→v2 page redesigns. The DOM here is also unusually variable
+  // (offer count fluctuates, paginated UI), so trying to scrape it would
+  // be all downside. Caches result in localStorage with a 24h TTL via
+  // setPointsRate(); subsequent pages read it via getPointsRate().
+
+  const POINTS_RATE_BAR_ID = 'valigia-points-rate-bar';
+
+  function injectPointsRateStyles() {
+    if (document.getElementById('valigia-points-rate-styles')) return;
+    const css = [
+      '#' + POINTS_RATE_BAR_ID + ' {',
+      '  all: initial;',
+      '  display: block;',
+      '  margin: 8px auto 12px;',
+      '  max-width: 1100px;',
+      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  color: #c8cdd8;',
+      '  background: #161a22;',
+      '  border: 1px solid #252a35;',
+      '  border-left: 3px solid #e8c84a;',
+      '  border-radius: 4px;',
+      '  padding: 10px 12px;',
+      '  font-size: 12px;',
+      '  box-sizing: border-box;',
+      '}',
+      '#' + POINTS_RATE_BAR_ID + ' .vgl-pr-title {',
+      '  color: #e8c84a;',
+      '  font-weight: 700;',
+      '  font-size: 11px;',
+      '  letter-spacing: 0.12em;',
+      '  text-transform: uppercase;',
+      '  margin-right: 10px;',
+      '}',
+      '#' + POINTS_RATE_BAR_ID + ' .vgl-pr-rate { color: #e8c84a; font-weight: 700; }',
+      '#' + POINTS_RATE_BAR_ID + ' .vgl-pr-note { color: #8a8fa0; margin-left: 10px; }',
+      '#' + POINTS_RATE_BAR_ID + '.vgl-pr-error { border-left-color: #e8824a; }',
+      '#' + POINTS_RATE_BAR_ID + '.vgl-pr-error .vgl-pr-title { color: #e8824a; }',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-points-rate-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function showPointsRateBanner(rate, isError) {
+    injectPointsRateStyles();
+    const existing = document.getElementById(POINTS_RATE_BAR_ID);
+    if (existing) existing.remove();
+    const bar = document.createElement('div');
+    bar.id = POINTS_RATE_BAR_ID;
+    if (isError) bar.classList.add('vgl-pr-error');
+
+    const title = document.createElement('span');
+    title.className = 'vgl-pr-title';
+    title.textContent = isError ? 'Points Rate Capture Failed' : 'Points Rate Captured';
+    bar.appendChild(title);
+
+    if (!isError && Number.isFinite(rate)) {
+      const value = document.createElement('span');
+      value.className = 'vgl-pr-rate';
+      value.textContent = formatMoneyCompact(rate) + '/pt';
+      bar.appendChild(value);
+
+      const note = document.createElement('span');
+      note.className = 'vgl-pr-note';
+      note.textContent = '· used for bazaar points-buy signals (24h)';
+      bar.appendChild(note);
+    } else {
+      const note = document.createElement('span');
+      note.className = 'vgl-pr-note';
+      note.textContent = 'try refreshing the page';
+      bar.appendChild(note);
+    }
+
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(bar, host.firstChild);
+  }
+
+  async function runPointsMarket() {
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return;
+
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: 'https://api.torn.com/market/?selections=pointsmarket&key=' +
+             encodeURIComponent(TORN_API_KEY),
+        headers: { 'Accept': 'application/json' },
+      });
+      let data = null;
+      try { data = JSON.parse(res.responseText); } catch (_) { /* ignore */ }
+      if (!data || data.error) {
+        log('pmarket: API error', data && data.error);
+        showPointsRateBanner(null, true);
+        return;
+      }
+
+      const offers = data.pointsmarket || {};
+      let cheapest = null;
+      for (const id in offers) {
+        const offer = offers[id];
+        if (!offer) continue;
+        const cost = Number(offer.cost);
+        const qty = Number(offer.quantity);
+        if (!Number.isFinite(cost) || !Number.isFinite(qty) || qty <= 0) continue;
+        const rate = cost / qty;
+        // Sanity bounds: real Points Market sits in the tens-of-thousands
+        // per point. Anything outside this window is a parse error or a
+        // troll listing, drop it.
+        if (rate < 1000 || rate > 1_000_000) continue;
+        if (cheapest == null || rate < cheapest) cheapest = rate;
+      }
+
+      if (cheapest == null) {
+        log('pmarket: no valid offers found');
+        showPointsRateBanner(null, true);
+        return;
+      }
+
+      setPointsRate(cheapest);
+      log('pmarket: captured rate=' + cheapest);
+      showPointsRateBanner(cheapest, false);
+    } catch (e) {
+      log('pmarket fetch error:', e);
+      showPointsRateBanner(null, true);
+    }
+  }
+
   // -- Drip-scrape -----------------------------------------------------------
   // Background bazaar-pool maintenance. On every dispatch (except the
   // bazaar runner, which already writes heavily to bazaar_prices via DOM
@@ -5063,6 +5431,7 @@
     if (/\/bazaar\.php/i.test(url)) return 'bazaar';
     if (/\/item\.php/i.test(url)) return 'itempage';
     if (/\/museum\.php/i.test(url)) return 'museum';
+    if (/\/pmarket\.php/i.test(url)) return 'pmarket';
     return null;
   }
 
@@ -5092,6 +5461,7 @@
       case 'bazaar':     return runBazaar();
       case 'itempage':   return runItemPage();
       case 'museum':     return runMuseum();
+      case 'pmarket':    return runPointsMarket();
       default:
         log('Unmatched page - skipping. url=' + location.href);
     }
