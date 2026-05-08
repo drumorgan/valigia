@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.19.1
+// @version      0.19.2
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.19.1';
+  const SCRIPT_VERSION = '0.19.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5199,7 +5199,7 @@
     document.head.appendChild(style);
   }
 
-  function showPointsRateBanner(rate, isError) {
+  function showPointsRateBanner(rate, isError, diagnostic) {
     injectPointsRateStyles();
     const existing = document.getElementById(POINTS_RATE_BAR_ID);
     if (existing) existing.remove();
@@ -5225,7 +5225,10 @@
     } else {
       const note = document.createElement('span');
       note.className = 'vgl-pr-note';
-      note.textContent = 'try refreshing the page';
+      // Diagnostic tells the user (and us, remotely) what came back so
+      // we dont have to guess. Especially useful on iPad with no
+      // DevTools — the only debug surface is the page itself.
+      note.textContent = diagnostic || 'try refreshing the page';
       bar.appendChild(note);
     }
 
@@ -5250,30 +5253,57 @@
       let data = null;
       try { data = JSON.parse(res.responseText); } catch (_) { /* ignore */ }
       if (!data || data.error) {
+        const code = data && data.error && data.error.code;
+        const msg = data && data.error && data.error.error;
         log('pmarket: API error', data && data.error);
-        showPointsRateBanner(null, true);
+        showPointsRateBanner(null, true,
+          'API error ' + (code != null ? code : '?') +
+          (msg ? ': ' + msg : ''));
         return;
       }
 
       const offers = data.pointsmarket || {};
+      const offerIds = Object.keys(offers);
       let cheapest = null;
+      let sample = null;
+      let rejectedQty = 0;
+      let rejectedRange = 0;
       for (const id in offers) {
         const offer = offers[id];
         if (!offer) continue;
+        // Torns pointsmarket selection returns `cost` as the per-point
+        // rate already (NOT total cost — `total_cost` is qty × cost),
+        // so we use it directly. v0.19.1 mistakenly divided by quantity
+        // which yielded sub-$1k rates that all failed the sanity gate.
         const cost = Number(offer.cost);
         const qty = Number(offer.quantity);
-        if (!Number.isFinite(cost) || !Number.isFinite(qty) || qty <= 0) continue;
-        const rate = cost / qty;
+        if (sample == null) {
+          sample = { cost: offer.cost, quantity: offer.quantity, total_cost: offer.total_cost };
+        }
+        if (!Number.isFinite(cost) || !Number.isFinite(qty) || qty <= 0) {
+          rejectedQty++;
+          continue;
+        }
+        const rate = cost;
         // Sanity bounds: real Points Market sits in the tens-of-thousands
         // per point. Anything outside this window is a parse error or a
-        // troll listing, drop it.
-        if (rate < 1000 || rate > 1_000_000) continue;
+        // troll listing — drop it.
+        if (rate < 1000 || rate > 1_000_000) {
+          rejectedRange++;
+          continue;
+        }
         if (cheapest == null || rate < cheapest) cheapest = rate;
       }
 
       if (cheapest == null) {
-        log('pmarket: no valid offers found');
-        showPointsRateBanner(null, true);
+        const sampleStr = sample ? JSON.stringify(sample) : 'none';
+        log('pmarket: no valid offers — count=' + offerIds.length +
+            ' rejQty=' + rejectedQty + ' rejRange=' + rejectedRange +
+            ' sample=' + sampleStr);
+        showPointsRateBanner(null, true,
+          offerIds.length === 0
+            ? 'API returned 0 offers'
+            : 'parsed ' + offerIds.length + ' offers, none in valid range; sample=' + sampleStr);
         return;
       }
 
@@ -5282,7 +5312,7 @@
       showPointsRateBanner(cheapest, false);
     } catch (e) {
       log('pmarket fetch error:', e);
-      showPointsRateBanner(null, true);
+      showPointsRateBanner(null, true, 'fetch threw: ' + (e && e.message ? e.message : e));
     }
   }
 
