@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.20.3
+// @version      0.20.4
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.20.3';
+  const SCRIPT_VERSION = '0.20.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5338,7 +5338,14 @@
 
       const note = document.createElement('span');
       note.className = 'vgl-pr-note';
-      note.textContent = '· used for bazaar points-buy signals (24h)';
+      // Use the runtime diagnostic when provided so the caller can
+      // surface useful context like "shared with community pool" vs
+      // "local only — pool write failed". Falls back to a generic
+      // hint when no diagnostic is passed. Unicode escape on the
+      // middle-dot separator: cPanel serves .user.js as Latin-1, so a
+      // literal "·" would mis-decode to "Â·" in PDA's webview
+      // (the v0.20.3 success banner showed exactly that bug).
+      note.textContent = '\u00B7 ' + (diagnostic || 'used for bazaar points-buy signals (24h)');
       bar.appendChild(note);
     } else {
       const note = document.createElement('span');
@@ -5407,8 +5414,8 @@
       log('pmarket: captured rate=' + result.rate + ' shared=' + shared);
       showPointsRateBanner(result.rate, false,
         shared
-          ? 'shared with community pool · 24h cache'
-          : 'local only — community pool write failed (see logs)');
+          ? 'shared with community pool \u00B7 24h cache'
+          : 'local only \u2014 community pool write failed (see logs)');
       return;
     }
 
