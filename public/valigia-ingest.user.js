@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.20.4
+// @version      0.20.5
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -921,7 +921,7 @@
     const css = [
       '.valigia-cell {',
       '  padding: 4px 8px;',
-      '  font: 600 11px/1.3 ui-monospace, monospace;',
+      '  font: 600 11px/1.3 Arial, Helvetica, sans-serif;',
       '  color: #c8cdd8;',
       '  background: rgba(22,26,34,0.55);',
       '  border-left: 2px solid #252a35;',
@@ -1715,7 +1715,7 @@
       '  display: block;',
       '  margin: 8px auto 12px;',
       '  max-width: 1100px;',
-      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  font-family: Arial, Helvetica, sans-serif;',
       '  color: #c8cdd8;',
       '  background: #161a22;',
       '  border: 1px solid #252a35;',
@@ -2076,7 +2076,7 @@
       '  display: block;',
       '  margin: 8px auto 12px;',
       '  max-width: 1100px;',
-      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  font-family: Arial, Helvetica, sans-serif;',
       '  color: #c8cdd8;',
       '  background: #161a22;',
       '  border: 1px solid #252a35;',
@@ -2514,7 +2514,7 @@
       '  display: block;',
       '  margin: 8px auto 12px;',
       '  max-width: 1100px;',
-      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  font-family: Arial, Helvetica, sans-serif;',
       '  color: #c8cdd8;',
       '  background: #161a22;',
       '  border: 1px solid #252a35;',
@@ -2947,7 +2947,7 @@
       '  display: block;',
       '  margin: 8px auto 12px;',
       '  max-width: 1100px;',
-      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  font-family: Arial, Helvetica, sans-serif;',
       '  color: #c8cdd8;',
       '  background: #161a22;',
       '  border: 1px solid #252a35;',
@@ -3301,7 +3301,7 @@
       background: '#161a22',
       border: '1px solid #444',
       borderRadius: '6px',
-      font: "600 11px/1 'Syne Mono', monospace",
+      font: "600 11px/1 Arial, Helvetica, sans-serif",
       letterSpacing: '0.04em',
       color: '#999',
       cursor: 'pointer',
@@ -3652,7 +3652,7 @@
       '  display: block;',
       '  margin: 8px auto 12px;',
       '  max-width: 1100px;',
-      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  font-family: Arial, Helvetica, sans-serif;',
       '  color: #c8cdd8;',
       '  background: #161a22;',
       '  border: 1px solid #252a35;',
@@ -4332,7 +4332,7 @@
     st.id = 'valigia-itempage-styles';
     st.textContent = `
       #${ITEM_PAGE_BAR_ID} {
-        font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+        font-family: Arial, Helvetica, sans-serif;
         background: #0d0f14;
         color: #c8cdd8;
         border: 1px solid #252a35;
@@ -4813,7 +4813,7 @@
       '  display: block;',
       '  margin: 8px auto 12px;',
       '  max-width: 1100px;',
-      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  font-family: Arial, Helvetica, sans-serif;',
       '  color: #c8cdd8;',
       '  background: #161a22;',
       '  border: 1px solid #252a35;',
@@ -5288,7 +5288,7 @@
       '  display: block;',
       '  margin: 8px auto 12px;',
       '  max-width: 1100px;',
-      '  font-family: ui-monospace, Menlo, Consolas, monospace;',
+      '  font-family: Arial, Helvetica, sans-serif;',
       '  color: #c8cdd8;',
       '  background: #161a22;',
       '  border: 1px solid #252a35;',
