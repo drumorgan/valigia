@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.20.5
+// @version      0.20.6
 // @description  Inside Torn PDA, contribute to Valigia's shared price pool from six pages: (1) the travel shop — push fresh abroad buy prices + overlay per-row margins; while in-flight, show a "what's available at the destination" strip from YATA, (2) the Item Market — push fresh sell prices into the community cache, surface your Watchlist matches, show the cheapest fresh bazaar listing when filtered to a single item, and surface a Flash Deals bar of items listed below the best TornExchange trader buy-offer, (3) any bazaar — push fresh bazaar listings + surface Watchlist matches + a Bazaar Deals bar listing every listing priced below its Item Market floor or below its museum-points-equivalent value, (4) your own Items page (item.php) — scrape inventory across category tabs and surface the best TornExchange buy-offer for each stack, (5) the Museum (museum.php) — show an expandable Artifacts bar with current market and cheapest fresh bazaar prices for every Torn-classified artifact, (6) the Points Market (pmarket.php) — capture the cheapest cash-per-point listing so the bazaar bar can flag underpriced museum-set items.
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -312,12 +312,12 @@
     const existing = document.getElementById('valigia-parse-mismatch-panel');
     if (existing) existing.remove();
     const lines = [
-      'VALIGIA PARSER MISMATCH — please screenshot',
-      'v' + SCRIPT_VERSION + ' · ' + parseMismatches.length + ' row(s)',
+      'VALIGIA PARSER MISMATCH \u2014 please screenshot',
+      'v' + SCRIPT_VERSION + ' \u00B7 ' + parseMismatches.length + ' row(s)',
       '',
     ];
     for (const m of parseMismatches) {
-      lines.push('— ' + m.name + ' (id=' + m.item_id + ')');
+      lines.push('\u2014 ' + m.name + ' (id=' + m.item_id + ')');
       lines.push('  first-$ = ' + m.firstDollar);
       lines.push('  largest-$ = ' + m.largestDollar);
       lines.push('  HTML: ' + m.htmlSnippet);
@@ -395,7 +395,7 @@
         item_id: item_id,
         firstDollar: buy_price,
         largestDollar: largestDollar,
-        htmlSnippet: html.length > 600 ? html.slice(0, 600) + '…' : html,
+        htmlSnippet: html.length > 600 ? html.slice(0, 600) + '\u2026' : html,
       });
     }
 
@@ -3268,7 +3268,7 @@
     const on = stakeoutEnabled();
     let text = 'STAKEOUT: ' + (on ? 'ON' : 'OFF');
     if (on && stakeout.nextTickAt > 0) {
-      text += ' · next ' + formatCountdown(stakeout.nextTickAt - Date.now());
+      text += ' \u00B7 next ' + formatCountdown(stakeout.nextTickAt - Date.now());
     }
     stakeout.badge.textContent = text;
     stakeout.badge.style.color = on ? '#4ae8a0' : '#999';
@@ -3283,7 +3283,7 @@
     } else {
       setStakeoutEnabled(true);
       startStakeoutInterval();
-      toast('Stakeout enabled — next scrape in 5 min', 'success');
+      toast('Stakeout enabled \u2014 next scrape in 5 min', 'success');
     }
     updateStakeoutBadge();
   }
@@ -4403,7 +4403,7 @@
   }
 
   function fmtMoney(n) {
-    if (!Number.isFinite(n)) return '—';
+    if (!Number.isFinite(n)) return '\u2014';
     return '$' + Math.round(n).toLocaleString('en-US');
   }
 
@@ -5145,7 +5145,7 @@
       } else {
         const empty = document.createElement('span');
         empty.className = 'vgl-mu-empty';
-        empty.textContent = r.buyUnderReason || '—';
+        empty.textContent = r.buyUnderReason || '\u2014';
         buyCell.appendChild(empty);
       }
 
@@ -5419,7 +5419,7 @@
       return;
     }
 
-    log('pmarket: scrape failed — ' + result.error);
+    log('pmarket: scrape failed \u2014 ' + result.error);
     showPointsRateBanner(null, true, result.error);
   }
 
