@@ -8,6 +8,19 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700&family=Syne+Mono&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/src/styles.css" />
+  <script>
+    // Apply the saved font theme before first paint to avoid a Syne→system
+    // flash. Mirrored by the picker wired up in src/main.js — keep the
+    // storage key and valid values in sync.
+    (() => {
+      try {
+        const t = localStorage.getItem('valigia_font_theme');
+        if (t === 'system' || t === 'torn') {
+          document.documentElement.dataset.fontTheme = t;
+        }
+      } catch { /* private mode — fall through to default */ }
+    })();
+  </script>
 </head>
 <body>
   <div id="app">
@@ -45,6 +58,12 @@
         >▶</button>
       </div>
       <div id="stats-panel" class="stats-panel" hidden aria-live="polite"></div>
+      <div class="font-picker" role="group" aria-label="Font theme">
+        <span class="font-picker-label">Font</span>
+        <button type="button" class="font-chip" data-font-theme="default" aria-pressed="false">Default</button>
+        <button type="button" class="font-chip" data-font-theme="system" aria-pressed="false">System</button>
+        <button type="button" class="font-chip" data-font-theme="torn" aria-pressed="false">Torn</button>
+      </div>
     </header>
     <nav id="tab-nav" class="tab-nav" hidden>
       <button class="tab-btn tab-btn--active" data-tab="travel" type="button">Travel</button>
