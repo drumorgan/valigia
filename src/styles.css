@@ -11,6 +11,27 @@
      still reading as a clearly subdued secondary color. Many badges also
      layered opacity < 1 on top, which compounded the legibility hit. */
   --muted:    #8a8fa0;
+
+  /* Font tokens. Default theme is the original cargo-terminal look.
+     Alternative themes override these on a data-attribute on <html>. */
+  --font-display: 'Syne', sans-serif;
+  --font-mono:    'Syne Mono', monospace;
+}
+
+/* System fonts — falls back to whatever the device renders most cleanly.
+   On iPad this is San Francisco / SF Mono, which is what users complaining
+   about Syne legibility are asking for. */
+html[data-font-theme="system"] {
+  --font-display: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:    ui-monospace, Menlo, Consolas, 'SF Mono', monospace;
+}
+
+/* Match Torn's in-game fonts — Torn uses Arial across the board. Using the
+   same family for both display and mono slots blends Valigia into the rest
+   of the PDA experience for users who prefer that. */
+html[data-font-theme="torn"] {
+  --font-display: Arial, Helvetica, sans-serif;
+  --font-mono:    Arial, Helvetica, sans-serif;
 }
 
 *, *::before, *::after {
@@ -22,7 +43,7 @@
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   min-height: 100dvh;
   display: flex;
   justify-content: center;
@@ -44,7 +65,7 @@ body {
 }
 
 .logo {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 2.4rem;
   color: var(--accent);
   letter-spacing: 0.08em;
@@ -52,7 +73,7 @@ body {
 }
 
 .logo-subtitle {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   color: var(--muted);
   margin-top: 0.15rem;
@@ -83,7 +104,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 999px;
   background: rgba(74, 232, 160, 0.06);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
 }
 
 /* Author `display: inline-flex` above wins over the UA stylesheet's
@@ -147,7 +168,7 @@ body {
   background: transparent;
   border: none;
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   line-height: 1;
   cursor: pointer;
@@ -174,7 +195,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   color: var(--text);
   text-align: left;
   display: grid;
@@ -183,6 +204,52 @@ body {
 
 .stats-panel[hidden] {
   display: none;
+}
+
+/* ── Font picker (header) ─────────────────────────────────────── */
+
+.font-picker {
+  margin-top: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.font-picker-label {
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.font-chip {
+  padding: 0.18rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.font-chip:hover,
+.font-chip:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.font-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: rgba(232, 200, 74, 0.12);
+  color: var(--accent);
 }
 
 .stats-section-title {
@@ -273,7 +340,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
 }
 
@@ -290,7 +357,7 @@ body {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
@@ -308,7 +375,7 @@ body {
 
 .status {
   text-align: center;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 1.2rem;
   color: var(--accent);
   padding-top: 3rem;
@@ -327,7 +394,7 @@ body {
 }
 
 .login-title {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 1.3rem;
   color: var(--accent);
   margin-bottom: 0.5rem;
@@ -346,7 +413,7 @@ body {
   text-align: center;
   background: var(--accent);
   color: var(--bg);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   font-size: 0.95rem;
   padding: 0.75rem 1.2rem;
@@ -378,7 +445,7 @@ body {
   text-align: center;
   background: transparent;
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   padding: 0.55rem 1rem;
   border: 1px dashed var(--border);
@@ -404,7 +471,7 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   padding: 0.6rem 0.75rem;
   border-radius: 6px;
@@ -422,7 +489,7 @@ body {
 .login-btn {
   background: var(--accent);
   color: var(--bg);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   font-size: 0.9rem;
   padding: 0.6rem 1.2rem;
@@ -505,7 +572,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
 }
 
@@ -532,7 +599,7 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   padding: 0.3rem 0.4rem;
   border-radius: 4px;
@@ -553,7 +620,7 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   padding: 0.3rem 0.4rem;
   border-radius: 4px;
@@ -598,7 +665,7 @@ body {
   transform: translateY(-50%);
   pointer-events: none;
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   letter-spacing: 0.03em;
   white-space: nowrap;
@@ -620,7 +687,7 @@ body {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
@@ -653,7 +720,7 @@ body {
 .arb-table {
   width: 100%;
   border-collapse: collapse;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.78rem;
 }
 
@@ -741,7 +808,7 @@ body {
 }
 
 .dest-code {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.78rem;
   letter-spacing: 0.03em;
   color: var(--text);
@@ -1018,11 +1085,11 @@ tr.row--negative td {
   padding: 1rem 1.25rem;
   margin: 1rem 0;
   position: relative;
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
 }
 
 .best-run-label {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.15em;
@@ -1039,7 +1106,7 @@ tr.row--negative td {
 }
 
 .best-run-item {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
 }
 
 .best-run-name {
@@ -1055,7 +1122,7 @@ tr.row--negative td {
 }
 
 .best-run-rate {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   text-align: right;
 }
 
@@ -1072,7 +1139,7 @@ tr.row--negative td {
 }
 
 .best-run-meta {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--muted);
   margin-top: 0.5rem;
@@ -1098,7 +1165,7 @@ tr.row--negative td {
   color: var(--bg);
   border-radius: 4px;
   text-decoration: none;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   font-weight: 600;
 }
@@ -1137,7 +1204,7 @@ tr.row--negative td {
   bottom: 1.5rem;
   left: 50%;
   transform: translateX(-50%) translateY(100%);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   padding: 0.6rem 1.2rem;
   border-radius: 6px;
@@ -1181,7 +1248,7 @@ tr.row--negative td {
 }
 
 .crosslink-label {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.18em;
@@ -1193,7 +1260,7 @@ tr.row--negative td {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   color: var(--muted);
 }
@@ -1279,7 +1346,7 @@ tr.row--negative td {
   background: transparent;
   border: 1px solid var(--accent);
   color: var(--accent);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   font-size: 0.9rem;
   border-radius: 6px;
@@ -1379,7 +1446,7 @@ tr.row--negative td {
 /* Countdown timer below fuse */
 .fuse-timer {
   text-align: center;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 1.4rem;
   font-weight: 700;
   color: var(--accent);
@@ -1400,7 +1467,7 @@ tr.row--negative td {
 }
 
 .cs-title {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.18em;
@@ -1424,7 +1491,7 @@ tr.row--negative td {
 }
 
 .cs-value {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 1.5rem;
   font-weight: 700;
   color: var(--accent);
@@ -1433,7 +1500,7 @@ tr.row--negative td {
 }
 
 .cs-label {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.6rem;
   color: var(--muted);
   text-transform: uppercase;
@@ -1447,7 +1514,7 @@ tr.row--negative td {
 }
 
 .cs-cta {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--positive);
   line-height: 1.5;
@@ -1487,7 +1554,7 @@ tr.row--negative td {
 }
 
 .bazaar-modal-title {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 1.1rem;
   color: var(--accent);
   text-transform: uppercase;
@@ -1527,7 +1594,7 @@ tr.row--negative td {
 }
 
 .bazaar-progress-text {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--muted);
   margin-bottom: 0.5rem;
@@ -1571,14 +1638,14 @@ tr.row--negative td {
 }
 
 .deal-name {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   font-weight: 700;
   color: var(--text);
 }
 
 .deal-pct {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   font-weight: 700;
   color: var(--positive);
@@ -1592,7 +1659,7 @@ tr.row--negative td {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.78rem;
   padding: 0.15rem 0;
 }
@@ -1632,7 +1699,7 @@ tr.row--negative td {
 
 .deal-link {
   display: inline-block;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--accent);
   text-decoration: none;
@@ -1648,7 +1715,7 @@ tr.row--negative td {
 .bazaar-scan-btn {
   background: var(--accent);
   color: var(--bg);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   font-size: 0.85rem;
   padding: 0.5rem 1.5rem;
@@ -1671,7 +1738,7 @@ tr.row--negative td {
 /* ── Empty State ───────────────────────────────────────────── */
 
 .bazaar-empty {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--muted);
   text-align: center;
@@ -1706,14 +1773,14 @@ tr.row--negative td {
 }
 
 .wof-text {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   color: var(--text);
   margin-bottom: 0.35rem;
 }
 
 .wof-subtext {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--muted);
 }
@@ -1741,7 +1808,7 @@ tr.row--negative td {
 
 .wof-deal-badge {
   display: inline-block;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 1.4rem;
   font-weight: 700;
   color: var(--bg);
@@ -1753,7 +1820,7 @@ tr.row--negative td {
 }
 
 .wof-deal-name {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 1.2rem;
   font-weight: 700;
   color: var(--accent);
@@ -1762,7 +1829,7 @@ tr.row--negative td {
 
 .wof-deal-liquidity {
   display: inline-block;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   letter-spacing: 0.03em;
   padding: 0.15rem 0.5rem;
@@ -1797,7 +1864,7 @@ tr.row--negative td {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   padding: 0.2rem 0;
 }
@@ -1843,7 +1910,7 @@ tr.row--negative td {
 
 .wof-deal-link {
   display: inline-block;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--accent);
   text-decoration: none;
@@ -1871,7 +1938,7 @@ tr.row--negative td {
 }
 
 .wof-no-deal-text {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 1.1rem;
   font-weight: 700;
   color: var(--muted);
@@ -1879,7 +1946,7 @@ tr.row--negative td {
 }
 
 .wof-no-deal-sub {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--muted);
   line-height: 1.6;
@@ -1888,7 +1955,7 @@ tr.row--negative td {
 /* Runners-up: every other deal found this spin */
 .wof-runners {
   margin-top: 1rem;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   text-align: left;
 }
 
@@ -1957,7 +2024,7 @@ tr.row--negative td {
 /* Diagnostic details (collapsible) */
 .bazaar-diag-details {
   margin-top: 1rem;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   color: var(--muted);
 }
@@ -1969,7 +2036,7 @@ tr.row--negative td {
 }
 
 .bazaar-diag {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   color: var(--accent);
   text-align: left;
@@ -2131,7 +2198,7 @@ tr.row--negative td {
   }
   .arb-table td.col-dest .dest-flag::after {
     content: " " attr(data-dest);
-    font-family: 'Syne Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 0.78rem;
     color: var(--text);
     letter-spacing: 0.02em;
@@ -2295,7 +2362,7 @@ tr.row--negative td {
   border: 1px solid rgba(232, 130, 74, 0.35);
   border-radius: 6px;
   color: var(--warning);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   line-height: 1.4;
 }
@@ -2315,7 +2382,7 @@ tr.row--negative td {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   padding: 0.2rem 0.55rem;
   border-radius: 4px;
@@ -2397,7 +2464,7 @@ tr.row--negative td {
 }
 
 .pda-modal-title {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 1.1rem;
   color: var(--accent);
   text-transform: uppercase;
@@ -2438,7 +2505,7 @@ tr.row--negative td {
 }
 
 .pda-section-title {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.8rem;
   color: var(--accent);
   text-transform: uppercase;
@@ -2536,7 +2603,7 @@ tr.row--negative td {
 }
 
 .pda-key-link-hint {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   color: var(--muted);
   text-transform: uppercase;
@@ -2544,7 +2611,7 @@ tr.row--negative td {
 }
 
 .pda-key-link-action {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.85rem;
   font-weight: 700;
   color: var(--accent);
@@ -2563,7 +2630,7 @@ tr.row--negative td {
 
 .pda-url {
   flex: 1;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--text);
   word-break: break-all;
@@ -2578,7 +2645,7 @@ tr.row--negative td {
   color: var(--bg);
   border: none;
   border-radius: 4px;
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.75rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -2607,7 +2674,7 @@ tr.row--negative td {
   color: var(--bg);
   border: none;
   border-radius: 5px;
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.85rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -2651,7 +2718,7 @@ tr.row--negative td {
   background: none;
   border: none;
   color: var(--muted);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.9rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -2677,7 +2744,7 @@ tr.row--negative td {
 .tab-badge {
   background: var(--positive);
   color: #0d0f14;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   font-weight: 700;
   padding: 0.08rem 0.4rem;
@@ -2701,7 +2768,7 @@ tr.row--negative td {
   background: rgba(74, 232, 160, 0.04);
   color: var(--text);
   text-decoration: none;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.82rem;
   transition: background 120ms, border-color 120ms;
 }
@@ -2721,7 +2788,7 @@ tr.row--negative td {
 
 .wl-venue {
   font-size: 0.68rem;
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2790,7 +2857,7 @@ tr.row--negative td {
 }
 
 .wl-intro .wl-heading {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 1.4rem;
   color: var(--accent);
   letter-spacing: 0.04em;
@@ -2829,7 +2896,7 @@ tr.row--negative td {
 }
 
 .wl-field-label {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -2840,7 +2907,7 @@ tr.row--negative td {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.95rem;
   padding: 0.5rem 0.65rem;
   border-radius: 3px;
@@ -2886,7 +2953,7 @@ tr.row--negative td {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
   max-height: 22rem;
   overflow-y: auto;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   /* Don't let the native iOS tap-delay/selection fire on rows — we're
      handling the selection ourselves via pointerdown. */
@@ -2913,7 +2980,7 @@ tr.row--negative td {
 .wl-typeahead-empty {
   padding: 0.6rem 0.75rem;
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   font-style: italic;
 }
@@ -2922,7 +2989,7 @@ tr.row--negative td {
   background: var(--accent);
   color: #0d0f14;
   border: none;
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   font-size: 0.82rem;
   text-transform: uppercase;
@@ -2948,7 +3015,7 @@ tr.row--negative td {
   align-items: center;
   gap: 0.3rem;
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.82rem;
   cursor: pointer;
 }
@@ -2971,7 +3038,7 @@ tr.row--negative td {
 }
 
 .wl-section-title {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -2983,7 +3050,7 @@ tr.row--negative td {
   font-size: 0.88rem;
   line-height: 1.5;
   padding: 0.8rem 0;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
 }
 
 .wl-match-list {
@@ -2995,14 +3062,14 @@ tr.row--negative td {
 .wl-table {
   width: 100%;
   border-collapse: collapse;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.88rem;
 }
 
 .wl-table th {
   text-align: left;
   color: var(--muted);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -3024,7 +3091,7 @@ tr.row--negative td {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 1rem;
   width: 1.8rem;
   height: 1.8rem;
@@ -3054,7 +3121,7 @@ tr.row--negative td {
 }
 
 .sell-intro .sell-heading {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 1.4rem;
   color: var(--accent);
   letter-spacing: 0.04em;
@@ -3100,7 +3167,7 @@ tr.row--negative td {
 }
 
 .sell-cta-title {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -3120,7 +3187,7 @@ tr.row--negative td {
   background: var(--positive);
   color: #0d0f14;
   border: none;
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   font-size: 0.8rem;
   text-transform: uppercase;
@@ -3154,7 +3221,7 @@ tr.row--negative td {
 }
 
 .sell-field-label {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -3165,7 +3232,7 @@ tr.row--negative td {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.95rem;
   padding: 0.5rem 0.65rem;
   border-radius: 3px;
@@ -3184,7 +3251,7 @@ tr.row--negative td {
   background: var(--accent);
   color: #0d0f14;
   border: none;
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   font-size: 0.82rem;
   text-transform: uppercase;
@@ -3199,7 +3266,7 @@ tr.row--negative td {
 .sell-submit:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .sell-add-status {
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.82rem;
   padding: 0.4rem 0;
 }
@@ -3215,7 +3282,7 @@ tr.row--negative td {
 }
 
 .sell-section-title {
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -3226,7 +3293,7 @@ tr.row--negative td {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -3243,7 +3310,7 @@ tr.row--negative td {
 .sell-loading,
 .sell-empty {
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.88rem;
   padding: 0.8rem 0.2rem;
   line-height: 1.5;
@@ -3283,7 +3350,7 @@ tr.row--negative td {
   border-radius: 3px;
   text-decoration: none;
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.9rem;
   transition: border-color 120ms, background 120ms;
 }
@@ -3334,7 +3401,7 @@ tr.row--negative td {
 .sell-no-offers summary {
   padding: 0.5rem 0.8rem;
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   cursor: pointer;
 }
@@ -3353,7 +3420,7 @@ tr.row--negative td {
   gap: 0.5rem;
   padding: 0.35rem 0;
   color: var(--muted);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   border-top: 1px solid var(--border);
 }
@@ -3380,7 +3447,7 @@ tr.row--negative td {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 3px;
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.88rem;
 }
 
@@ -3399,7 +3466,7 @@ tr.row--negative td {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  font-family: 'Syne', sans-serif;
+  font-family: var(--font-display);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -3433,7 +3500,7 @@ tr.row--negative td {
 .sell-debug summary {
   padding: 0.45rem 0.8rem;
   color: var(--warning);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   cursor: pointer;
 }
@@ -3441,7 +3508,7 @@ tr.row--negative td {
   margin: 0;
   padding: 0.6rem 0.8rem 0.8rem 0.8rem;
   color: var(--text);
-  font-family: 'Syne Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   line-height: 1.4;
   max-height: 18rem;
