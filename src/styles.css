@@ -12,26 +12,12 @@
      layered opacity < 1 on top, which compounded the legibility hit. */
   --muted:    #8a8fa0;
 
-  /* Font tokens. Default theme is the original cargo-terminal look.
-     Alternative themes override these on a data-attribute on <html>. */
-  --font-display: 'Syne', sans-serif;
-  --font-mono:    'Syne Mono', monospace;
-}
-
-/* System fonts — falls back to whatever the device renders most cleanly.
-   On iPad this is San Francisco / SF Mono, which is what users complaining
-   about Syne legibility are asking for. */
-html[data-font-theme="system"] {
+  /* Font tokens. The whole app renders in the device's native UI fonts —
+     on iPad that's San Francisco / SF Mono, which reads far cleaner than
+     the old Syne / Syne Mono pairing. The PDA userscript renders in Arial
+     to match Torn's in-game UI; the web app stays on system fonts. */
   --font-display: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
   --font-mono:    ui-monospace, Menlo, Consolas, 'SF Mono', monospace;
-}
-
-/* Match Torn's in-game fonts — Torn uses Arial across the board. Using the
-   same family for both display and mono slots blends Valigia into the rest
-   of the PDA experience for users who prefer that. */
-html[data-font-theme="torn"] {
-  --font-display: Arial, Helvetica, sans-serif;
-  --font-mono:    Arial, Helvetica, sans-serif;
 }
 
 *, *::before, *::after {
@@ -204,52 +190,6 @@ body {
 
 .stats-panel[hidden] {
   display: none;
-}
-
-/* ── Font picker (header) ─────────────────────────────────────── */
-
-.font-picker {
-  margin-top: 0.85rem;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-}
-
-.font-picker-label {
-  color: var(--muted);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.font-chip {
-  padding: 0.18rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 0.75rem;
-  cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
-}
-
-.font-chip:hover,
-.font-chip:focus-visible {
-  border-color: var(--accent);
-  color: var(--accent);
-  outline: none;
-}
-
-.font-chip[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: rgba(232, 200, 74, 0.12);
-  color: var(--accent);
 }
 
 .stats-section-title {
@@ -681,6 +621,11 @@ body {
 /* Filter chips */
 .filter-chips {
   gap: 0.3rem !important;
+  /* The Type group holds a label + 5 chips. On a narrow phone that single
+     control-group is wider than the viewport, and since control-group is a
+     non-wrapping flex row the page scrolls sideways. Let the chips wrap
+     onto a second line instead. */
+  flex-wrap: wrap;
 }
 
 .filter-chip {
@@ -2105,6 +2050,12 @@ tr.row--negative td {
 
   .control-group {
     font-size: 0.7rem;
+  }
+
+  /* margin-left:auto would strand the Mode group hard-right on its own
+     wrapped line. On phones just let it flow left with the rest. */
+  .control-group--right {
+    margin-left: 0;
   }
 
   .filter-chip {
