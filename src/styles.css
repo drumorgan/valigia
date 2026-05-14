@@ -33,6 +33,11 @@ body {
   min-height: 100dvh;
   display: flex;
   justify-content: center;
+  /* Belt-and-suspenders against sideways scroll: if any descendant ever
+     overflows horizontally, clip it rather than letting it widen the
+     document and shift the whole layout. `clip` (not `hidden`) so no
+     scroll container is created — the sticky table header is unaffected. */
+  overflow-x: clip;
 }
 
 #app {
@@ -85,6 +90,8 @@ body {
   display: inline-flex;
   align-items: baseline;
   justify-content: center;
+  flex-wrap: wrap;
+  max-width: 100%;
   gap: 0.45rem;
   padding: 0.35rem 0.85rem;
   border: 1px solid var(--border);
@@ -279,7 +286,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
   font-family: var(--font-mono);
   font-size: 0.85rem;
 }
