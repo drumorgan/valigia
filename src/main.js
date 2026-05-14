@@ -78,7 +78,6 @@ async function boot() {
   // user actually expands the panel.
   loadPdaScoutCount();
   initStatsPanel();
-  initFontPicker();
 
   const loginPromise = tryAutoLogin();
 
@@ -201,44 +200,6 @@ async function loadPdaScoutCount() {
   } catch {
     // Counter is vanity — silent fail keeps it invisible rather than broken.
   }
-}
-
-// ── Font theme picker ─────────────────────────────────────────
-// Three themes: 'default' (Syne / Syne Mono — original cargo-terminal
-// look), 'system' (device defaults — readable on iPad where Syne Mono
-// looks cramped), and 'torn' (Arial — blends with Torn's own UI).
-// The pre-paint script in index.html applies the saved attribute before
-// CSS even loads; this just keeps the picker in sync and persists clicks.
-const FONT_THEME_KEY = 'valigia_font_theme';
-const VALID_FONT_THEMES = ['default', 'system', 'torn'];
-
-function initFontPicker() {
-  const picker = document.querySelector('.font-picker');
-  if (!picker) return;
-
-  const stored = safeGetItem(FONT_THEME_KEY);
-  const active = VALID_FONT_THEMES.includes(stored) ? stored : 'default';
-  applyFontTheme(active);
-
-  picker.querySelectorAll('.font-chip').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const theme = btn.dataset.fontTheme;
-      if (!VALID_FONT_THEMES.includes(theme)) return;
-      applyFontTheme(theme);
-      safeSetItem(FONT_THEME_KEY, theme);
-    });
-  });
-}
-
-function applyFontTheme(theme) {
-  if (theme === 'default') {
-    delete document.documentElement.dataset.fontTheme;
-  } else {
-    document.documentElement.dataset.fontTheme = theme;
-  }
-  document.querySelectorAll('.font-picker .font-chip').forEach((btn) => {
-    btn.setAttribute('aria-pressed', btn.dataset.fontTheme === theme ? 'true' : 'false');
-  });
 }
 
 // ── Login Screen ───────────────────────────────────────────────
@@ -414,7 +375,7 @@ async function startDashboard(playerId, playerName) {
   if (!priceResult || priceResult.items.length === 0) {
     showToast('Could not fetch abroad prices from YATA. Try refreshing.', 'warning');
     tableContainer.innerHTML = `
-      <div style="text-align:center;padding:3rem 1rem;font-family:'Syne Mono',monospace;">
+      <div style="text-align:center;padding:3rem 1rem;font-family:var(--font-mono);">
         <p style="font-size:1.2rem;color:var(--accent);margin-bottom:0.5rem;">
           Loading prices\u2026
         </p>
