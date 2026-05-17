@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.20.6
+// @version      0.20.7
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (margin overlays + YATA destination preview), Item Market (watchlist matches, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.20.4';
+  const SCRIPT_VERSION = '0.20.7';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -358,7 +358,20 @@
     // The name is usually the alt text on the item image, or the first bit
     // of text in the row. Prefer alt: it's the most stable.
     const altName = (img.getAttribute('alt') || '').trim();
-    const rowText = (row.innerText || '').trim();
+    // Travel rows include an expandable info wrapper (id="item-N-itemInfoWrapper")
+    // that shows the item's market sell price when the row is expanded. That
+    // price is way larger than the abroad buy price and corrupted both the
+    // first-$ and largest-$ parses — see the parseMismatches diagnostic. Clone
+    // the row, drop the wrapper, then read text so only the shop's own cells
+    // contribute. textContent (not innerText) is used on the clone because the
+    // clone isn't attached to the layout tree.
+    const rowClone = row.cloneNode(true);
+    rowClone
+      .querySelectorAll('[id$="-itemInfoWrapper"], [id*="ItemInfoWrapper"]')
+      .forEach(function (el) { el.remove(); });
+    const rowText = (rowClone.textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim();
 
     let name = altName;
     if (!name) {
