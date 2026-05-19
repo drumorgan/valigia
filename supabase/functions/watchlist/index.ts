@@ -111,9 +111,10 @@ serve(async (req) => {
       const { item_id, max_price, venues } = body as UpsertBody;
       if (!Number.isInteger(item_id) || item_id <= 0) return badRequest('invalid_item_id');
       if (!Number.isFinite(max_price) || max_price <= 0) return badRequest('invalid_max_price');
-      // cap at 2^31-1 to be comfortably under bigint range and well over any
-      // realistic Torn item price; mostly a sanity filter on bad client input.
-      if (max_price > 2_147_483_647) return badRequest('invalid_max_price');
+      // Sanity cap: $1 quadrillion — comfortably under bigint range, far above
+      // any realistic Torn item price (top-tier items list in the hundreds of
+      // billions). Filters out garbage client input without constraining real use.
+      if (max_price > 1_000_000_000_000_000) return badRequest('invalid_max_price');
 
       const cleanVenues = Array.isArray(venues)
         ? [...new Set(venues.filter((v) => ALLOWED_VENUES.has(v)))]
