@@ -16,6 +16,7 @@
 
 import { supabase } from './supabase.js';
 import { safeGetItem, safeSetItem } from './storage.js';
+import { normalizeDestination } from './data/destinations.js';
 
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 const CACHE_KEY = 'valigia_yata_cache_v1';
@@ -81,12 +82,15 @@ async function fetchFirstPartyAbroadPrices() {
 
     // Within the window a given (item_id, destination) may have multiple
     // observations if several players visited. Keep the newest per key.
+    // Normalize destination first so a legacy 'United Kingdom' row and a
+    // current 'UK' row collapse into one entry instead of two.
     const freshest = new Map();
     for (const row of data) {
-      const key = `${row.item_id}|${row.destination}`;
+      const destination = normalizeDestination(row.destination);
+      const key = `${row.item_id}|${destination}`;
       const existing = freshest.get(key);
       if (!existing || new Date(row.observed_at) > new Date(existing.observed_at)) {
-        freshest.set(key, row);
+        freshest.set(key, { ...row, destination });
       }
     }
 
