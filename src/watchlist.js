@@ -14,6 +14,7 @@
 import { supabase, supabaseUrl, supabaseAnonKey } from './supabase.js';
 import { getPlayerId } from './auth.js';
 import { safeGetItem } from './storage.js';
+import { normalizeDestination } from './data/destinations.js';
 
 const SESSION_STORAGE_KEY = 'valigia_session';
 const WATCHLIST_FN_URL = `${supabaseUrl}/functions/v1/watchlist`;
@@ -329,7 +330,7 @@ export async function findMatches(alerts, itemNameById) {
       if (!abroadByItem.has(it.item_id)) abroadByItem.set(it.item_id, []);
       abroadByItem.get(it.item_id).push({
         item_id: it.item_id,
-        destination: it.destination,
+        destination: normalizeDestination(it.destination),
         buy_price: it.buy_price,
         stock: it.quantity,
         observed_at: it.reported_at,
@@ -338,7 +339,7 @@ export async function findMatches(alerts, itemNameById) {
   } else if (abroadRes?.status === 'fulfilled' && Array.isArray(abroadRes.value?.data)) {
     for (const row of abroadRes.value.data) {
       if (!abroadByItem.has(row.item_id)) abroadByItem.set(row.item_id, []);
-      abroadByItem.get(row.item_id).push(row);
+      abroadByItem.get(row.item_id).push({ ...row, destination: normalizeDestination(row.destination) });
     }
   }
 

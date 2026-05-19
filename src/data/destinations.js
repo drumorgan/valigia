@@ -8,18 +8,18 @@
 // for seasoned Torn players to recognize at a glance.
 
 // Canonical list of Torn travel destinations, shortest flight first.
-// DESTINATIONS below includes lookup aliases ('UK' → 'United Kingdom',
-// 'Caymans' → 'Cayman Islands') so parsing code can match whatever
-// YATA or Torn happens to return. CANONICAL_DESTINATIONS is the
-// dedup'd display list for UI surfaces that need one row per country —
-// the stats-panel coverage section must show every destination exactly
-// once, even those never scouted.
+// The live data pipeline (YATA fetcher, PDA scraper, abroad-items.js)
+// emits the short forms 'UK' and 'Caymans', so those are canonical here
+// too. DESTINATIONS still carries the long forms as lookup aliases so
+// parsing code can match whatever a legacy row or external feed happens
+// to spell. Anything that surfaces destinations to the UI should run
+// names through normalizeDestination() first so duplicates collapse.
 export const CANONICAL_DESTINATIONS = [
   'Mexico',
   'Canada',
-  'Cayman Islands',
+  'Caymans',
   'Hawaii',
-  'United Kingdom',
+  'UK',
   'Switzerland',
   'Argentina',
   'Japan',
@@ -35,14 +35,31 @@ export const DESTINATIONS = {
   'Japan':            { flightMins: 203, flag: '🇯🇵', code: 'JPN' },
   'Argentina':        { flightMins: 189, flag: '🇦🇷', code: 'ARG' },
   'Switzerland':      { flightMins: 169, flag: '🇨🇭', code: 'SWI' },
-  'United Kingdom':   { flightMins: 152, flag: '🇬🇧', code: 'UK'  },
   'UK':               { flightMins: 152, flag: '🇬🇧', code: 'UK'  },
+  'United Kingdom':   { flightMins: 152, flag: '🇬🇧', code: 'UK'  },
   'Hawaii':           { flightMins: 121, flag: '🏝️', code: 'HAW' },
-  'Cayman Islands':   { flightMins: 57,  flag: '🇰🇾', code: 'CAY' },
   'Caymans':          { flightMins: 57,  flag: '🇰🇾', code: 'CAY' },
+  'Cayman Islands':   { flightMins: 57,  flag: '🇰🇾', code: 'CAY' },
   'Canada':           { flightMins: 37,  flag: '🇨🇦', code: 'CAN' },
   'Mexico':           { flightMins: 20,  flag: '🇲🇽', code: 'MEX' },
 };
+
+// Long-form → canonical short-form. Anything not in the map is returned
+// unchanged so unknown destinations still surface (just not deduped).
+const DESTINATION_ALIASES = {
+  'United Kingdom': 'UK',
+  'Cayman Islands': 'Caymans',
+};
+
+/**
+ * Fold long-form destination names ('United Kingdom', 'Cayman Islands')
+ * into the canonical short forms the rest of the app uses. Pass-through
+ * for already-canonical names and for anything we don't recognise.
+ */
+export function normalizeDestination(destination) {
+  if (typeof destination !== 'string') return destination;
+  return DESTINATION_ALIASES[destination] || destination;
+}
 
 /**
  * Get one-way flight time in minutes for a destination.
