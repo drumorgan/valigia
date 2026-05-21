@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.23.0
+// @version      0.23.1
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.23.0';
+  const SCRIPT_VERSION = '0.23.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2148,18 +2148,51 @@
   }
 
   // Current Item Market floor for an item, used to prefill a new alert's
-  // threshold. Prefers min_price (absolute cheapest listing) and falls back
-  // to the qty-filtered price.
+  // threshold. Prefers the shared sell_prices cache (free anon read), but
+  // that only tracks ~200 arbitrage-relevant items — so for anything else
+  // (e.g. Credit Card) it falls back to a live Torn market lookup so the
+  // prefill works for every item.
   async function fetchItemMarketFloor(itemId) {
     const rows = await fetchJSON(
       SELL_PRICES_URL + '?item_id=eq.' + encodeURIComponent(itemId) +
       '&select=price,min_price'
     );
-    if (!Array.isArray(rows) || rows.length === 0) return null;
-    const r = rows[0];
-    if (r.min_price != null) return Number(r.min_price);
-    if (r.price != null) return Number(r.price);
-    return null;
+    if (Array.isArray(rows) && rows.length > 0) {
+      const r = rows[0];
+      if (r.min_price != null) return Number(r.min_price);
+      if (r.price != null) return Number(r.price);
+    }
+    return fetchLiveItemMarketFloor(itemId);
+  }
+
+  // Absolute cheapest live Item Market listing for an item, straight from
+  // the Torn API (the userscript already holds the key). Parsing mirrors
+  // src/market.js: v1 returns { itemmarket: [...] }, newer shapes nest a
+  // { itemmarket: { listings: [...] } }; listings come cheapest-first, so
+  // [0].cost is the floor. Best-effort — returns null on any failure.
+  async function fetchLiveItemMarketFloor(itemId) {
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return null;
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: 'https://api.torn.com/market/' + encodeURIComponent(itemId) +
+             '?selections=itemmarket&key=' + encodeURIComponent(TORN_API_KEY),
+        headers: { 'Accept': 'application/json' },
+      });
+      let data = null;
+      try { data = JSON.parse(res.responseText || '{}'); } catch (_) { return null; }
+      if (!data || data.error) return null;
+      const listings = (data.itemmarket && data.itemmarket.listings) || data.itemmarket;
+      if (Array.isArray(listings) && listings.length > 0) {
+        const first = listings[0];
+        const cost = first.cost != null ? first.cost : first.price;
+        const n = Number(cost);
+        return Number.isFinite(n) && n > 0 ? n : null;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
   }
 
   function invalidateWatchlistWriteCaches() {
