@@ -9,7 +9,7 @@
 // banner itself intact. This is a nerdy-stats surface, not a dashboard.
 
 import { supabase } from './supabase.js';
-import { CANONICAL_DESTINATIONS } from './data/destinations.js';
+import { CANONICAL_DESTINATIONS, normalizeDestination } from './data/destinations.js';
 
 const PANEL_CACHE_TTL_MS = 60_000;
 
@@ -76,6 +76,11 @@ const LOG_FLOOR = Math.log2(FRESH_FLOOR_MIN);
 const LOG_CEIL = Math.log2(STALE_CEIL_MIN);
 
 function freshnessScore(ageSeconds) {
+  // Null / undefined = never scouted. Guard explicitly: Number(null) is 0,
+  // which would otherwise slip past the isFinite check below and score as
+  // "0 minutes old" → 100% fresh, exactly the wrong answer for a row that
+  // has no scout at all.
+  if (ageSeconds === null || ageSeconds === undefined) return 0;
   const s = Number(ageSeconds);
   if (!Number.isFinite(s) || s < 0) return 0;
   const ageMin = s / 60;
@@ -112,8 +117,22 @@ function renderSection(title, body) {
 function buildCoverageRows(rpcRows) {
   const byDest = new Map();
   for (const row of Array.isArray(rpcRows) ? rpcRows : []) {
-    if (row && typeof row.destination === 'string') {
-      byDest.set(row.destination, row);
+    if (!row || typeof row.destination !== 'string') continue;
+    // Fold long-form names ('United Kingdom' → 'UK', 'Cayman Islands' →
+    // 'Caymans') into canonical short forms so legacy/unnormalised ingest
+    // rows merge into a single coverage row instead of duplicating it.
+    const dest = normalizeDestination(row.destination);
+    const existing = byDest.get(dest);
+    if (existing) {
+      existing.items_known = (Number(existing.items_known) || 0) + (Number(row.items_known) || 0);
+      existing.fresh_30m = (Number(existing.fresh_30m) || 0) + (Number(row.fresh_30m) || 0);
+      // Keep the freshest (smallest) age across the merged variants.
+      const a = existing.last_scout_s;
+      const b = row.last_scout_s;
+      if (a === null || a === undefined) existing.last_scout_s = b;
+      else if (b !== null && b !== undefined) existing.last_scout_s = Math.min(Number(a), Number(b));
+    } else {
+      byDest.set(dest, { ...row, destination: dest });
     }
   }
   const merged = [];
