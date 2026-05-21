@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.22.0
+// @version      0.23.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.22.0';
+  const SCRIPT_VERSION = '0.23.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2167,6 +2167,39 @@
     watchlistMatchesCache = null;
   }
 
+  // Resolve a typed item name back to its id via the warmed catalog
+  // (case-insensitive exact match). Returns null when the name doesn't
+  // match a known item, so the add path can reject typos cleanly.
+  function resolveItemIdByName(name) {
+    if (!itemMetaCache || !name) return null;
+    const target = String(name).trim().toLowerCase();
+    if (!target) return null;
+    for (const [id, meta] of itemMetaCache.entries()) {
+      if (meta && meta.name && meta.name.toLowerCase() === target) return Number(id);
+    }
+    return null;
+  }
+
+  // Build the <datalist> backing the add-item autocomplete once and park it
+  // on the page. Native datalist gives free type-ahead on PDA's WebKit
+  // webview; even if a build doesn't render the dropdown, typing the full
+  // name still resolves via resolveItemIdByName. No-op until the catalog is
+  // warm and idempotent thereafter.
+  const ITEM_DATALIST_ID = 'valigia-item-datalist';
+  function ensureItemDatalist() {
+    if (document.getElementById(ITEM_DATALIST_ID)) return;
+    if (!itemMetaCache || itemMetaCache.size === 0) return;
+    const dl = document.createElement('datalist');
+    dl.id = ITEM_DATALIST_ID;
+    for (const meta of itemMetaCache.values()) {
+      if (!meta || !meta.name) continue;
+      const opt = document.createElement('option');
+      opt.value = meta.name;
+      dl.appendChild(opt);
+    }
+    document.body.appendChild(dl);
+  }
+
   // Re-render every watchlist surface after a write so add/edit/remove is
   // reflected immediately without a page reload.
   async function refreshWatchlistSurfaces() {
@@ -2215,6 +2248,20 @@
       '  flex: 1 1 120px; min-width: 0; font-weight: 700; color: #c8cdd8;',
       '  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
       '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-empty { color: #5a6070; font-size: 12px; }',
+      // Add row sits below the alert list, separated by a hairline so it
+      // reads as a distinct "create" affordance rather than another alert.
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-addrow {',
+      '  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;',
+      '  margin-top: 4px; padding-top: 10px; border-top: 1px solid #252a35;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-addname {',
+      '  appearance: none; -webkit-appearance: none; flex: 1 1 140px; min-width: 0;',
+      '  background: #0d0f14; border: 1px solid #252a35; border-radius: 3px;',
+      '  color: #c8cdd8; font-family: inherit; font-size: 12px; padding: 6px 8px;',
+      '  outline: none;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-addname::placeholder { color: #5a6070; }',
       // Shared input + button styling for both surfaces. Torn's page CSS is
       // aggressive, so reset appearance and set every visible property.
       '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-pricewrap,',
@@ -2333,6 +2380,65 @@
     return row;
   }
 
+  // The "+ Add item" row at the foot of the bar: a name field (catalog
+  // autocomplete) + price + Add. This is the discoverable add path \u2014
+  // the per-item control only appears once you've drilled into one item,
+  // so the list itself needs its own way in. Price left blank falls back
+  // to 10% below the item's current floor, matching the per-item default.
+  function buildMyWatchlistAddRow() {
+    const row = document.createElement('div');
+    row.className = 'vgl-mw-addrow';
+
+    const nameInput = document.createElement('input');
+    nameInput.className = 'vgl-mw-addname';
+    nameInput.type = 'text';
+    nameInput.placeholder = 'Add item by name';
+    nameInput.setAttribute('list', ITEM_DATALIST_ID);
+    nameInput.autocomplete = 'off';
+
+    const priceWrap = document.createElement('span');
+    priceWrap.className = 'vgl-mw-pricewrap';
+    const dollar = document.createElement('span');
+    dollar.className = 'vgl-mw-dollar';
+    dollar.textContent = '$';
+    const priceInput = document.createElement('input');
+    priceInput.className = 'vgl-mw-input';
+    priceInput.type = 'text';
+    priceInput.inputMode = 'numeric';
+    priceInput.placeholder = 'price';
+    priceWrap.appendChild(dollar);
+    priceWrap.appendChild(priceInput);
+
+    const add = document.createElement('button');
+    add.className = 'vgl-mw-btn vgl-mw-save';
+    add.type = 'button';
+    add.textContent = 'Add';
+    add.addEventListener('click', async function () {
+      const itemId = resolveItemIdByName(nameInput.value);
+      if (!itemId) { toast('Unknown item name', 'warning'); return; }
+      let val = parseInt10(priceInput.value);
+      if (!Number.isFinite(val) || val <= 0) {
+        const floor = await fetchItemMarketFloor(itemId);
+        if (floor && floor > 0) val = Math.round(floor * WATCHLIST_ADD_FACTOR);
+      }
+      if (!Number.isFinite(val) || val <= 0) { toast('Enter a price', 'warning'); return; }
+      add.disabled = true;
+      const res = await watchlistUpsert(itemId, val);
+      if (res.ok) {
+        toast(itemNameFor(itemId) + ' added', 'success');
+        await refreshWatchlistSurfaces();
+      } else {
+        toast('Add failed: ' + res.error, 'error');
+        add.disabled = false;
+      }
+    });
+
+    row.appendChild(nameInput);
+    row.appendChild(priceWrap);
+    row.appendChild(add);
+    return row;
+  }
+
   function buildMyWatchlistBar(alerts) {
     const bar = document.createElement('div');
     bar.id = MY_WATCHLIST_BAR_ID;
@@ -2356,6 +2462,13 @@
     const body = document.createElement('div');
     body.className = 'vgl-mw-body';
     for (const a of alerts) body.appendChild(buildMyWatchlistRow(a));
+    if (alerts.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'vgl-mw-empty';
+      empty.textContent = 'No alerts yet \u2014 add one below.';
+      body.appendChild(empty);
+    }
+    body.appendChild(buildMyWatchlistAddRow());
     bar.appendChild(body);
 
     head.addEventListener('click', function () {
@@ -2378,10 +2491,15 @@
       fetchAllAlerts(playerId),
       ensureItemCatalog(),
     ]);
-    if (!Array.isArray(alerts) || alerts.length === 0) return;
+    // Always render (even with zero alerts) so the "+ Add item" row is a
+    // reliable entry point — the bar is the management hub, not just a
+    // match list. Collapsed by default, so the empty state is just a thin
+    // header.
+    const alertList = Array.isArray(alerts) ? alerts : [];
 
     injectWatchManageStyles();
-    const bar = buildMyWatchlistBar(alerts);
+    ensureItemDatalist();
+    const bar = buildMyWatchlistBar(alertList);
     if (wasOpen) bar.classList.add('vgl-mw-open');
     const host =
       document.querySelector('#mainContainer .content-wrapper') ||
