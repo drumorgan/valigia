@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.20.7
-// @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (margin overlays + YATA destination preview), Item Market (watchlist matches, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
+// @version      0.21.0
+// @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.20.7';
+  const SCRIPT_VERSION = '0.21.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -3414,6 +3414,35 @@
     } catch { /* ignore */ }
     return 29;
   }
+  // One-way flight times in minutes, mirroring src/data/destinations.js
+  // (game constants). The home-screen Best Run board uses these to turn
+  // profit/run into profit/hr so destinations with different flight times
+  // rank fairly against each other.
+  const FLIGHT_MINS = {
+    'Mexico': 20,
+    'Canada': 37,
+    'Caymans': 57,
+    'Hawaii': 121,
+    'UK': 152,
+    'Switzerland': 169,
+    'Argentina': 189,
+    'Japan': 203,
+    'China': 219,
+    'UAE': 259,
+    'South Africa': 311,
+  };
+  // Flight-time multiplier: 1.0 standard, 0.7 airstrip/WLT, 0.49 both.
+  // Like the slot count, the web app's value lives on an origin we can't
+  // read cross-origin, so the player overrides via:
+  //   localStorage.setItem('valigia_pda_flight_mult', '0.7')
+  const FLIGHT_MULT_STORAGE_KEY = 'valigia_pda_flight_mult';
+  function getFlightMultiplier() {
+    try {
+      const n = Number(localStorage.getItem(FLIGHT_MULT_STORAGE_KEY));
+      if (Number.isFinite(n) && n > 0 && n <= 1) return n;
+    } catch { /* ignore */ }
+    return 1.0;
+  }
   const YATA_EXPORT_URL = 'https://yata.yt/api/v1/travel/export/';
   // Mirrors src/log-sync.js — YATA keys destinations by lowercase 3-letter
   // codes, which we map back to the same canonical names the rest of this
@@ -3432,7 +3461,11 @@
     sou: 'South Africa',
   };
 
-  async function fetchYataForDestination(destination) {
+  // Fetch the full YATA export once and flatten it into rows tagged with
+  // their canonical destination. The home-screen Best Run board ranks
+  // across every destination, so it needs all of them; the single-
+  // destination in-flight strip filters this down via the wrapper below.
+  async function fetchYataAll() {
     try {
       const res = await gmRequest({
         method: 'GET',
@@ -3445,7 +3478,7 @@
       const out = [];
       for (const code of Object.keys(countries)) {
         const dest = YATA_COUNTRY_MAP[code];
-        if (dest !== destination) continue;
+        if (!dest) continue;
         const stocks = (countries[code] && countries[code].stocks) || [];
         for (const s of stocks) {
           if (!s || !s.id || !s.cost) continue;
@@ -3454,6 +3487,7 @@
             name: s.name || ('Item ' + s.id),
             buy_price: Number(s.cost),
             stock: Number.isFinite(Number(s.quantity)) ? Number(s.quantity) : null,
+            destination: dest,
           });
         }
       }
@@ -3462,6 +3496,11 @@
       log('yata fetch failed', e);
       return [];
     }
+  }
+
+  async function fetchYataForDestination(destination) {
+    const all = await fetchYataAll();
+    return all.filter(function (r) { return r.destination === destination; });
   }
 
   // -- First-party scout scrapes (abroad_prices) -------------------------
@@ -3516,6 +3555,49 @@
           buy_price: Number(r.buy_price),
           stock: Number.isFinite(Number(r.stock)) ? Number(r.stock) : null,
           observedAt: t,
+        });
+      }
+      return freshest;
+    } catch (e) {
+      return new Map();
+    }
+  }
+
+  // All-destinations variant of fetchAbroadScrapes for the home-screen Best
+  // Run board. Same freshness policy, but the result map is keyed by
+  // 'destination|item_id' since the same item_id (e.g. Xanax in Japan and
+  // South Africa) appears at multiple destinations.
+  async function fetchAbroadScrapesAll() {
+    const sinceIso = new Date(Date.now() - FIRST_PARTY_QUERY_WINDOW_MS).toISOString();
+    const url = ABROAD_PRICES_URL +
+      '?select=item_id,buy_price,stock,destination,observed_at' +
+      '&observed_at=gte.' + encodeURIComponent(sinceIso) +
+      '&order=observed_at.desc';
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: url,
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) return new Map();
+      const rows = JSON.parse(res.responseText || '[]');
+      const freshest = new Map();
+      const cutoff = Date.now() - FIRST_PARTY_FRESH_MS;
+      for (const r of rows) {
+        if (!r || !r.destination) continue;
+        const itemId = Number(r.item_id);
+        if (!Number.isFinite(itemId)) continue;
+        const key = r.destination + '|' + itemId;
+        if (freshest.has(key)) continue;
+        const t = new Date(r.observed_at).getTime();
+        if (!Number.isFinite(t) || t < cutoff) continue;
+        freshest.set(key, {
+          buy_price: Number(r.buy_price),
+          stock: Number.isFinite(Number(r.stock)) ? Number(r.stock) : null,
         });
       }
       return freshest;
@@ -4058,6 +4140,247 @@
     host.insertBefore(bar, host.firstChild);
   }
 
+  // -- Home Best Run board -------------------------------------------------
+  // Mirrors the web app's "Best Run Right Now" card, but built for the one
+  // screen the travel runner was previously silent on: the country picker
+  // (and the return leg), where the player is deciding where to fly next.
+  // It ranks every destination's strongest in-stock arbitrage run by
+  // profit/hr and headlines the single best, so the decision is one glance.
+  // Pure recommendation surface — Torn's travel form has no GET deep-link
+  // to pre-select a destination, so rows aren't tap targets (same as the
+  // web card, whose CTA just points back at the travel page).
+  const BESTRUN_BAR_ID = 'valigia-bestrun-bar';
+  const BESTRUN_MAX_ROWS = 11;
+
+  function injectBestRunStyles() {
+    if (document.getElementById('valigia-bestrun-styles')) return;
+    const css = [
+      '#' + BESTRUN_BAR_ID + ' {',
+      '  margin: 6px 8px; border: 1px solid #e8c84a; border-radius: 5px;',
+      '  background: #161a22; font-family: inherit; overflow: hidden;',
+      '}',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-head {',
+      '  display: flex; align-items: baseline; gap: 8px; cursor: pointer;',
+      '  padding: 8px 10px;',
+      '}',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-label {',
+      '  font-size: 11px; font-weight: 700; text-transform: uppercase;',
+      '  letter-spacing: 0.06em; color: #e8c84a; white-space: nowrap;',
+      '}',
+      // Headline pick stays visible while collapsed so the bar is useful
+      // without a tap; flexes and ellipsises so long names never wrap.
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-pick {',
+      '  flex: 1 1 auto; min-width: 0; font-weight: 700; color: #c8cdd8;',
+      '  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
+      '}',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-rate {',
+      '  font-weight: 700; color: #e8c84a; font-size: 12px; white-space: nowrap;',
+      '}',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-caret {',
+      '  color: #e8c84a; font-size: 10px; transition: transform 0.15s ease;',
+      '}',
+      '#' + BESTRUN_BAR_ID + '.vgl-br-open .vgl-br-caret { transform: rotate(180deg); }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-body {',
+      '  display: none; flex-direction: column; gap: 3px; padding: 0 10px 10px;',
+      '}',
+      '#' + BESTRUN_BAR_ID + '.vgl-br-open .vgl-br-body { display: flex; }',
+      // Four columns: item (flex) | destination | profit/run | profit/hr.
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-row {',
+      '  display: grid; grid-template-columns: minmax(0,1fr) auto auto auto;',
+      '  align-items: baseline; gap: 10px; padding: 5px 8px;',
+      '  border: 1px solid #252a35; border-radius: 3px;',
+      '  background: rgba(232,200,74,0.04); font-size: 12px;',
+      '}',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-name { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-dest { color: #8a8fa0; font-size: 11px; white-space: nowrap; text-align: right; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-dest--limited { color: #e8824a; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-run { color: #c8cdd8; white-space: nowrap; text-align: right; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-hr { color: #e8c84a; font-weight: 700; white-space: nowrap; text-align: right; }',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-bestrun-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function buildBestRunBar(runs) {
+    const bar = document.createElement('div');
+    bar.id = BESTRUN_BAR_ID;
+
+    const head = document.createElement('div');
+    head.className = 'vgl-br-head';
+
+    const label = document.createElement('span');
+    label.className = 'vgl-br-label';
+    label.textContent = 'Best Run';
+
+    const pick = document.createElement('span');
+    pick.className = 'vgl-br-pick';
+    const top = runs[0];
+    // Arrow (U+2192) and middle dot (U+00B7) escaped to survive the FTP
+    // latin-1 mangle, matching the in-flight strip's convention.
+    pick.textContent = top.name + ' \u2192 ' + top.destination;
+
+    const rate = document.createElement('span');
+    rate.className = 'vgl-br-rate';
+    rate.textContent = formatMoneyCompact(top.profitPerHour) + '/hr';
+
+    const caret = document.createElement('span');
+    caret.className = 'vgl-br-caret';
+    caret.textContent = '\u25BE';
+
+    head.appendChild(label);
+    head.appendChild(pick);
+    head.appendChild(rate);
+    head.appendChild(caret);
+    bar.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'vgl-br-body';
+    for (const r of runs) {
+      const row = document.createElement('div');
+      row.className = 'vgl-br-row';
+
+      const name = document.createElement('span');
+      name.className = 'vgl-br-name';
+      name.textContent = r.name;
+
+      const dest = document.createElement('span');
+      dest.className = 'vgl-br-dest';
+      // Stock-limited runs append the fillable unit count so the player
+      // knows the profit/run is capped by a thin shelf, not full slots.
+      dest.textContent = r.stockLimited
+        ? r.destination + ' \u00B7 ' + r.effectiveSlots + 'u'
+        : r.destination;
+      if (r.stockLimited) dest.classList.add('vgl-br-dest--limited');
+
+      const run = document.createElement('span');
+      run.className = 'vgl-br-run';
+      run.textContent = formatMoneyCompact(r.profitPerRun) + '/run';
+
+      const hr = document.createElement('span');
+      hr.className = 'vgl-br-hr';
+      hr.textContent = formatMoneyCompact(r.profitPerHour) + '/hr';
+
+      row.appendChild(name);
+      row.appendChild(dest);
+      row.appendChild(run);
+      row.appendChild(hr);
+      body.appendChild(row);
+    }
+    bar.appendChild(body);
+
+    head.addEventListener('click', function () {
+      bar.classList.toggle('vgl-br-open');
+    });
+
+    return bar;
+  }
+
+  // Top-level injection. Idempotent: tears down any previous board before
+  // rendering. Silent on any data failure and hidden entirely when no run
+  // clears the bar — the home screen stays clean rather than showing an
+  // empty "no runs" state the player can't act on.
+  async function injectBestRunBar() {
+    const existing = document.getElementById(BESTRUN_BAR_ID);
+    if (existing) existing.remove();
+
+    const [yataRows, scrapeMap] = await Promise.all([
+      fetchYataAll(),
+      fetchAbroadScrapesAll(),
+      ensureItemCatalog(),
+    ]);
+    if (!Array.isArray(yataRows) || yataRows.length === 0) return;
+
+    // One Supabase GET for every item the export mentions.
+    const itemIds = [];
+    const seenIds = new Set();
+    for (const y of yataRows) {
+      if (!seenIds.has(y.item_id)) { seenIds.add(y.item_id); itemIds.push(y.item_id); }
+    }
+    const sellMap = await fetchSellPrices(itemIds);
+
+    const slots = getSlotCount();
+    const mult = getFlightMultiplier();
+    const runs = [];
+    for (const y of yataRows) {
+      const itype = itemTypeFor(y.item_id);
+      if (!itype || !INFLIGHT_ALLOWED_TYPES.has(itype)) continue;
+
+      const flightMins = FLIGHT_MINS[y.destination];
+      if (!flightMins) continue;
+
+      const sell = sellMap.get(y.item_id);
+      if (!sell || !Number.isFinite(sell.price)) continue;
+
+      // Fresh first-party scrape (<= 10 min) overrides YATA's buy_price and
+      // stock, exactly as the in-flight strip and web app's log-sync merge do.
+      const scrape = scrapeMap.get(y.destination + '|' + y.item_id);
+      const buyPrice = scrape && Number.isFinite(scrape.buy_price) ? scrape.buy_price : y.buy_price;
+      const stock = scrape && scrape.stock != null ? scrape.stock : y.stock;
+
+      if (!Number.isFinite(buyPrice) || buyPrice <= 0) continue;
+      const netSell = sell.price * 0.95;
+      const margin = netSell - buyPrice;
+      if (margin <= 0) continue;
+
+      // "Right now" means buyable now: skip sold-out shelves. Unknown stock
+      // (null) is allowed and assumes the run can fill — same as the web
+      // Best Run card, which only blocks on a confirmed quantity of 0.
+      if (stock != null && stock <= 0) continue;
+      const effectiveSlots = stock != null ? Math.min(slots, stock) : slots;
+      if (effectiveSlots <= 0) continue;
+      const stockLimited = stock != null && stock < slots;
+
+      const profitPerRun = margin * effectiveSlots;
+      const roundTripMins = flightMins * mult * 2;
+      if (roundTripMins <= 0) continue;
+      const profitPerHour = (profitPerRun / roundTripMins) * 60;
+
+      runs.push({
+        name: y.name,
+        destination: y.destination,
+        profitPerRun: profitPerRun,
+        profitPerHour: profitPerHour,
+        effectiveSlots: effectiveSlots,
+        stockLimited: stockLimited,
+      });
+    }
+
+    if (runs.length === 0) return;
+
+    // Collapse to each destination's single strongest run before ranking:
+    // the player can only be at one destination, so "where should I fly"
+    // is answered by the best each place offers, not a list clustered on
+    // whichever destination happens to stock several good items.
+    const bestPerDest = new Map();
+    for (const r of runs) {
+      const cur = bestPerDest.get(r.destination);
+      if (!cur || r.profitPerHour > cur.profitPerHour) bestPerDest.set(r.destination, r);
+    }
+    const ranked = Array.from(bestPerDest.values())
+      .sort(function (a, b) { return b.profitPerHour - a.profitPerHour; })
+      .slice(0, BESTRUN_MAX_ROWS);
+
+    if (DEBUG) {
+      debugPanel([
+        'home best-run',
+        'yata=' + yataRows.length + ' runs=' + runs.length + ' dests=' + ranked.length,
+        'top=' + ranked[0].name + ' @ ' + ranked[0].destination + ' ' + Math.round(ranked[0].profitPerHour),
+        'slots=' + slots + ' flightMult=' + mult,
+      ]);
+    }
+
+    injectBestRunStyles();
+    const bar = buildBestRunBar(ranked);
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(bar, host.firstChild);
+  }
+
   // -- Main ----------------------------------------------------------------
   async function runTravel() {
     // TEMP DIAGNOSTIC: clear any prior parse-mismatch captures so a fresh
@@ -4075,7 +4398,12 @@
 
     const destination = detectDestination();
     if (!destination) {
-      log('No "You are in X" marker - probably not landed yet.');
+      // Not landed and not outbound: the country picker (or the return
+      // leg). The player is deciding where to fly next, so headline the
+      // best run across every destination. Errors are swallowed so a
+      // YATA/Supabase hiccup never disrupts the page.
+      log('No "You are in X" marker - home travel screen, showing best-run board.');
+      try { await injectBestRunBar(); } catch (e) { log('bestrun error', e); }
       return;
     }
 
