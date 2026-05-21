@@ -45,24 +45,27 @@ function badRequest(error: string) {
 const ALLOWED_VENUES = new Set(['market', 'bazaar', 'abroad']);
 const MAX_ALERTS_PER_PLAYER = 50;
 
-type UpsertBody = {
+type AuthFields = {
+  // Web path: player_id + session_token (validated against player_secrets).
+  player_id?: number;
+  session_token?: string;
+  // PDA path: a raw Torn API key, validated against user/basic to derive
+  // player_id server-side (same trust model as ingest-travel-shop). The
+  // userscript holds the key but has no Valigia session token.
+  api_key?: string;
+};
+type UpsertBody = AuthFields & {
   action: 'upsert';
-  player_id: number;
-  session_token: string;
   item_id: number;
   max_price: number;
   venues?: string[];
 };
-type DeleteBody = {
+type DeleteBody = AuthFields & {
   action: 'delete';
-  player_id: number;
-  session_token: string;
   item_id: number;
 };
-type ListBody = {
+type ListBody = AuthFields & {
   action: 'list';
-  player_id: number;
-  session_token: string;
 };
 type Body = UpsertBody | DeleteBody | ListBody;
 
@@ -77,24 +80,48 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, serviceKey);
 
     const body = (await req.json()) as Body;
-    const { action, player_id, session_token } = body;
+    const { action } = body;
+    if (!action) return unauthorized();
 
-    if (!action || !player_id || !session_token || typeof session_token !== 'string') {
-      return unauthorized();
+    // Resolve player_id from one of two auth methods. Both end in the same
+    // opaque 401 on any failure so probing can't distinguish "unknown
+    // player" from "wrong credential".
+    let player_id: number;
+    if (body.api_key) {
+      // PDA path: validate the Torn key and derive player_id from it, the
+      // way ingest-travel-shop attributes its writes. The key round-trip
+      // is itself the rate gate (Torn caps at 100 req/min/key).
+      const apiKey = String(body.api_key);
+      if (apiKey.length < 16 || apiKey.length > 32) return unauthorized();
+      let tornData: { player_id?: number; error?: unknown } | null = null;
+      try {
+        const tornRes = await fetch(
+          `https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(apiKey)}`,
+        );
+        tornData = await tornRes.json();
+      } catch {
+        return unauthorized();
+      }
+      if (!tornData || tornData.error) return unauthorized();
+      player_id = Number(tornData.player_id);
+      if (!Number.isInteger(player_id) || player_id <= 0) return unauthorized();
+    } else {
+      // Web path: player_id + session_token, hashed and compared to the
+      // stored hash exactly as auto-login does.
+      const { player_id: pid, session_token } = body;
+      if (!pid || !session_token || typeof session_token !== 'string') {
+        return unauthorized();
+      }
+      const { data: secret } = await supabase
+        .from('player_secrets')
+        .select('session_token_hash')
+        .eq('torn_player_id', pid)
+        .single();
+      if (!secret?.session_token_hash) return unauthorized();
+      const submittedHash = await hashToken(session_token);
+      if (!timingSafeEqual(submittedHash, secret.session_token_hash)) return unauthorized();
+      player_id = pid;
     }
-
-    // Validate session token against player_secrets. Same shape as auto-login
-    // — any failure returns the same opaque 401 so probing can't distinguish
-    // "unknown player" from "wrong token".
-    const { data: secret } = await supabase
-      .from('player_secrets')
-      .select('session_token_hash')
-      .eq('torn_player_id', player_id)
-      .single();
-    if (!secret?.session_token_hash) return unauthorized();
-
-    const submittedHash = await hashToken(session_token);
-    if (!timingSafeEqual(submittedHash, secret.session_token_hash)) return unauthorized();
 
     // --- Authorised. Dispatch by action. ---
     if (action === 'list') {

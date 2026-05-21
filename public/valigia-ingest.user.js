@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.21.0
-// @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
+// @version      0.22.0
+// @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/page.php?sid=ItemMarket*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.21.0';
+  const SCRIPT_VERSION = '0.22.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1259,6 +1259,12 @@
     // against the highest fresh te_buy_prices offer per item. Scopes to
     // a single item when itemID=N is in the hash.
     injectFlashDealsBar();
+    // Watchlist management: a collapsed bar listing every alert (editable
+    // price + remove), plus a per-item add/edit/remove control when the
+    // hash is scoped to one item. Fire-and-forget so a slow Torn key
+    // validation never blocks the scraper.
+    injectMyWatchlistBar().catch(function (e) { log('my-watchlist bar error', e); });
+    injectItemWatchControl().catch(function (e) { log('item-watch control error', e); });
 
     // Poll briefly for listings to hydrate - the Item Market page is SPA-ish.
     const start = Date.now();
@@ -1479,7 +1485,17 @@
   // would duplicate information the user is actively looking at.
 
   const WATCHLIST_BAR_ID = 'valigia-watchlist-bar';
+  const MY_WATCHLIST_BAR_ID = 'valigia-my-watchlist-bar';
+  const ITEM_WATCH_BAR_ID = 'valigia-item-watch-bar';
   const WATCHLIST_ALERTS_URL = SUPABASE_REST_URL + '/watchlist_alerts';
+  const WATCHLIST_FN_URL =
+    'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/watchlist';
+  // New per-item alerts prefill 10% BELOW the current market floor: an
+  // alert fires when a listing is at/below max_price, so anchoring under
+  // today's floor means it only trips on a genuine dip, not the price the
+  // item already sits at. The user can override the prefilled value before
+  // saving.
+  const WATCHLIST_ADD_FACTOR = 0.9;
   const PLAYER_ID_CACHE_KEY = 'valigia_pda_player_id_v1';
   // Torn items catalog cache. The web app maintains its own copy on
   // valigia.girovagabondo.com, but userscript localStorage is scoped to
@@ -2055,6 +2071,442 @@
     // Torn's content layout varies across pages and PDA skins. Try a
     // couple of well-known containers, fall back to body so we never
     // disappear silently.
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(bar, host.firstChild);
+  }
+
+  // -- Watchlist writes (add / edit / remove) ------------------------------
+  // The userscript holds the player's raw Torn key but has no Valigia
+  // session token, so writes go through the `watchlist` edge function's
+  // api_key auth branch (it validates the key via user/basic to derive
+  // player_id, the same trust model as ingest-travel-shop). Reads still go
+  // direct via anon SELECT.
+
+  async function postWatchlist(payload) {
+    try {
+      const res = await gmRequest({
+        method: 'POST',
+        url: WATCHLIST_FN_URL,
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+        },
+        data: JSON.stringify(Object.assign({ api_key: TORN_API_KEY }, payload)),
+      });
+      let data = null;
+      try { data = JSON.parse(res.responseText || '{}'); } catch (_) { /* ignore */ }
+      if (res.status >= 200 && res.status < 300 && data && data.success) {
+        return { ok: true };
+      }
+      return { ok: false, error: (data && data.error) || ('http_' + res.status) };
+    } catch (e) {
+      return { ok: false, error: 'network' };
+    }
+  }
+
+  function watchlistUpsert(itemId, maxPrice, venues) {
+    const payload = { action: 'upsert', item_id: Number(itemId), max_price: Math.round(maxPrice) };
+    // Preserve the alert's existing venue selection on edit. New alerts omit
+    // venues so the edge function applies its all-venues default rather than
+    // the PDA narrowing a web-set choice on an unrelated price tweak.
+    if (Array.isArray(venues) && venues.length) payload.venues = venues;
+    return postWatchlist(payload);
+  }
+
+  function watchlistDelete(itemId) {
+    return postWatchlist({ action: 'delete', item_id: Number(itemId) });
+  }
+
+  // Player's full alert set (every alert, not just current matches — the
+  // management surfaces need to edit/remove alerts that aren't firing right
+  // now). Short cache shared across the My Watchlist bar and the per-item
+  // control; invalidated on every write.
+  const ALL_ALERTS_TTL_MS = 30_000;
+  let allAlertsCache = null; // { playerId, expiresAt, alerts } | null
+
+  async function fetchAllAlerts(playerId) {
+    if (!playerId) return [];
+    const now = Date.now();
+    if (allAlertsCache
+        && allAlertsCache.playerId === playerId
+        && allAlertsCache.expiresAt > now) {
+      return allAlertsCache.alerts;
+    }
+    const alerts = await fetchJSON(
+      WATCHLIST_ALERTS_URL +
+      '?player_id=eq.' + encodeURIComponent(playerId) +
+      '&select=item_id,max_price,venues&order=created_at.desc'
+    );
+    const list = Array.isArray(alerts) ? alerts : [];
+    allAlertsCache = { playerId: playerId, expiresAt: now + ALL_ALERTS_TTL_MS, alerts: list };
+    return list;
+  }
+
+  // Current Item Market floor for an item, used to prefill a new alert's
+  // threshold. Prefers min_price (absolute cheapest listing) and falls back
+  // to the qty-filtered price.
+  async function fetchItemMarketFloor(itemId) {
+    const rows = await fetchJSON(
+      SELL_PRICES_URL + '?item_id=eq.' + encodeURIComponent(itemId) +
+      '&select=price,min_price'
+    );
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    const r = rows[0];
+    if (r.min_price != null) return Number(r.min_price);
+    if (r.price != null) return Number(r.price);
+    return null;
+  }
+
+  function invalidateWatchlistWriteCaches() {
+    allAlertsCache = null;
+    watchlistMatchesCache = null;
+  }
+
+  // Re-render every watchlist surface after a write so add/edit/remove is
+  // reflected immediately without a page reload.
+  async function refreshWatchlistSurfaces() {
+    invalidateWatchlistWriteCaches();
+    await Promise.all([
+      injectWatchlistBar().catch(function (e) { log('matches refresh error', e); }),
+      injectMyWatchlistBar().catch(function (e) { log('my-watchlist refresh error', e); }),
+      injectItemWatchControl().catch(function (e) { log('item-watch refresh error', e); }),
+    ]);
+  }
+
+  function injectWatchManageStyles() {
+    if (document.getElementById('valigia-watch-manage-styles')) return;
+    const css = [
+      // --- My Watchlist bar (collapsed list of every alert) ---
+      '#' + MY_WATCHLIST_BAR_ID + ' {',
+      '  all: initial; display: block; margin: 8px auto 12px; max-width: 1100px;',
+      '  font-family: Arial, Helvetica, sans-serif; color: #c8cdd8;',
+      '  background: #161a22; border: 1px solid #252a35;',
+      '  border-left: 3px solid #4ae8a0; border-radius: 4px;',
+      '  box-sizing: border-box; overflow: hidden;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-head {',
+      '  display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-title {',
+      '  color: #4ae8a0; font-weight: 700; font-size: 11px;',
+      '  letter-spacing: 0.12em; text-transform: uppercase;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-count {',
+      '  background: rgba(74,232,160,0.18); color: #4ae8a0; font-size: 11px;',
+      '  font-weight: 700; padding: 1px 7px; border-radius: 9px;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-caret {',
+      '  margin-left: auto; color: #4ae8a0; font-size: 10px; transition: transform 0.15s ease;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + '.vgl-mw-open .vgl-mw-caret { transform: rotate(180deg); }',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-body {',
+      '  display: none; flex-direction: column; gap: 6px; padding: 0 12px 12px;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + '.vgl-mw-open .vgl-mw-body { display: flex; }',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-row {',
+      '  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-name {',
+      '  flex: 1 1 120px; min-width: 0; font-weight: 700; color: #c8cdd8;',
+      '  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
+      '}',
+      // Shared input + button styling for both surfaces. Torn's page CSS is
+      // aggressive, so reset appearance and set every visible property.
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-pricewrap,',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-pricewrap {',
+      '  display: inline-flex; align-items: center; background: #0d0f14;',
+      '  border: 1px solid #252a35; border-radius: 3px; padding: 2px 6px;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-dollar,',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-dollar { color: #5a6070; font-size: 12px; margin-right: 2px; }',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-input,',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-input {',
+      '  appearance: none; -webkit-appearance: none; background: transparent;',
+      '  border: none; outline: none; width: 88px; color: #c8cdd8; font-size: 12px;',
+      '  font-family: inherit; text-align: right; padding: 0; margin: 0;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-btn,',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-btn {',
+      '  appearance: none; -webkit-appearance: none; font-family: inherit;',
+      '  font-size: 11px; font-weight: 700; border: none; border-radius: 3px;',
+      '  padding: 6px 12px; cursor: pointer;',
+      '}',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-save,',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-save { background: rgba(74,232,160,0.18); color: #4ae8a0; }',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-btn:disabled,',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-btn:disabled { opacity: 0.5; }',
+      '#' + MY_WATCHLIST_BAR_ID + ' .vgl-mw-remove,',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-remove { background: rgba(232,130,74,0.16); color: #e8824a; }',
+      // --- Per-item watch control (single row, always expanded) ---
+      '#' + ITEM_WATCH_BAR_ID + ' {',
+      '  all: initial; display: block; margin: 8px auto 12px; max-width: 1100px;',
+      '  font-family: Arial, Helvetica, sans-serif; color: #c8cdd8;',
+      '  background: #161a22; border: 1px solid #252a35;',
+      '  border-left: 3px solid #4ae8a0; border-radius: 4px;',
+      '  box-sizing: border-box; overflow: hidden;',
+      '}',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-row {',
+      '  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px;',
+      '}',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-title {',
+      '  color: #4ae8a0; font-weight: 700; font-size: 11px;',
+      '  letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap;',
+      '}',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-name {',
+      '  font-weight: 700; color: #c8cdd8; font-size: 12px; min-width: 0;',
+      '  max-width: 40%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
+      '}',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-label { color: #5a6070; font-size: 12px; }',
+      '#' + ITEM_WATCH_BAR_ID + ' .vgl-iw-remove { margin-left: auto; }',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-watch-manage-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function buildMyWatchlistRow(alert) {
+    const row = document.createElement('div');
+    row.className = 'vgl-mw-row';
+
+    const name = document.createElement('span');
+    name.className = 'vgl-mw-name';
+    name.textContent = itemNameFor(alert.item_id);
+
+    const priceWrap = document.createElement('span');
+    priceWrap.className = 'vgl-mw-pricewrap';
+    const dollar = document.createElement('span');
+    dollar.className = 'vgl-mw-dollar';
+    dollar.textContent = '$';
+    const input = document.createElement('input');
+    input.className = 'vgl-mw-input';
+    input.type = 'text';
+    input.inputMode = 'numeric';
+    input.value = Math.round(Number(alert.max_price)).toLocaleString('en-US');
+    priceWrap.appendChild(dollar);
+    priceWrap.appendChild(input);
+
+    const save = document.createElement('button');
+    save.className = 'vgl-mw-btn vgl-mw-save';
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.addEventListener('click', async function () {
+      const val = parseInt10(input.value);
+      if (!Number.isFinite(val) || val <= 0) { toast('Enter a price', 'warning'); return; }
+      save.disabled = true;
+      const res = await watchlistUpsert(alert.item_id, val, alert.venues);
+      if (res.ok) {
+        toast(itemNameFor(alert.item_id) + ' updated', 'success');
+        await refreshWatchlistSurfaces();
+      } else {
+        toast('Update failed: ' + res.error, 'error');
+        save.disabled = false;
+      }
+    });
+
+    const remove = document.createElement('button');
+    remove.className = 'vgl-mw-btn vgl-mw-remove';
+    remove.type = 'button';
+    remove.textContent = '\u00D7';
+    remove.title = 'Remove';
+    remove.addEventListener('click', async function () {
+      remove.disabled = true;
+      const res = await watchlistDelete(alert.item_id);
+      if (res.ok) {
+        toast(itemNameFor(alert.item_id) + ' removed', 'success');
+        await refreshWatchlistSurfaces();
+      } else {
+        toast('Remove failed: ' + res.error, 'error');
+        remove.disabled = false;
+      }
+    });
+
+    row.appendChild(name);
+    row.appendChild(priceWrap);
+    row.appendChild(save);
+    row.appendChild(remove);
+    return row;
+  }
+
+  function buildMyWatchlistBar(alerts) {
+    const bar = document.createElement('div');
+    bar.id = MY_WATCHLIST_BAR_ID;
+
+    const head = document.createElement('div');
+    head.className = 'vgl-mw-head';
+    const title = document.createElement('span');
+    title.className = 'vgl-mw-title';
+    title.textContent = 'My Watchlist';
+    const count = document.createElement('span');
+    count.className = 'vgl-mw-count';
+    count.textContent = String(alerts.length);
+    const caret = document.createElement('span');
+    caret.className = 'vgl-mw-caret';
+    caret.textContent = '\u25BE';
+    head.appendChild(title);
+    head.appendChild(count);
+    head.appendChild(caret);
+    bar.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'vgl-mw-body';
+    for (const a of alerts) body.appendChild(buildMyWatchlistRow(a));
+    bar.appendChild(body);
+
+    head.addEventListener('click', function () {
+      bar.classList.toggle('vgl-mw-open');
+    });
+    return bar;
+  }
+
+  async function injectMyWatchlistBar() {
+    // Preserve expand state across the post-write re-render so editing one
+    // row doesn't collapse the bar out from under a multi-edit session.
+    const existing = document.getElementById(MY_WATCHLIST_BAR_ID);
+    const wasOpen = !!existing && existing.classList.contains('vgl-mw-open');
+    if (existing) existing.remove();
+
+    const playerId = await resolvePlayerId();
+    if (!playerId) return;
+
+    const [alerts] = await Promise.all([
+      fetchAllAlerts(playerId),
+      ensureItemCatalog(),
+    ]);
+    if (!Array.isArray(alerts) || alerts.length === 0) return;
+
+    injectWatchManageStyles();
+    const bar = buildMyWatchlistBar(alerts);
+    if (wasOpen) bar.classList.add('vgl-mw-open');
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(bar, host.firstChild);
+  }
+
+  function buildItemWatchControl(itemId, existingAlert, prefill) {
+    const bar = document.createElement('div');
+    bar.id = ITEM_WATCH_BAR_ID;
+
+    const row = document.createElement('div');
+    row.className = 'vgl-iw-row';
+
+    const title = document.createElement('span');
+    title.className = 'vgl-iw-title';
+    title.textContent = existingAlert ? 'WATCHING' : 'WATCH';
+
+    const name = document.createElement('span');
+    name.className = 'vgl-iw-name';
+    name.textContent = itemNameFor(itemId);
+
+    const label = document.createElement('span');
+    label.className = 'vgl-iw-label';
+    label.textContent = 'below';
+
+    const priceWrap = document.createElement('span');
+    priceWrap.className = 'vgl-iw-pricewrap';
+    const dollar = document.createElement('span');
+    dollar.className = 'vgl-iw-dollar';
+    dollar.textContent = '$';
+    const input = document.createElement('input');
+    input.className = 'vgl-iw-input';
+    input.type = 'text';
+    input.inputMode = 'numeric';
+    if (prefill != null) {
+      input.value = Math.round(prefill).toLocaleString('en-US');
+    } else {
+      input.placeholder = 'price';
+    }
+    priceWrap.appendChild(dollar);
+    priceWrap.appendChild(input);
+
+    const save = document.createElement('button');
+    save.className = 'vgl-iw-btn vgl-iw-save';
+    save.type = 'button';
+    save.textContent = existingAlert ? 'Save' : 'Add';
+    save.addEventListener('click', async function () {
+      const val = parseInt10(input.value);
+      if (!Number.isFinite(val) || val <= 0) { toast('Enter a price', 'warning'); return; }
+      save.disabled = true;
+      const res = await watchlistUpsert(itemId, val, existingAlert ? existingAlert.venues : null);
+      if (res.ok) {
+        toast(itemNameFor(itemId) + (existingAlert ? ' updated' : ' added'), 'success');
+        await refreshWatchlistSurfaces();
+      } else {
+        toast('Save failed: ' + res.error, 'error');
+        save.disabled = false;
+      }
+    });
+
+    row.appendChild(title);
+    row.appendChild(name);
+    row.appendChild(label);
+    row.appendChild(priceWrap);
+    row.appendChild(save);
+
+    if (existingAlert) {
+      const remove = document.createElement('button');
+      remove.className = 'vgl-iw-btn vgl-iw-remove';
+      remove.type = 'button';
+      remove.textContent = 'Remove';
+      remove.addEventListener('click', async function () {
+        remove.disabled = true;
+        const res = await watchlistDelete(itemId);
+        if (res.ok) {
+          toast(itemNameFor(itemId) + ' removed', 'success');
+          await refreshWatchlistSurfaces();
+        } else {
+          toast('Remove failed: ' + res.error, 'error');
+          remove.disabled = false;
+        }
+      });
+      row.appendChild(remove);
+    }
+
+    bar.appendChild(row);
+    return bar;
+  }
+
+  // Per-item add/edit/remove control. Shows only when the Item Market hash
+  // is scoped to a single item (itemID=N) — i.e. the player has drilled
+  // into one item, the natural place to "watch this item". New alerts
+  // prefill 10% below the current floor; existing alerts prefill their
+  // saved threshold and gain a Remove button.
+  async function injectItemWatchControl() {
+    const existing = document.getElementById(ITEM_WATCH_BAR_ID);
+    if (existing) existing.remove();
+
+    const itemId = detectItemMarketSingleItemId();
+    if (!itemId) return;
+
+    const playerId = await resolvePlayerId();
+    if (!playerId) return;
+
+    const [alerts] = await Promise.all([
+      fetchAllAlerts(playerId),
+      ensureItemCatalog(),
+    ]);
+    const existingAlert = (Array.isArray(alerts) ? alerts : []).find(function (a) {
+      return Number(a.item_id) === Number(itemId);
+    }) || null;
+
+    let prefill = null;
+    if (existingAlert) {
+      prefill = Math.round(Number(existingAlert.max_price));
+    } else {
+      const floor = await fetchItemMarketFloor(itemId);
+      if (floor && floor > 0) prefill = Math.round(floor * WATCHLIST_ADD_FACTOR);
+    }
+
+    injectWatchManageStyles();
+    const bar = buildItemWatchControl(itemId, existingAlert, prefill);
     const host =
       document.querySelector('#mainContainer .content-wrapper') ||
       document.querySelector('.content-wrapper') ||
