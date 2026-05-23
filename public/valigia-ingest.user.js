@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.23.1
+// @version      0.23.2
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.23.1';
+  const SCRIPT_VERSION = '0.23.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2048,7 +2048,9 @@
    * silently when there are no matches, and removes any prior bar before
    * injecting a fresh one so SPA navs don't stack duplicates.
    */
+  let watchlistBarGeneration = 0;
   async function injectWatchlistBar() {
+    const myGeneration = ++watchlistBarGeneration;
     // Idempotent: tear down any previous instance before fetching.
     const existing = document.getElementById(WATCHLIST_BAR_ID);
     if (existing) existing.remove();
@@ -2063,6 +2065,7 @@
       fetchWatchlistMatches(playerId),
       ensureItemCatalog(),
     ]);
+    if (myGeneration !== watchlistBarGeneration) return;
     if (matches.length === 0) return;
 
     injectWatchlistStyles();
@@ -2076,6 +2079,9 @@
       document.querySelector('.content-wrapper') ||
       document.querySelector('#mainContainer') ||
       document.body;
+    // Final sweep right before insert: a parallel call could have inserted
+    // its own bar between our start-of-function removal and now.
+    document.querySelectorAll('#' + WATCHLIST_BAR_ID).forEach(function (n) { n.remove(); });
     host.insertBefore(bar, host.firstChild);
   }
 
@@ -2510,7 +2516,9 @@
     return bar;
   }
 
+  let myWatchlistGeneration = 0;
   async function injectMyWatchlistBar() {
+    const myGeneration = ++myWatchlistGeneration;
     // Preserve expand state across the post-write re-render so editing one
     // row doesn't collapse the bar out from under a multi-edit session.
     const existing = document.getElementById(MY_WATCHLIST_BAR_ID);
@@ -2524,6 +2532,7 @@
       fetchAllAlerts(playerId),
       ensureItemCatalog(),
     ]);
+    if (myGeneration !== myWatchlistGeneration) return;
     // Always render (even with zero alerts) so the "+ Add item" row is a
     // reliable entry point — the bar is the management hub, not just a
     // match list. Collapsed by default, so the empty state is just a thin
@@ -2539,6 +2548,11 @@
       document.querySelector('.content-wrapper') ||
       document.querySelector('#mainContainer') ||
       document.body;
+    // Final sweep right before insert: a parallel call (e.g. the initial
+    // dispatch racing the Item Market SPA's hashchange) could have inserted
+    // its own bar between our start-of-function removal and now. querySelectorAll
+    // catches every duplicate (getElementById would only return the first).
+    document.querySelectorAll('#' + MY_WATCHLIST_BAR_ID).forEach(function (n) { n.remove(); });
     host.insertBefore(bar, host.firstChild);
   }
 
@@ -2630,7 +2644,9 @@
   // into one item, the natural place to "watch this item". New alerts
   // prefill 10% below the current floor; existing alerts prefill their
   // saved threshold and gain a Remove button.
+  let itemWatchGeneration = 0;
   async function injectItemWatchControl() {
+    const myGeneration = ++itemWatchGeneration;
     const existing = document.getElementById(ITEM_WATCH_BAR_ID);
     if (existing) existing.remove();
 
@@ -2644,6 +2660,7 @@
       fetchAllAlerts(playerId),
       ensureItemCatalog(),
     ]);
+    if (myGeneration !== itemWatchGeneration) return;
     const existingAlert = (Array.isArray(alerts) ? alerts : []).find(function (a) {
       return Number(a.item_id) === Number(itemId);
     }) || null;
@@ -2663,6 +2680,9 @@
       document.querySelector('.content-wrapper') ||
       document.querySelector('#mainContainer') ||
       document.body;
+    // Final sweep right before insert: a parallel call could have inserted
+    // its own control between our start-of-function removal and now.
+    document.querySelectorAll('#' + ITEM_WATCH_BAR_ID).forEach(function (n) { n.remove(); });
     host.insertBefore(bar, host.firstChild);
   }
 
@@ -2882,7 +2902,9 @@
    * bar at the top of the page. Silent no-op on zero flips or any
    * failure along the way so the ingest path is never blocked.
    */
+  let bazaarDealsGeneration = 0;
   async function injectBazaarDealsBar(scrapedItems, ownerId) {
+    const myGeneration = ++bazaarDealsGeneration;
     // Remove any prior instance so SPA nav doesn't stack duplicates.
     const existing = document.getElementById(BAZAAR_DEALS_BAR_ID);
     if (existing) existing.remove();
@@ -3013,6 +3035,7 @@
       }, winner));
     }
     if (deals.length === 0) return;
+    if (myGeneration !== bazaarDealsGeneration) return;
 
     // Best margins first — most actionable deal at the top of the list.
     deals.sort(function (a, b) { return b.profitPct - a.profitPct; });
@@ -3025,6 +3048,9 @@
       document.querySelector('.content-wrapper') ||
       document.querySelector('#mainContainer') ||
       document.body;
+    // Final sweep right before insert: a parallel call could have inserted
+    // its own bar between our start-of-function removal and now.
+    document.querySelectorAll('#' + BAZAAR_DEALS_BAR_ID).forEach(function (n) { n.remove(); });
     host.insertBefore(bar, host.firstChild);
   }
 
@@ -3278,7 +3304,9 @@
    * whichever bar arrives later sits in the right slot regardless of
    * order).
    */
+  let lowestPriceGeneration = 0;
   async function injectLowestPriceBar() {
+    const myGeneration = ++lowestPriceGeneration;
     const existing = document.getElementById(LOWEST_PRICE_BAR_ID);
     if (existing) existing.remove();
 
@@ -3289,6 +3317,7 @@
       fetchLowestBazaarForItem(itemId),
       ensureItemCatalog(),
     ]);
+    if (myGeneration !== lowestPriceGeneration) return;
     if (!deal) return;
 
     injectLowestPriceStyles();
@@ -3299,6 +3328,10 @@
       document.querySelector('.content-wrapper') ||
       document.querySelector('#mainContainer') ||
       document.body;
+
+    // Final sweep right before insert: a parallel call could have inserted
+    // its own bar between our start-of-function removal and now.
+    document.querySelectorAll('#' + LOWEST_PRICE_BAR_ID).forEach(function (n) { n.remove(); });
 
     // Slot directly after the Watchlist Matches bar when it's already
     // present. If the watchlist injects after us, its insertBefore at
@@ -4533,7 +4566,9 @@
   // rendering, so a hashchange-driven re-dispatch on the travel page never
   // stacks duplicates. Silent on any data failure — the player still has
   // the cloud image, they just don't get a preview.
+  let inFlightGeneration = 0;
   async function injectInFlightStrip(destination, remainingMins) {
+    const myGeneration = ++inFlightGeneration;
     const existing = document.getElementById(INFLIGHT_BAR_ID);
     if (existing) existing.remove();
 
@@ -4733,6 +4768,7 @@
       ]);
     }
 
+    if (myGeneration !== inFlightGeneration) return;
     injectInFlightStyles();
     const bar = buildInFlightStrip(destination, top);
     const host =
@@ -4740,6 +4776,9 @@
       document.querySelector('.content-wrapper') ||
       document.querySelector('#mainContainer') ||
       document.body;
+    // Final sweep right before insert: a parallel call could have inserted
+    // its own strip between our start-of-function removal and now.
+    document.querySelectorAll('#' + INFLIGHT_BAR_ID).forEach(function (n) { n.remove(); });
     host.insertBefore(bar, host.firstChild);
   }
 
@@ -4884,7 +4923,9 @@
   // rendering. Silent on any data failure and hidden entirely when no run
   // clears the bar — the home screen stays clean rather than showing an
   // empty "no runs" state the player can't act on.
+  let bestRunGeneration = 0;
   async function injectBestRunBar() {
+    const myGeneration = ++bestRunGeneration;
     const existing = document.getElementById(BESTRUN_BAR_ID);
     if (existing) existing.remove();
 
@@ -4893,6 +4934,7 @@
       fetchAbroadScrapesAll(),
       ensureItemCatalog(),
     ]);
+    if (myGeneration !== bestRunGeneration) return;
     if (!Array.isArray(yataRows) || yataRows.length === 0) return;
 
     // One Supabase GET for every item the export mentions.
@@ -4974,6 +5016,7 @@
       ]);
     }
 
+    if (myGeneration !== bestRunGeneration) return;
     injectBestRunStyles();
     const bar = buildBestRunBar(ranked);
     const host =
@@ -4981,6 +5024,9 @@
       document.querySelector('.content-wrapper') ||
       document.querySelector('#mainContainer') ||
       document.body;
+    // Final sweep right before insert: a parallel call could have inserted
+    // its own board between our start-of-function removal and now.
+    document.querySelectorAll('#' + BESTRUN_BAR_ID).forEach(function (n) { n.remove(); });
     host.insertBefore(bar, host.firstChild);
   }
 
