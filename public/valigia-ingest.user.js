@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.23.2
+// @version      0.23.3
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.23.2';
+  const SCRIPT_VERSION = '0.23.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5030,28 +5030,71 @@
     host.insertBefore(bar, host.firstChild);
   }
 
+  // Clears every Valigia travel overlay (Best Run board + In-Flight strip).
+  // Used when the phase changes (so a stale bar from a prior dispatch never
+  // lingers underneath the new one) and on the return leg (where we show
+  // neither). Each injector self-clears its own id, but neither clears the
+  // other's — this does both so the two overlays can never coexist.
+  function removeTravelBars() {
+    document.querySelectorAll('#' + BESTRUN_BAR_ID).forEach(function (n) { n.remove(); });
+    document.querySelectorAll('#' + INFLIGHT_BAR_ID).forEach(function (n) { n.remove(); });
+  }
+
+  // How long to wait for a definitive flight/abroad marker before concluding
+  // the player is on the home destination picker. Torn hydrates the flight
+  // banner ("Remaining Flight Time") and abroad marker ("You are in X") a
+  // beat after DOMContentLoaded; reading once up front races that hydration
+  // and misfires the home Best Run board onto flight pages.
+  const TRAVEL_PHASE_TIMEOUT_MS = 4000;
+  const TRAVEL_PHASE_POLL_MS = 300;
+
   // -- Main ----------------------------------------------------------------
   async function runTravel() {
     // TEMP DIAGNOSTIC: clear any prior parse-mismatch captures so a fresh
     // scrape replaces a stale panel.
     parseMismatches.length = 0;
 
-    // In-flight branch: no shop DOM to scrape, but we can preview what's
-    // available at the destination so the flight isn't dead time. Outbound
-    // legs only; on the return leg the player can't shop anymore.
-    const flight = detectInFlight();
-    if (flight && !flight.returning) {
+    // Resolve the travel phase before deciding what to render. The flight
+    // banner and the "You are in X" abroad marker both hydrate slightly after
+    // initial render, so a single synchronous read can catch a flight page
+    // mid-hydrate, see no marker, and wrongly fall back to the home Best Run
+    // board (the catch-all default). That race is what made the overlay flip
+    // randomly between Arriving Soon and Best Run. Poll briefly until a flight
+    // or abroad marker appears; only conclude "home picker" once the window
+    // elapses with neither present.
+    const phaseStart = Date.now();
+    let flight = detectInFlight();
+    let destination = flight ? null : detectDestination();
+    while (!flight && !destination && Date.now() - phaseStart < TRAVEL_PHASE_TIMEOUT_MS) {
+      await new Promise(function (r) { setTimeout(r, TRAVEL_PHASE_POLL_MS); });
+      flight = detectInFlight();
+      destination = flight ? null : detectDestination();
+    }
+
+    // Return leg: the player is flying home, can't shop at the origin, and the
+    // destination picker isn't on screen — so neither the Arriving Soon strip
+    // nor the Best Run board is actionable. Clear any stray bar and bail.
+    if (flight && flight.returning) {
+      log('Return leg detected - clearing overlays, nothing to show.');
+      removeTravelBars();
+      return;
+    }
+
+    // Outbound branch: no shop DOM to scrape, but we can preview what's
+    // available at the destination so the flight isn't dead time.
+    if (flight) {
+      removeTravelBars();
       try { await injectInFlightStrip(flight.destination, flight.remainingMins); } catch (e) { log('inflight error', e); }
       return;
     }
 
-    const destination = detectDestination();
     if (!destination) {
-      // Not landed and not outbound: the country picker (or the return
-      // leg). The player is deciding where to fly next, so headline the
+      // Not landed and not in flight after the poll window: the country
+      // picker. The player is deciding where to fly next, so headline the
       // best run across every destination. Errors are swallowed so a
       // YATA/Supabase hiccup never disrupts the page.
-      log('No "You are in X" marker - home travel screen, showing best-run board.');
+      log('No flight banner or "You are in X" marker - home travel screen, showing best-run board.');
+      removeTravelBars();
       try { await injectBestRunBar(); } catch (e) { log('bestrun error', e); }
       return;
     }
