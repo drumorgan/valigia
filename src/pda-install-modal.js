@@ -7,6 +7,8 @@
 // localStorage flag either: the button is quiet enough on its own.
 
 import { safeSetItem } from './storage.js';
+import { getPlayerId } from './auth.js';
+import { getShowIndicators, setShowIndicators } from './pda-prefs.js';
 
 const SCRIPT_URL = 'https://valigia.girovagabondo.com/valigia-ingest.user.js';
 
@@ -112,6 +114,26 @@ function openModal() {
           tab switching, no mental math.
         </p>
 
+        <div class="pda-pref-block" id="pda-pref-block" hidden>
+          <h3 class="pda-section-title">Overlay display</h3>
+          <p class="pda-pref-desc">
+            Already installed? Choose what the overlay does on your PDA.
+            Hiding the indicators keeps every scrape feeding the shared
+            price pool — you just won't see the bars, badges, or toasts.
+          </p>
+          <div class="pda-pref-options" role="radiogroup" aria-label="PDA overlay display">
+            <button class="pda-pref-option" type="button" data-pref="show" role="radio" aria-checked="false">
+              <span class="pda-pref-option-title">Show indicators</span>
+              <span class="pda-pref-option-hint">Overlay bars, badges &amp; toasts on every page</span>
+            </button>
+            <button class="pda-pref-option" type="button" data-pref="hide" role="radio" aria-checked="false">
+              <span class="pda-pref-option-title">Hide indicators</span>
+              <span class="pda-pref-option-hint">Silent mode — still gathers prices for the pool</span>
+            </button>
+          </div>
+          <p class="pda-pref-status" id="pda-pref-status" aria-live="polite"></p>
+        </div>
+
         <h3 class="pda-section-title">What you get</h3>
         <ul class="pda-benefits">
           <li><strong>Market Price + margin on every row</strong> right on Torn's shop page</li>
@@ -172,6 +194,68 @@ function openModal() {
   backdrop.querySelector('.pda-modal-done').addEventListener('click', closeModal);
   backdrop.querySelector('.pda-copy-btn').addEventListener('click', onCopyClick);
   document.addEventListener('keydown', onKeydown);
+
+  initPrefBlock(backdrop);
+}
+
+// ── Overlay display preference ─────────────────────────────────
+// Two-option radio: Show indicators (default) / Hide indicators. The
+// value lives in Supabase (`pda_prefs`) because the userscript runs on
+// torn.com and can't read this site's localStorage — it polls the row
+// with an anon SELECT, cached for 60 s, so a change here reaches the
+// PDA within about a minute.
+
+function initPrefBlock(backdrop) {
+  const block = backdrop.querySelector('#pda-pref-block');
+  if (!block || !getPlayerId()) return; // logged out — keep the block hidden
+  block.hidden = false;
+
+  const options = [...block.querySelectorAll('.pda-pref-option')];
+  const status = block.querySelector('#pda-pref-status');
+
+  const paint = (show) => {
+    for (const btn of options) {
+      const active = (btn.dataset.pref === 'show') === show;
+      btn.classList.toggle('pda-pref-option--active', active);
+      btn.setAttribute('aria-checked', String(active));
+    }
+  };
+
+  // Load the current value; until it resolves the options stay unpainted
+  // so a slow read never flashes the wrong selection.
+  status.textContent = 'Loading…';
+  let busy = true;
+  getShowIndicators().then((show) => {
+    // The modal may have been closed (and the backdrop removed) while
+    // the read was in flight — painting a detached node is harmless,
+    // so no explicit guard needed.
+    paint(show);
+    status.textContent = '';
+    busy = false;
+  });
+
+  for (const btn of options) {
+    btn.addEventListener('click', async () => {
+      if (busy) return;
+      const show = btn.dataset.pref === 'show';
+      busy = true;
+      paint(show);
+      status.textContent = 'Saving…';
+      const result = await setShowIndicators(show);
+      busy = false;
+      if (result?.success) {
+        status.textContent = show
+          ? 'Saved — indicators will show on your PDA within a minute.'
+          : 'Saved — your PDA goes silent within a minute (scrapes keep contributing).';
+      } else {
+        // Revert the highlight to the stored value so the UI never
+        // claims a save that didn't land.
+        const actual = await getShowIndicators();
+        paint(actual);
+        status.textContent = 'Save failed — please try again.';
+      }
+    });
+  }
 }
 
 function closeModal() {

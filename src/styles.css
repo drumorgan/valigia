@@ -2472,6 +2472,72 @@ tr.row--negative td {
   margin: 1.1rem 0 0.5rem;
 }
 
+.pda-pref-block {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--positive);
+  border-radius: 3px;
+  background: rgba(74, 232, 160, 0.05);
+  padding: 0.2rem 0.85rem 0.65rem;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.pda-pref-desc {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  margin: 0 0 0.6rem;
+}
+
+.pda-pref-options {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.pda-pref-option {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.55rem 0.65rem;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+
+.pda-pref-option--active {
+  border-color: var(--positive);
+  background: rgba(74, 232, 160, 0.1);
+}
+
+.pda-pref-option-title {
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pda-pref-option--active .pda-pref-option-title {
+  color: var(--positive);
+}
+
+.pda-pref-option-hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.pda-pref-status {
+  min-height: 1em;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0.5rem 0 0;
+}
+
 .pda-benefits {
   margin: 0 0 0.5rem;
   padding-left: 1.2rem;

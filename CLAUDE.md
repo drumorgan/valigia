@@ -99,6 +99,7 @@ editor; Supabase does not auto-apply them).
 | `ingest_rate_limits` | Per-`(player_id, endpoint)` gate enforcing a minimum interval between ingest writes. Service-role only (no RLS policies). The `ingest_rate_check()` RPC does an atomic check-and-set with a row-level `FOR UPDATE` lock, returning `false` if the caller's last write was too recent. Migration 027. |
 | `te_traders` | Catalog of TornExchange trader pages we scrape (handle PK, optional `torn_player_id`, `submitted_by`, `last_scraped_at`, `last_scrape_ok`, `consecutive_fails`, `item_count`). Writes via the `ingest-te-trader` edge fn only; reads public. Migration 028. |
 | `te_buy_prices` | Per-trader standing buy-offers (`handle + item_id` composite key). `buy_price` is what the trader advertises they'll pay per unit. The Sell tab's inventory matcher picks the highest across all traders per item_id. Migration 028. |
+| `pda_prefs` | Per-player PDA userscript preferences (`player_id` PK). Currently one flag: `show_indicators` — false puts the userscript in silent mode (no bars/overlays/toasts/badges) while every scrape keeps contributing to the pool. Set from the website's PDA overlay modal via the session-gated `pda-prefs` edge function; reads are public (the userscript polls with an anon SELECT, 60 s localStorage cache). Migration 034. |
 
 **RPC functions** (granted to anon + authenticated):
 - `record_scan(found_deal boolean)` — atomic increment after each scan
@@ -299,6 +300,7 @@ valigia.girovagabondo.com/
 │   ├── bazaar-ui.js         — scan button, runners-up, community stats
 │   ├── watchlist.js         — alert CRUD + 3-venue match resolver
 │   ├── watchlist-ui.js      — Watchlist tab + matches card
+│   ├── pda-prefs.js         — PDA indicator-toggle data layer (pda_prefs)
 │   ├── te-traders.js        — TornExchange trader pool data layer
 │   ├── sell-ui.js           — Sell tab (inventory → best TE buyer matcher)
 │   ├── styles.css
@@ -315,6 +317,7 @@ valigia.girovagabondo.com/
 │   │   ├── auto-login/           — decrypt key for session
 │   │   ├── ingest-travel-shop/   — validates PDA userscript travel scrapes, upserts abroad_prices
 │   │   ├── watchlist/            — session-gated CRUD on watchlist_alerts
+│   │   ├── pda-prefs/            — session-gated writes to pda_prefs (indicator toggle)
 │   │   ├── ingest-te-trader/     — session-gated TornExchange page scraper → te_traders + te_buy_prices
 │   │   ├── cron-refresh-traders/ — daily pg_cron-triggered bulk refresh of every te_traders row
 │   │   └── _shared/              — cors + crypto helpers
@@ -349,7 +352,10 @@ valigia.girovagabondo.com/
 │       ├── 028_te_traders.sql
 │       ├── 029_get_stats_snapshot.sql
 │       ├── 030_restock_cadence_filter.sql
-│       └── 031_cron_refresh_traders.sql
+│       ├── 031_cron_refresh_traders.sql
+│       ├── 032_points_market_rate.sql
+│       ├── 033_points_market_rate_insert_policy.sql
+│       └── 034_pda_prefs.sql
 ├── .env
 ├── vite.config.js
 └── .github/
@@ -453,6 +459,25 @@ too much across layouts — the single top bar is the stable replacement.
 
 All three runners use a single shared `rowContainer()` heuristic that
 tolerates Torn's migration from `<table>` to div-based layouts.
+
+### Indicator toggle (silent mode)
+
+The website's PDA overlay modal (header "PDA overlay" button) has an
+"Overlay display" toggle: **Show indicators** (default) or **Hide
+indicators**. Hidden means every visual surface the userscript paints —
+travel overlay cells, all top-of-page bars, the stakeout badge, toasts,
+the parse-mismatch panel — is suppressed, while every scrape/ingest path
+(travel, Item Market, bazaar, points rate, drip-scrape, stakeout
+auto-rescrape) keeps contributing to the shared pool. Pure-read UI
+runners (Items page, Museum) become no-ops. The DEBUG panel is
+intentionally NOT gated — it's an explicit opt-in diagnostic.
+
+The preference lives in `pda_prefs` because the website
+(valigia.girovagabondo.com) and the userscript (torn.com) can't share
+localStorage. Writes go through the `pda-prefs` edge function (same
+session-token gate as `watchlist`); the userscript polls the row with an
+anon SELECT in `refreshIndicatorPref()` at the top of every `dispatch()`,
+cached in localStorage for 60 s, defaulting to "show" on any failure.
 
 ### Drip-scrape (background bazaar pool maintenance)
 

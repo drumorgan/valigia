@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.23.3
+// @version      0.24.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.23.3';
+  const SCRIPT_VERSION = '0.24.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -76,6 +76,20 @@
   const RESTOCK_EVENTS_URL = SUPABASE_REST_URL + '/restock_events';
   const POINTS_RATE_URL = SUPABASE_REST_URL + '/points_market_rate';
   const ABROAD_PRICES_URL = SUPABASE_REST_URL + '/abroad_prices';
+  const PDA_PREFS_URL = SUPABASE_REST_URL + '/pda_prefs';
+
+  // -- Indicator visibility --------------------------------------------------
+  // Per-player toggle set from the website (PDA overlay modal → "Overlay
+  // display"). When the player chooses "Hide indicators", every visual
+  // surface this script paints — overlay cells, top-of-page bars, the
+  // stakeout badge, toasts — is suppressed, while ALL scraping and ingest
+  // paths keep running so the player still contributes prices to the
+  // shared pool. Resolved once per dispatch from the public pda_prefs row
+  // (anon SELECT, 60 s localStorage cache); defaults to visible on any
+  // failure. The on-page DEBUG panel is intentionally NOT gated — it's an
+  // explicit opt-in diagnostic, and silent mode is exactly when you'd
+  // need it.
+  let indicatorsHidden = false;
 
   // Known Torn travel shop category names. Used as section anchors: the
   // parser looks for these in visible text to group items by shop.
@@ -105,6 +119,10 @@
   }
 
   function toast(message, kind) {
+    if (indicatorsHidden) {
+      log('toast suppressed (indicators hidden):', message);
+      return;
+    }
     const bg = kind === 'error' ? '#b33'
       : kind === 'success' ? '#2a7'
       : kind === 'warning' ? '#e8824a'
@@ -308,6 +326,7 @@
   }
 
   function renderParseMismatchPanel() {
+    if (indicatorsHidden) return;
     if (parseMismatches.length === 0) return;
     const existing = document.getElementById('valigia-parse-mismatch-panel');
     if (existing) existing.remove();
@@ -991,6 +1010,7 @@
   // the row showing margin + profit/hr. Mark the top profit/hr row with a
   // BEST badge and a subtle green highlight.
   function renderOverlay(shops, sellPriceMap, refillEtaMap) {
+    if (indicatorsHidden) return { total: 0, withMetrics: 0, best: null };
     if (!(refillEtaMap instanceof Map)) refillEtaMap = new Map();
     injectStyles();
 
@@ -2054,6 +2074,7 @@
     // Idempotent: tear down any previous instance before fetching.
     const existing = document.getElementById(WATCHLIST_BAR_ID);
     if (existing) existing.remove();
+    if (indicatorsHidden) return;
 
     const playerId = await resolvePlayerId();
     if (!playerId) return;
@@ -2524,6 +2545,7 @@
     const existing = document.getElementById(MY_WATCHLIST_BAR_ID);
     const wasOpen = !!existing && existing.classList.contains('vgl-mw-open');
     if (existing) existing.remove();
+    if (indicatorsHidden) return;
 
     const playerId = await resolvePlayerId();
     if (!playerId) return;
@@ -2649,6 +2671,7 @@
     const myGeneration = ++itemWatchGeneration;
     const existing = document.getElementById(ITEM_WATCH_BAR_ID);
     if (existing) existing.remove();
+    if (indicatorsHidden) return;
 
     const itemId = detectItemMarketSingleItemId();
     if (!itemId) return;
@@ -2908,6 +2931,7 @@
     // Remove any prior instance so SPA nav doesn't stack duplicates.
     const existing = document.getElementById(BAZAAR_DEALS_BAR_ID);
     if (existing) existing.remove();
+    if (indicatorsHidden) return;
 
     if (!Array.isArray(scrapedItems) || scrapedItems.length === 0) return;
     const ids = [...new Set(scrapedItems.map(function (r) { return r.item_id; }))];
@@ -3309,6 +3333,7 @@
     const myGeneration = ++lowestPriceGeneration;
     const existing = document.getElementById(LOWEST_PRICE_BAR_ID);
     if (existing) existing.remove();
+    if (indicatorsHidden) return;
 
     const itemId = detectItemMarketSingleItemId();
     if (!itemId) return;
@@ -3830,6 +3855,7 @@
     // Sweep any already-rendered bars before fetching too — keeps the
     // page tidy if a prior generation already painted.
     document.querySelectorAll('#' + FLASH_DEALS_BAR_ID).forEach(function (n) { n.remove(); });
+    if (indicatorsHidden) return;
 
     const itemIdFilter = detectItemMarketSingleItemId();
 
@@ -3993,7 +4019,15 @@
   // badge (shows OFF or ON state from localStorage) and starts the
   // auto-scrape interval if the user previously enabled it.
   function initStakeoutUI() {
-    mountStakeoutBadge();
+    // Indicators hidden: skip the badge but keep a previously-enabled
+    // stakeout's auto-scrape interval running — the stakeout's whole
+    // point is gathering prices, which silent mode preserves. The badge
+    // updater no-ops while stakeout.badge is null.
+    if (indicatorsHidden) {
+      unmountStakeoutBadge();
+    } else {
+      mountStakeoutBadge();
+    }
     if (stakeoutEnabled() && !stakeout.intervalId) {
       startStakeoutInterval();
     }
@@ -4571,6 +4605,7 @@
     const myGeneration = ++inFlightGeneration;
     const existing = document.getElementById(INFLIGHT_BAR_ID);
     if (existing) existing.remove();
+    if (indicatorsHidden) return;
 
     // Fire YATA + first-party scrapes + item catalog warm in parallel.
     // The catalog is needed to filter the strip by Torn's type field
@@ -4928,6 +4963,7 @@
     const myGeneration = ++bestRunGeneration;
     const existing = document.getElementById(BESTRUN_BAR_ID);
     if (existing) existing.remove();
+    if (indicatorsHidden) return;
 
     const [yataRows, scrapeMap] = await Promise.all([
       fetchYataAll(),
@@ -5575,6 +5611,14 @@
   }
 
   async function runItemPage() {
+    // This runner is a pure-read UI surface (no ingest), so indicators
+    // hidden means there's nothing left for it to do. Clear any bar a
+    // prior visit painted and bail before wiring the MutationObserver.
+    if (indicatorsHidden) {
+      const existing = document.getElementById(ITEM_PAGE_BAR_ID);
+      if (existing) existing.remove();
+      return;
+    }
     // First pass on whatever is currently rendered.
     scheduleItemPageScan('initial');
 
@@ -6206,6 +6250,8 @@
   async function runMuseum() {
     const existing = document.getElementById(MUSEUM_BAR_ID);
     if (existing) existing.remove();
+    // Pure-read UI surface — nothing to gather here in silent mode.
+    if (indicatorsHidden) return;
 
     await ensureItemCatalog();
     const items = listArtifactItems();
@@ -6351,9 +6397,13 @@
   }
 
   function showPointsRateBanner(rate, isError, diagnostic) {
-    injectPointsRateStyles();
     const existing = document.getElementById(POINTS_RATE_BAR_ID);
     if (existing) existing.remove();
+    // The rate capture + community-pool write in runPointsMarket() have
+    // already happened by the time this is called — only the banner is
+    // suppressed in silent mode.
+    if (indicatorsHidden) return;
+    injectPointsRateStyles();
     const bar = document.createElement('div');
     bar.id = POINTS_RATE_BAR_ID;
     if (isError) bar.classList.add('vgl-pr-error');
@@ -6700,11 +6750,65 @@
     return null;
   }
 
+  // -- Indicator preference resolver ----------------------------------------
+  // Reads the player's show_indicators flag from the public pda_prefs row
+  // (set from the website's PDA overlay modal). Cached in localStorage for
+  // 60 s so SPA nav bursts don't re-fetch; on a failed fetch we fall back
+  // to the last cached value (any age), and to "show" when there's no
+  // cache at all — a Supabase hiccup should never make the overlay vanish
+  // for a player who wants it.
+  const INDICATOR_PREF_CACHE_KEY = 'valigia_pda_indicators_v1';
+  const INDICATOR_PREF_TTL_MS = 60 * 1000;
+
+  async function refreshIndicatorPref() {
+    let cached = null;
+    try {
+      cached = JSON.parse(localStorage.getItem(INDICATOR_PREF_CACHE_KEY) || 'null');
+    } catch (_) { cached = null; }
+    if (cached && typeof cached.show === 'boolean'
+        && Date.now() - cached.fetchedAt < INDICATOR_PREF_TTL_MS) {
+      indicatorsHidden = !cached.show;
+      return;
+    }
+
+    const playerId = await resolvePlayerId();
+    if (!playerId) {
+      indicatorsHidden = false;
+      return;
+    }
+    const rows = await fetchJSON(
+      PDA_PREFS_URL +
+      '?player_id=eq.' + encodeURIComponent(playerId) +
+      '&select=show_indicators'
+    );
+    let show;
+    if (Array.isArray(rows)) {
+      // No row yet means the player never touched the toggle → show.
+      show = !(rows.length > 0 && rows[0] && rows[0].show_indicators === false);
+    } else if (cached && typeof cached.show === 'boolean') {
+      show = cached.show;
+    } else {
+      show = true;
+    }
+    indicatorsHidden = !show;
+    try {
+      localStorage.setItem(
+        INDICATOR_PREF_CACHE_KEY,
+        JSON.stringify({ playerId: playerId, show: show, fetchedAt: Date.now() })
+      );
+    } catch (_) { /* ignore quota / disabled storage */ }
+  }
+
   async function dispatch() {
     if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) {
       log('Not running inside PDA - aborting.');
       return;
     }
+    // Resolve the indicator toggle before any runner paints. Failures
+    // inside the resolver already degrade to "show"; the catch is belt
+    // and suspenders so a bug here can never block the ingest runners.
+    try { await refreshIndicatorPref(); }
+    catch (e) { log('indicator pref error', e); indicatorsHidden = false; }
     const page = detectPage();
     // Stakeout badge + auto-rescrape interval are travel-page-only. Tear
     // them down on every dispatch and let runTravel() re-mount if
