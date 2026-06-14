@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.24.0
+// @version      0.24.1
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.24.0';
+  const SCRIPT_VERSION = '0.24.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1319,7 +1319,7 @@
 
     const result = await postIngestRows(INGEST_SELL_URL, upsertRows);
     if (result.ok) {
-      toast('Item Market: ' + result.count + ' prices', 'success');
+      log('Item Market: ' + result.count + ' prices upserted');
       pingActivity('item_market');
     } else if (isSilentIngestError(result)) {
       log('Item Market ingest skipped (silent):', result.error);
@@ -1475,7 +1475,7 @@
 
     const result = await postIngestRows(INGEST_BAZAAR_URL, rows);
     if (result.ok) {
-      toast('Bazaar: ' + result.count + ' prices', 'success');
+      log('Bazaar: ' + result.count + ' prices upserted');
       pingActivity('bazaar');
     } else if (isSilentIngestError(result)) {
       log('Bazaar ingest skipped (silent):', result.error);
@@ -5209,11 +5209,14 @@
         shops: shops,
       });
       if (result.ok) {
-        const suffix = unknownCount > 0
-          ? ' (' + unknownCount + ' unknown)'
-          : '';
-        const toneForUnknown = unknownCount > 0 ? 'warning' : 'success';
-        toast(destination + ': ' + result.count + ' prices' + suffix, toneForUnknown);
+        log('Travel ' + destination + ': ' + result.count + ' prices upserted');
+        // Routine success is silent now, but unknown items still mean the
+        // parser saw a row it couldn't resolve — a parse-health signal worth
+        // surfacing on a DevTools-less iPad. Only fires when something's off.
+        if (unknownCount > 0) {
+          toast(destination + ': ' + unknownCount + ' unrecognized item' +
+            (unknownCount === 1 ? '' : 's'), 'warning');
+        }
       } else if (isSilentIngestError(result)) {
         log('Travel ' + destination + ' ingest skipped (silent):', result.error);
       } else {
