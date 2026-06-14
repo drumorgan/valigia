@@ -99,7 +99,7 @@ editor; Supabase does not auto-apply them).
 | `ingest_rate_limits` | Per-`(player_id, endpoint)` gate enforcing a minimum interval between ingest writes. Service-role only (no RLS policies). The `ingest_rate_check()` RPC does an atomic check-and-set with a row-level `FOR UPDATE` lock, returning `false` if the caller's last write was too recent. Migration 027. |
 | `te_traders` | Catalog of TornExchange trader pages we scrape (handle PK, optional `torn_player_id`, `submitted_by`, `last_scraped_at`, `last_scrape_ok`, `consecutive_fails`, `item_count`). Writes via the `ingest-te-trader` edge fn only; reads public. Migration 028. |
 | `te_buy_prices` | Per-trader standing buy-offers (`handle + item_id` composite key). `buy_price` is what the trader advertises they'll pay per unit. The Sell tab's inventory matcher picks the highest across all traders per item_id. Migration 028. |
-| `pda_prefs` | Per-player PDA userscript preferences (`player_id` PK). Currently one flag: `show_indicators` — false puts the userscript in silent mode (no bars/overlays/toasts/badges) while every scrape keeps contributing to the pool. Set from the website's PDA overlay modal via the session-gated `pda-prefs` edge function; reads are public (the userscript polls with an anon SELECT, 60 s localStorage cache). Migration 034. |
+| `pda_prefs` | Per-player PDA userscript preferences (`player_id` PK). Currently one flag: `show_indicators` — false puts the userscript in silent mode (no bars/overlays/toasts/badges) while every scrape keeps contributing to the pool. Set from either the website's PDA overlay modal (session-token auth) or the userscript's in-game "V" overlay toggle (raw Torn `api_key` auth), both through the `pda-prefs` edge function; reads are public (the userscript polls with an anon SELECT, 60 s localStorage cache). Migration 034. |
 
 **RPC functions** (granted to anon + authenticated):
 - `record_scan(found_deal boolean)` — atomic increment after each scan
@@ -317,7 +317,7 @@ valigia.girovagabondo.com/
 │   │   ├── auto-login/           — decrypt key for session
 │   │   ├── ingest-travel-shop/   — validates PDA userscript travel scrapes, upserts abroad_prices
 │   │   ├── watchlist/            — session-gated CRUD on watchlist_alerts
-│   │   ├── pda-prefs/            — session-gated writes to pda_prefs (indicator toggle)
+│   │   ├── pda-prefs/            — writes to pda_prefs (indicator toggle); session-token (web) or api_key (PDA "V" button) auth
 │   │   ├── ingest-te-trader/     — session-gated TornExchange page scraper → te_traders + te_buy_prices
 │   │   ├── cron-refresh-traders/ — daily pg_cron-triggered bulk refresh of every te_traders row
 │   │   └── _shared/              — cors + crypto helpers
@@ -462,22 +462,42 @@ tolerates Torn's migration from `<table>` to div-based layouts.
 
 ### Indicator toggle (silent mode)
 
-The website's PDA overlay modal (header "PDA overlay" button) has an
-"Overlay display" toggle: **Show indicators** (default) or **Hide
-indicators**. Hidden means every visual surface the userscript paints —
-travel overlay cells, all top-of-page bars, the stakeout badge, toasts,
-the parse-mismatch panel — is suppressed, while every scrape/ingest path
-(travel, Item Market, bazaar, points rate, drip-scrape, stakeout
-auto-rescrape) keeps contributing to the shared pool. Pure-read UI
-runners (Items page, Museum) become no-ops. The DEBUG panel is
-intentionally NOT gated — it's an explicit opt-in diagnostic.
+The **Show indicators** (default) / **Hide indicators** choice can be set
+from either surface — they both write the same `pda_prefs.show_indicators`
+flag:
+
+- **Website** — the PDA overlay modal (header "PDA overlay" button),
+  "Overlay display" toggle.
+- **In-game "V" button** — a small fixed gold pill anchored to the right
+  edge of every Torn page (mounted by `mountOverlayToggle()` in
+  `dispatch()`). One tap flips the flag, persists it, and reloads so all
+  paint sites re-read the new state. Lit gold = overlays ON; dim inverse =
+  overlays OFF. The button is deliberately NOT gated by `indicatorsHidden`
+  — it has to stay reachable in silent mode, since it's the only way back.
+  The optimistic flip writes the 60 s localStorage cache up front so the
+  reload lands in the new state instantly; a failed write rolls the flip
+  back and flashes the pill red (toasts self-suppress in silent mode, so
+  the pill is the failure surface).
+
+Hidden means every visual surface the userscript paints — travel overlay
+cells, all top-of-page bars, the stakeout badge, toasts, the
+parse-mismatch panel — is suppressed (except the "V" button itself),
+while every scrape/ingest path (travel, Item Market, bazaar, points rate,
+drip-scrape, stakeout auto-rescrape) keeps contributing to the shared
+pool. Pure-read UI runners (Items page, Museum) become no-ops. The DEBUG
+panel is intentionally NOT gated — it's an explicit opt-in diagnostic.
 
 The preference lives in `pda_prefs` because the website
 (valigia.girovagabondo.com) and the userscript (torn.com) can't share
-localStorage. Writes go through the `pda-prefs` edge function (same
-session-token gate as `watchlist`); the userscript polls the row with an
-anon SELECT in `refreshIndicatorPref()` at the top of every `dispatch()`,
-cached in localStorage for 60 s, defaulting to "show" on any failure.
+localStorage. Writes go through the `pda-prefs` edge function, which
+resolves `player_id` from either auth path: the website sends
+`player_id + session_token` (same gate as `watchlist`), while the
+userscript's "V" button sends a raw Torn `api_key` validated against
+`user/?selections=basic` (the userscript holds the key but no session
+token — same trust model as `ingest-travel-shop`). The userscript polls
+the row with an anon SELECT in `refreshIndicatorPref()` at the top of
+every `dispatch()`, cached in localStorage for 60 s, defaulting to "show"
+on any failure.
 
 ### Drip-scrape (background bazaar pool maintenance)
 

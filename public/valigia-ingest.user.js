@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.24.1
+// @version      0.25.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.24.1';
+  const SCRIPT_VERSION = '0.25.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -77,6 +77,8 @@
   const POINTS_RATE_URL = SUPABASE_REST_URL + '/points_market_rate';
   const ABROAD_PRICES_URL = SUPABASE_REST_URL + '/abroad_prices';
   const PDA_PREFS_URL = SUPABASE_REST_URL + '/pda_prefs';
+  const PDA_PREFS_FN_URL =
+    'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/pda-prefs';
 
   // -- Indicator visibility --------------------------------------------------
   // Per-player toggle set from the website (PDA overlay modal → "Overlay
@@ -6802,6 +6804,144 @@
     } catch (_) { /* ignore quota / disabled storage */ }
   }
 
+  // Overwrite the indicator cache with a known show/hide value, keeping the
+  // existing playerId attribution if we have one. Used by the in-game toggle
+  // so the immediate post-toggle reload reads the new state from cache
+  // (fresh < TTL) without waiting on the network write to round-trip.
+  function writeIndicatorCache(show) {
+    let prev = null;
+    try { prev = JSON.parse(localStorage.getItem(INDICATOR_PREF_CACHE_KEY) || 'null'); }
+    catch (_) { prev = null; }
+    try {
+      localStorage.setItem(
+        INDICATOR_PREF_CACHE_KEY,
+        JSON.stringify({
+          playerId: (prev && prev.playerId) || null,
+          show: show,
+          fetchedAt: Date.now(),
+        })
+      );
+    } catch (_) { /* ignore quota / disabled storage */ }
+  }
+
+  // Persist the player's show/hide choice to pda_prefs via the edge function's
+  // api_key auth branch — same trust model as the watchlist writes, since the
+  // userscript holds the raw Torn key but no Valigia session token.
+  async function postPdaPref(showIndicators) {
+    try {
+      const res = await gmRequest({
+        method: 'POST',
+        url: PDA_PREFS_FN_URL,
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+        },
+        data: JSON.stringify({
+          action: 'set',
+          api_key: TORN_API_KEY,
+          show_indicators: !!showIndicators,
+        }),
+      });
+      let data = null;
+      try { data = JSON.parse(res.responseText || '{}'); } catch (_) { /* ignore */ }
+      if (res.status >= 200 && res.status < 300 && data && data.success) {
+        return { ok: true };
+      }
+      return { ok: false, error: (data && data.error) || ('http_' + res.status) };
+    } catch (e) {
+      return { ok: false, error: 'network' };
+    }
+  }
+
+  // -- In-game overlay toggle ("V" button) ---------------------------------
+  // A small fixed pill anchored to the right edge, echoing Torn's own
+  // edge-attached side tabs. One tap flips every Valigia overlay on/off by
+  // writing show_indicators to pda_prefs — the same flag the website's "PDA
+  // overlay" modal sets — then reloads so all ~18 paint sites re-evaluate
+  // indicatorsHidden from a clean slate (far more robust than tearing each
+  // overlay down by hand across six page types). Lit gold = overlays ON;
+  // dim inverse = overlays OFF. The button itself is NEVER gated by
+  // indicatorsHidden — it has to stay visible in silent mode, since it's the
+  // only way back.
+  const OVERLAY_TOGGLE_ID = 'valigia-overlay-toggle';
+  let overlayToggleBusy = false;
+
+  function paintOverlayToggle(btn) {
+    const showing = !indicatorsHidden;
+    btn.title = showing
+      ? 'Valigia overlays ON — tap to hide'
+      : 'Valigia overlays OFF — tap to show';
+    Object.assign(btn.style, {
+      position: 'fixed',
+      right: '0',
+      top: '58%',
+      zIndex: '999999',
+      width: '30px',
+      height: '36px',
+      padding: '0',
+      borderRadius: '8px 0 0 8px',
+      cursor: 'pointer',
+      font: '700 17px/1 "Syne Mono", ui-monospace, monospace',
+      boxShadow: '0 2px 8px rgba(0,0,0,.45)',
+      // Lit (showing): cargo-gold fill, dark glyph. Inverse (hidden): dark
+      // surface fill, gold outline + glyph.
+      background: showing ? '#e8c84a' : '#161a22',
+      color: showing ? '#0d0f14' : '#e8c84a',
+      border: '1px solid #e8c84a',
+      borderRight: 'none',
+      opacity: showing ? '1' : '0.9',
+    });
+  }
+
+  // Brief red flash so a failed write is visible even in silent mode, where
+  // toast() suppresses itself. Repaints from current state afterward.
+  function flashOverlayToggleError(btn) {
+    if (!btn) return;
+    btn.style.background = '#b33';
+    btn.style.color = '#fff';
+    setTimeout(function () { paintOverlayToggle(btn); }, 900);
+  }
+
+  async function onOverlayToggleClick() {
+    if (overlayToggleBusy) return;
+    overlayToggleBusy = true;
+    const btn = document.getElementById(OVERLAY_TOGGLE_ID);
+    if (btn) btn.disabled = true;
+
+    // Optimistic flip: hidden -> show, shown -> hide. Update the in-memory
+    // flag and the cache up front so the reload lands in the new state.
+    const nextShow = indicatorsHidden;
+    indicatorsHidden = !nextShow;
+    if (btn) paintOverlayToggle(btn);
+    writeIndicatorCache(nextShow);
+
+    const res = await postPdaPref(nextShow);
+    if (!res.ok) {
+      // Roll the optimistic flip back and signal the failure.
+      indicatorsHidden = !indicatorsHidden;
+      writeIndicatorCache(!nextShow);
+      if (btn) { btn.disabled = false; flashOverlayToggleError(btn); }
+      overlayToggleBusy = false;
+      log('overlay toggle write failed:', res.error);
+      return;
+    }
+    location.reload();
+  }
+
+  function mountOverlayToggle() {
+    // Idempotent — dispatch re-fires on SPA nav, so clear any prior instance.
+    document.querySelectorAll('#' + OVERLAY_TOGGLE_ID)
+      .forEach(function (n) { n.remove(); });
+    const btn = document.createElement('button');
+    btn.id = OVERLAY_TOGGLE_ID;
+    btn.type = 'button';
+    btn.textContent = 'V';
+    paintOverlayToggle(btn);
+    btn.addEventListener('click', onOverlayToggleClick);
+    (document.body || document.documentElement).appendChild(btn);
+  }
+
   async function dispatch() {
     if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) {
       log('Not running inside PDA - aborting.');
@@ -6812,6 +6952,9 @@
     // and suspenders so a bug here can never block the ingest runners.
     try { await refreshIndicatorPref(); }
     catch (e) { log('indicator pref error', e); indicatorsHidden = false; }
+    // Mount the in-game show/hide toggle on every page. NOT gated by
+    // indicatorsHidden — it must stay reachable in silent mode.
+    try { mountOverlayToggle(); } catch (e) { log('overlay toggle mount error', e); }
     const page = detectPage();
     // Stakeout badge + auto-rescrape interval are travel-page-only. Tear
     // them down on every dispatch and let runTravel() re-mount if
