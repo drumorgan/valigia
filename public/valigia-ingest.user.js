@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.26.0
+// @version      0.27.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.26.0';
+  const SCRIPT_VERSION = '0.27.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1050,10 +1050,13 @@
       });
     }
 
-    // Rank by per-item margin - within a single shop page the flight time
-    // and slot count are constants, so ranking by margin-per-item is
-    // equivalent to ranking by profit/hr. No slot count needed here.
-    // Only rows with positive margin and non-zero stock are eligible.
+    // Compute the top-margin row for the DEBUG panel's return shape only.
+    // Per user request there is NO "best" emphasis in the abroad view —
+    // while you're in a country every item just shows its own buy-vs-sell
+    // comparison, no single recommendation. (The "where to fly" pick lives
+    // on the home picker board, which is the right place for it.)
+    // Within a single shop page flight time and slot count are constants,
+    // so ranking by margin-per-item is equivalent to ranking by profit/hr.
     let best = null;
     for (const r of allRows) {
       if (!r.metrics) continue;
@@ -1091,12 +1094,10 @@
         }
       } else {
         const m = r.metrics;
-        const isBest = (r === best);
         const marginClass = m.marginPerItem >= 0 ? 'v-margin-pos' : 'v-margin-neg';
         const outOfStock = (r.stock != null && r.stock <= 0);
 
         let html = '';
-        if (isBest) html += '<span class="valigia-best-badge">BEST</span>';
         if (outOfStock) {
           const etaMins = refillEtaMap.get(r.item_id);
           const etaText = formatRefillEta(etaMins != null ? etaMins : null);
@@ -1118,7 +1119,6 @@
           html += '<span class="' + marginClass + '">' + formatPct(m.marginPct) + '</span>';
         }
         cell.innerHTML = html;
-        if (isBest) r.row.classList.add('valigia-best');
       }
 
       if (isTr) {
