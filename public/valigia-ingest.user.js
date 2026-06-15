@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.29.0
+// @version      0.30.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.29.0';
+  const SCRIPT_VERSION = '0.30.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -711,11 +711,15 @@
     // in-flight strip's during-flight refill override (estimateRestockPlan
     // below). The landed-overlay caller only uses .at and ignores postQty,
     // so the change is backwards-compatible.
+    // Exclude the one-time migration 018 backfill: those rows carry historical
+    // YATA sampling gaps, not real scout cadence (matches the web v2 model and
+    // get_stats_snapshot's filter). Keeps the surfaced refill ETA honest.
     const url = RESTOCK_EVENTS_URL +
       '?select=item_id,restocked_at,post_qty' +
       '&item_id=in.(' + idList + ')' +
       '&destination=eq.' + encodeURIComponent(destination) +
       '&restocked_at=gte.' + encodeURIComponent(cutoffIso) +
+      '&source=neq.backfill' +
       '&order=restocked_at.desc' +
       '&limit=2000';
     try {
@@ -748,6 +752,11 @@
     }
   }
 
+  // Cap on the inter-restock interval the cadence estimators will trust.
+  // Wider than this is an observation hole, not a real two-hour cadence —
+  // mirrors src/stock-forecast.js's MAX_RESTOCK_GAP_MINS and migration 030.
+  const MAX_RESTOCK_GAP_MINS = 120;
+
   // Median observed interval minus time-since-last-restock. Mirrors the
   // central calculation in stock-forecast.js (estimateNextRestock) without
   // the confidence/MAD/MAE machinery — the overlay just needs one number.
@@ -758,10 +767,15 @@
       .filter(Number.isFinite)
       .sort(function (a, b) { return a - b; });
     if (sorted.length < 2) return null;
+    // Drop non-positive gaps and any gap wider than MAX_RESTOCK_GAP_MINS — a
+    // multi-hour gap is an observation hole ("nobody visited"), not a real
+    // cadence. Mirrors the web v2 model + migration 030's 120-min cap.
     const gaps = [];
     for (let i = 1; i < sorted.length; i++) {
-      gaps.push((sorted[i] - sorted[i - 1]) / 60000);
+      const g = (sorted[i] - sorted[i - 1]) / 60000;
+      if (g > 0 && g <= MAX_RESTOCK_GAP_MINS) gaps.push(g);
     }
+    if (gaps.length === 0) return null;
     const sortedGaps = gaps.slice().sort(function (a, b) { return a - b; });
     const median = sortedGaps[Math.floor(sortedGaps.length / 2)];
     if (!(median > 0)) return null;
@@ -785,10 +799,13 @@
       .filter(Number.isFinite)
       .sort(function (a, b) { return a - b; });
     if (atTimes.length < 2) return null;
+    // Same gap hygiene as estimateRefillMins: drop holes wider than the cap.
     const gaps = [];
     for (let i = 1; i < atTimes.length; i++) {
-      gaps.push((atTimes[i] - atTimes[i - 1]) / 60000);
+      const g = (atTimes[i] - atTimes[i - 1]) / 60000;
+      if (g > 0 && g <= MAX_RESTOCK_GAP_MINS) gaps.push(g);
     }
+    if (gaps.length === 0) return null;
     const sortedGaps = gaps.slice().sort(function (a, b) { return a - b; });
     const medianInterval = sortedGaps[Math.floor(sortedGaps.length / 2)];
     if (!(medianInterval > 0)) return null;
@@ -5032,7 +5049,7 @@
       '#' + BESTRUN_BAR_ID + '.vgl-br-open .vgl-br-body { display: flex; }',
       // Four columns: item (flex) | destination | profit/run | profit/hr.
       '#' + BESTRUN_BAR_ID + ' .vgl-br-row {',
-      '  display: grid; grid-template-columns: minmax(0,1fr) auto auto auto;',
+      '  display: grid; grid-template-columns: minmax(0,1fr) auto auto auto auto;',
       '  align-items: baseline; gap: 10px; padding: 5px 8px;',
       '  border: 1px solid #252a35; border-radius: 3px;',
       '  background: rgba(232,200,74,0.04); font-size: 12px;',
@@ -5040,6 +5057,8 @@
       '#' + BESTRUN_BAR_ID + ' .vgl-br-name { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-dest { color: #8a8fa0; font-size: 11px; white-space: nowrap; text-align: right; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-dest--limited { color: #e8824a; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-refill { color: #4ae8a0; font-size: 11px; white-space: nowrap; text-align: right; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-refill--none { color: #5a6070; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-run { color: #c8cdd8; white-space: nowrap; text-align: right; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-hr { color: #e8c84a; font-weight: 700; white-space: nowrap; text-align: right; }',
     ].join('\n');
@@ -5052,6 +5071,9 @@
   function buildBestRunBar(runs) {
     const bar = document.createElement('div');
     bar.id = BESTRUN_BAR_ID;
+    // Open by default so stock + refill ETA for every destination is visible
+    // at decision time without an extra tap. Header still toggles it closed.
+    bar.classList.add('vgl-br-open');
 
     const head = document.createElement('div');
     head.className = 'vgl-br-head';
@@ -5093,12 +5115,27 @@
 
       const dest = document.createElement('span');
       dest.className = 'vgl-br-dest';
-      // Stock-limited runs append the fillable unit count so the player
-      // knows the profit/run is capped by a thin shelf, not full slots.
-      dest.textContent = r.stockLimited
-        ? r.destination + ' \u00B7 ' + r.effectiveSlots + 'u'
-        : r.destination;
+      // Always show current stock so the player can judge whether a shelf is
+      // deep enough to be worth the flight. Stock-limited runs (shelf thinner
+      // than a full slot fill) are flagged amber via the --limited class.
+      const stockStr = (r.stock != null && Number.isFinite(Number(r.stock)))
+        ? Number(r.stock).toLocaleString('en-US')
+        : '?';
+      dest.textContent = r.destination + ' \u00B7 ' + stockStr + ' stk';
       if (r.stockLimited) dest.classList.add('vgl-br-dest--limited');
+
+      // Time-to-next-refill (U+21BB recycle glyph). Green when known, muted
+      // dash when we don't have enough cadence history yet.
+      const refill = document.createElement('span');
+      refill.className = 'vgl-br-refill';
+      if (r.restockMins != null && Number.isFinite(Number(r.restockMins))) {
+        refill.textContent = formatRefillEta(r.restockMins);
+        refill.title = 'Estimated time to next restock';
+      } else {
+        refill.textContent = 'refill \u2014';
+        refill.classList.add('vgl-br-refill--none');
+        refill.title = 'Not enough restock history yet';
+      }
 
       const run = document.createElement('span');
       run.className = 'vgl-br-run';
@@ -5110,6 +5147,7 @@
 
       row.appendChild(name);
       row.appendChild(dest);
+      row.appendChild(refill);
       row.appendChild(run);
       row.appendChild(hr);
       body.appendChild(row);
@@ -5189,7 +5227,9 @@
 
       runs.push({
         name: y.name,
+        itemId: y.item_id,
         destination: y.destination,
+        stock: stock,
         profitPerRun: profitPerRun,
         profitPerHour: profitPerHour,
         effectiveSlots: effectiveSlots,
@@ -5211,6 +5251,26 @@
     const ranked = Array.from(bestPerDest.values())
       .sort(function (a, b) { return b.profitPerHour - a.profitPerHour; })
       .slice(0, BESTRUN_MAX_ROWS);
+
+    // Attach a refill ETA to each ranked pick so the player can see, before
+    // flying, when a shelf next restocks (restock_events is keyed per
+    // destination, so we group the picks and fire one GET per destination).
+    // Best-effort: a row with too little cadence history just shows no ETA.
+    const nowMs = Date.now();
+    const idsByDest = new Map();
+    for (const r of ranked) {
+      let arr = idsByDest.get(r.destination);
+      if (!arr) { arr = []; idsByDest.set(r.destination, arr); }
+      arr.push(r.itemId);
+    }
+    await Promise.all(Array.from(idsByDest.entries()).map(async function (entry) {
+      const dest = entry[0];
+      const evMap = await fetchRestockEvents(entry[1], dest);
+      for (const r of ranked) {
+        if (r.destination !== dest) continue;
+        r.restockMins = estimateRefillMins(evMap.get(r.itemId), nowMs);
+      }
+    }));
 
     if (DEBUG) {
       debugPanel([
