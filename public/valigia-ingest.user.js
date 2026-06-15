@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.25.0
+// @version      0.26.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.25.0';
+  const SCRIPT_VERSION = '0.26.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -120,33 +120,13 @@
     }
   }
 
+  // Pop-up toasts are disabled by user request: no "here's what we're doing"
+  // alerts of any kind. Kept as a logging shim so the dozens of existing
+  // call sites still work — the message goes to the DEBUG log() only, never
+  // to a visible overlay. (The "V" overlay-toggle pill and the stakeout
+  // badge are persistent controls, not toasts, so they're unaffected.)
   function toast(message, kind) {
-    if (indicatorsHidden) {
-      log('toast suppressed (indicators hidden):', message);
-      return;
-    }
-    const bg = kind === 'error' ? '#b33'
-      : kind === 'success' ? '#2a7'
-      : kind === 'warning' ? '#e8824a'
-      : '#333';
-    const el = document.createElement('div');
-    el.textContent = 'Valigia: ' + message;
-    Object.assign(el.style, {
-      position: 'fixed',
-      top: '10px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      background: bg,
-      color: '#fff',
-      padding: '10px 16px',
-      borderRadius: '8px',
-      zIndex: '999999',
-      font: '600 14px/1.3 sans-serif',
-      maxWidth: '90vw',
-      boxShadow: '0 4px 16px rgba(0,0,0,.5)',
-    });
-    document.body.appendChild(el);
-    setTimeout(function () { el.remove(); }, 6000);
+    log('toast (suppressed):', kind || 'info', message);
   }
 
   function debugPanel(lines) {
@@ -3897,23 +3877,37 @@
 
   // -- Stakeout mode -------------------------------------------------------
   // Tier 3 of the restock-data-quality plan. When the user is abroad and
-  // this toggle is ON, re-run runTravel() every STAKEOUT_INTERVAL_MS so
-  // each upsert to abroad_prices gives the restock trigger a chance to
-  // fire on a stock-up delta. Every tick is an independently-observed
-  // data point with tight confidence (≤5 min since prior observation),
-  // so stakers meaningfully improve the community's cadence metric.
+  // this toggle is ON, re-run runTravel() (in SILENT mode — see below)
+  // every STAKEOUT_INTERVAL_MS so each upsert to abroad_prices gives the
+  // restock trigger a chance to fire on a stock-up delta.
   //
-  // The 5 min cadence is well above the edge function's 5 s per-player
-  // rate limit, so there's no backend pressure. It's also above the
-  // realistic post-cleanup median cadence (20–45 min observed), which
-  // means most real refills during a long stakeout get caught on the
-  // *next* tick after they occur.
+  // Cadence = 15 s. The whole point of the forecaster's midpoint debias
+  // (restock time estimated as the midpoint of the (pre, post] censoring
+  // window) is that a tighter observation interval shrinks that window —
+  // a refill caught within 15 s is dated to within ±7.5 s of reality
+  // instead of ±2.5 min at the old 5-min cadence. That is the single
+  // biggest lever a staker has on cadence-prediction accuracy.
+  //
+  // Why 15 s is safe:
+  //   - ingest-travel-shop's per-player rate gate is 5 s (migration 027),
+  //     so 15 s clears it with margin (going under 5 s would 429).
+  //   - yata_snapshots dedups to one row per minute (migration 026's
+  //     ON CONFLICT DO NOTHING), so the snapshot table doesn't bloat —
+  //     extra ticks within a minute are silently collapsed. The win is
+  //     restock *detection* latency, not snapshot volume.
+  //
+  // SILENT ticks: at 15 s, repainting the profit overlay and firing
+  // toasts every tick would be intolerable "display churn". Stakeout
+  // ticks therefore call runTravel({ silent: true }) — scrape + ingest
+  // only, no overlay render, no parse panel, no toasts. The initial
+  // landing render (the normal dispatch call) still paints everything;
+  // only the background auto-ticks are quiet.
   //
   // User-facing UI is a small pill fixed to the top-right of the travel
-  // page: [STAKEOUT: OFF] tap-to-enable, [STAKEOUT: ON · next 4:32]
+  // page: [STAKEOUT: OFF] tap-to-enable, [STAKEOUT: ON · next 0:12]
   // tap-to-disable. Setting is persisted in localStorage so it survives
   // page reloads and re-landings.
-  const STAKEOUT_INTERVAL_MS = 5 * 60 * 1000;
+  const STAKEOUT_INTERVAL_MS = 15 * 1000;
   const STAKEOUT_STORAGE_KEY = 'valigia_stakeout_enabled';
 
   const stakeout = {
@@ -3960,7 +3954,7 @@
     } else {
       setStakeoutEnabled(true);
       startStakeoutInterval();
-      toast('Stakeout enabled \u2014 next scrape in 5 min', 'success');
+      toast('Stakeout enabled \u2014 silent rescrape every 15s', 'success');
     }
     updateStakeoutBadge();
   }
@@ -4001,7 +3995,10 @@
     log('stakeout tick');
     stakeout.nextTickAt = Date.now() + STAKEOUT_INTERVAL_MS;
     updateStakeoutBadge();
-    try { await runTravel(); } catch (e) { log('stakeout tick error:', e); }
+    // Silent: scrape + ingest only. No overlay repaint, no toasts — at the
+    // 15 s cadence those would be intolerable display churn. The data path
+    // (abroad_prices upsert → restock/snapshot triggers) is unaffected.
+    try { await runTravel({ silent: true }); } catch (e) { log('stakeout tick error:', e); }
   }
 
   function startStakeoutInterval() {
@@ -5087,7 +5084,12 @@
   const TRAVEL_PHASE_POLL_MS = 300;
 
   // -- Main ----------------------------------------------------------------
-  async function runTravel() {
+  async function runTravel(opts) {
+    // silent: data-only mode used by stakeout auto-ticks (15 s cadence) —
+    // scrape + ingest run, but the overlay repaint, parse panel, and any
+    // toasts are skipped so the page doesn't churn every tick.
+    const silent = !!(opts && opts.silent);
+
     // TEMP DIAGNOSTIC: clear any prior parse-mismatch captures so a fresh
     // scrape replaces a stale panel.
     parseMismatches.length = 0;
@@ -5164,8 +5166,9 @@
     // TEMP DIAGNOSTIC: render any captured parse mismatches as soon as
     // we have rows to show. Fires unconditionally (no DEBUG flag needed)
     // so the user can screenshot it and we can fix the parser from real
-    // DOM. Remove this call once parser is hardened.
-    renderParseMismatchPanel();
+    // DOM. Remove this call once parser is hardened. Skipped on silent
+    // stakeout ticks — no visual churn.
+    if (!silent) renderParseMismatchPanel();
 
     if (DEBUG) {
       const lines = ['destination=' + destination, 'shops=' + shops.length, 'items=' + totalItems, ''];
@@ -5241,7 +5244,10 @@
       }
     }
 
-    const overlayPromise = (async function () {
+    // Silent stakeout ticks skip the overlay entirely: it's a read + repaint
+    // with no data contribution, and at 15 s cadence the repaint is exactly
+    // the "display churn" we're avoiding. The ingest above still runs.
+    const overlayPromise = silent ? Promise.resolve() : (async function () {
       try {
         const [sellPriceMap, restockEventsMap] = await Promise.all([
           fetchSellPrices(itemIds),
