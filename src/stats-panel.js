@@ -376,4 +376,46 @@ export function initStatsPanel() {
   state.panel = panel;
   toggle.addEventListener('click', onToggleClick);
   state.wired = true;
+
+  // Populate the always-visible forecast-accuracy chip in the banner,
+  // independent of whether the user ever expands the full stats panel.
+  // Tapping it opens the panel (where the v1-vs-v2 breakdown lives).
+  const chip = document.getElementById('forecast-accuracy');
+  if (chip) chip.addEventListener('click', () => openPanel());
+  refreshAccuracyChip();
+}
+
+// One-shot background fill of the banner accuracy chip. Reuses the cached
+// stats snapshot, so it doesn't add a fetch if the panel later opens.
+async function refreshAccuracyChip() {
+  const chip = document.getElementById('forecast-accuracy');
+  if (!chip) return;
+  let data;
+  try {
+    data = await fetchStats();
+  } catch (_) {
+    return; // leave the chip hidden on any failure — it's purely additive
+  }
+  const acc = data && data.forecast_accuracy;
+  if (!acc) return;
+  const resolved = Number(acc.n_resolved) || 0;
+  const open = Number(acc.n_open) || 0;
+  let text;
+  if (resolved === 0) {
+    text = open > 0 ? `Forecast: learning (${open})` : 'Forecast: learning';
+  } else {
+    const bias = Number(acc.median_signed_err_min);
+    const biasStr = Number.isFinite(bias) && Math.abs(bias) >= 1
+      ? ` ${bias > 0 ? 'early' : 'late'}`
+      : '';
+    text = `Forecast ±${formatNum(acc.median_abs_err_min)}m${biasStr} (n=${resolved})`;
+  }
+  chip.textContent = text;
+  chip.hidden = false;
+  const sep = document.getElementById('pda-sep-accuracy');
+  if (sep) sep.hidden = false;
+  // The banner may still be hidden if no PDA scouts loaded — reveal it so
+  // the accuracy chip is visible on its own.
+  const banner = document.getElementById('pda-scouts-banner');
+  if (banner) banner.hidden = false;
 }
