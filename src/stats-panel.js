@@ -258,8 +258,29 @@ function renderForecastAccuracy(acc) {
   }
   if (Number.isFinite(Number(p90))) parts.push(`p90 ${formatNum(p90)}m`);
   if (open > 0) parts.push(`${formatInt(open)} pending`);
+
+  const wrap = el('div');
   body.textContent = parts.join(' · ');
-  return body;
+  wrap.appendChild(body);
+
+  // Per-model split (only when more than one model cohort has resolved data
+  // — during a rollout this is the A/B that shows whether the new model
+  // actually beat the old one). Lower median error = better; signed bias
+  // shows directional skew (early vs late).
+  const byModel = Array.isArray(acc?.by_model) ? acc.by_model : [];
+  if (byModel.length > 1) {
+    for (const m of byModel) {
+      const b = Number(m?.median_signed_err_min);
+      const dir = !Number.isFinite(b) ? '' : b > 0 ? ' early' : b < 0 ? ' late' : ' centered';
+      const line = el('div', 'stats-line stats-muted');
+      line.textContent =
+        `${m.model_version}: ±${formatNum(m.median_abs_err_min)}m`
+        + (Number.isFinite(b) ? ` (bias ${formatNum(Math.abs(b))}m${dir})` : '')
+        + ` · n=${formatInt(m.n_resolved)}`;
+      wrap.appendChild(line);
+    }
+  }
+  return wrap;
 }
 
 // One-decimal number for sub-minute error readouts; "—" for non-finite.
