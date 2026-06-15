@@ -183,7 +183,7 @@ function renderCoverage(rows) {
 function renderStatsPanel(panel, data) {
   panel.textContent = '';
 
-  const { contributors, abroad, pools, community, restocks } = data || {};
+  const { contributors, abroad, pools, community, restocks, forecast_accuracy } = data || {};
 
   // Contributors
   const contribBody = el('div', 'stats-line');
@@ -223,6 +223,49 @@ function renderStatsPanel(panel, data) {
   restocksBody.textContent =
     `${formatInt(restocks?.events_7d)} in 7 d · ${cadenceStr}`;
   panel.appendChild(renderSection('RESTOCKS', restocksBody));
+
+  // Forecast accuracy (Phase 0 ground truth). Out-of-sample restock-timing
+  // error over resolved predictions in the last 30 days. Hidden until at
+  // least one prediction has been resolved by a real restock, so a fresh
+  // install doesn't show an empty "—" row that looks broken.
+  panel.appendChild(renderSection('FORECAST ACCURACY (restock timing, 30 d)',
+    renderForecastAccuracy(forecast_accuracy)));
+}
+
+// Render the forecast-accuracy line. Before any prediction has resolved we
+// show how many are still pending so the user knows the harness is live but
+// not yet scored. Once resolutions exist, lead with the median abs error
+// (the headline MAE), then bias and the p90 tail.
+function renderForecastAccuracy(acc) {
+  const body = el('div', 'stats-line');
+  const resolved = Number(acc?.n_resolved) || 0;
+  const open = Number(acc?.n_open) || 0;
+  if (resolved === 0) {
+    body.textContent = open > 0
+      ? `no resolutions yet · ${formatInt(open)} prediction${open === 1 ? '' : 's'} pending`
+      : 'no predictions logged yet';
+    return body;
+  }
+  const mae = acc?.median_abs_err_min;
+  const bias = acc?.median_signed_err_min;
+  const p90 = acc?.p90_abs_err_min;
+  const parts = [`±${formatNum(mae)}m median error (n=${formatInt(resolved)})`];
+  if (Number.isFinite(Number(bias))) {
+    const b = Number(bias);
+    // Positive signed error = predicted too early (restock came later).
+    const dir = b > 0 ? 'early' : b < 0 ? 'late' : 'centered';
+    parts.push(`bias ${formatNum(Math.abs(b))}m ${dir}`);
+  }
+  if (Number.isFinite(Number(p90))) parts.push(`p90 ${formatNum(p90)}m`);
+  if (open > 0) parts.push(`${formatInt(open)} pending`);
+  body.textContent = parts.join(' · ');
+  return body;
+}
+
+// One-decimal number for sub-minute error readouts; "—" for non-finite.
+function formatNum(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? (Math.round(v * 10) / 10).toString() : '—';
 }
 
 function renderError(panel, message) {

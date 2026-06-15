@@ -8,7 +8,7 @@ import { fetchAllSellPrices, refreshSellPrices } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
 import { prescanBazaarPool } from './bazaar-scanner.js';
-import { recordSnapshots, loadForecastData } from './stock-forecast.js';
+import { recordSnapshots, loadForecastData, recordForecastPredictions } from './stock-forecast.js';
 import { mountPdaInstallButton } from './pda-install-modal.js';
 import {
   renderWatchlistTab, invalidateWatchlistCache, getMatchCount,
@@ -416,7 +416,14 @@ async function startDashboard(playerId, playerName) {
   Promise.all([
     recordSnapshots(items),
     loadForecastData(items),
-  ]).then(() => renderTable()).catch((err) => {
+  ]).then(() => {
+    renderTable();
+    // Phase 0 ground truth: log this visit's restock-timing predictions so
+    // the resolver trigger (migration 035) can later score them against
+    // real restocks. Runs after loadForecastData so the caches are warm;
+    // fire-and-forget and throttled, so it never blocks the render.
+    recordForecastPredictions(items);
+  }).catch((err) => {
     // iPad has no DevTools, so a silent catch here would mean an RLS or
     // permissions regression leaves forecasting broken for hours with no
     // visible signal. Surface as a warning — the Travel table still works

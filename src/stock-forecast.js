@@ -65,6 +65,19 @@ const MIN_SPAN_MINS_FOR_OK = 20;
 // tighten the median and unlock higher confidence tiers downstream.
 const MIN_RESTOCK_EVENTS = 2;
 
+// Forecasting model version. Logged with every prediction (migration 035)
+// so resolved-accuracy cohorts stay comparable across model changes — bump
+// this string whenever the depletion or cadence math changes materially.
+const MODEL_VERSION = 'v1';
+
+// Prediction-accuracy logging throttle. recordForecastPredictions() writes
+// at most one batch per browser per interval; the DB additionally dedups
+// across users via a 10-min bucket (migration 035), so this is purely a
+// client-side spend cap, not a correctness requirement. 10 min keeps the
+// log dense enough to score cadence drift without flooding the table.
+const PREDICTION_LOG_KEY = 'valigia_prediction_log_at';
+const PREDICTION_LOG_INTERVAL_MS = 10 * 60 * 1000;
+
 // In-memory caches keyed by `${itemId}|${destination}`.
 // Populated once per page load via loadForecastData().
 const historyCache = new Map();
@@ -854,4 +867,89 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     depletionPerMin: slope,
     nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockIntervalMins, cadenceMAE, restockEventCount,
   };
+}
+
+/**
+ * Phase 0 ground-truth logger. For every (item, destination) we can make a
+ * restock-timing prediction for, write a row into `forecast_predictions`
+ * (migration 035) carrying the absolute predicted restock time, post-restock
+ * qty, depletion slope, and confidence. A DB trigger on restock_events later
+ * resolves each row against the next real restock, stamping the signed error
+ * — that's the out-of-sample accuracy the in-sample MAE can't give us.
+ *
+ * Must run AFTER loadForecastData() so the in-memory caches are populated.
+ * Fire-and-forget: throttled per browser, errors swallowed. Call once per
+ * dashboard load with the merged YATA+scrape item list.
+ *
+ * `predicted_restock_at` is absolute and flight-independent, so we forecast
+ * with arrivalMins=0 — only the flight-agnostic fields are read here.
+ *
+ * @param {Array<{item_id, destination, quantity}>} items
+ */
+export async function recordForecastPredictions(items) {
+  if (!Array.isArray(items) || items.length === 0) return;
+
+  // Per-browser throttle. The DB's 10-min dedup bucket is the real guard
+  // against cross-user duplication; this just avoids re-attempting the
+  // write on every reload within the window.
+  const lastRaw = safeGetItem(PREDICTION_LOG_KEY);
+  const lastAt = lastRaw ? Number(lastRaw) : 0;
+  if (Number.isFinite(lastAt) && Date.now() - lastAt < PREDICTION_LOG_INTERVAL_MS) {
+    return;
+  }
+
+  const nowMs = Date.now();
+  const rows = [];
+  const seen = new Set(); // dedup within this batch (item|destination)
+  for (const it of items) {
+    if (!it.item_id || !it.destination) continue;
+    const key = `${it.item_id}|${it.destination}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // arrivalMins=0: predicted_restock_at, restockQty, depletionPerMin and
+    // restockConfidence are all independent of flight duration.
+    const f = forecastStock(it.item_id, it.destination, 0, it.quantity ?? null);
+    // Only log rows where we actually committed to a restock-timing call —
+    // otherwise there's nothing for the resolver to score.
+    if (f.nextRestockMins == null) continue;
+
+    rows.push({
+      item_id: it.item_id,
+      destination: it.destination,
+      model_version: MODEL_VERSION,
+      predicted_restock_at: new Date(nowMs + f.nextRestockMins * 60_000).toISOString(),
+      predicted_post_qty: f.restockQty ?? null,
+      predicted_depletion_per_min: f.depletionPerMin ?? null,
+      restock_confidence: f.restockConfidence ?? null,
+    });
+  }
+
+  if (rows.length === 0) {
+    // Still stamp the throttle so we don't recompute every reload when the
+    // pool has no predictable shelves yet.
+    safeSetItem(PREDICTION_LOG_KEY, String(nowMs));
+    return;
+  }
+
+  try {
+    // ignoreDuplicates lets the (item, destination, predicted_bucket,
+    // model_version) unique index quietly collapse concurrent writers.
+    const { error } = await supabase
+      .from('forecast_predictions')
+      .upsert(rows, {
+        onConflict: 'item_id,destination,predicted_bucket,model_version',
+        ignoreDuplicates: true,
+      });
+    // Stamp the throttle regardless — a failed write shouldn't make us retry
+    // in a tight reload loop. Accuracy logging is additive, never load-bearing.
+    safeSetItem(PREDICTION_LOG_KEY, String(nowMs));
+    if (error) {
+      // Quietly — this is an observability surface, not user-facing. A
+      // failure just means a thinner accuracy sample, same as pre-Phase-0.
+      return;
+    }
+  } catch {
+    safeSetItem(PREDICTION_LOG_KEY, String(nowMs));
+  }
 }
