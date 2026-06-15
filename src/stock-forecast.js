@@ -65,10 +65,21 @@ const MIN_SPAN_MINS_FOR_OK = 20;
 // tighten the median and unlock higher confidence tiers downstream.
 const MIN_RESTOCK_EVENTS = 2;
 
+// Cap on the inter-restock interval the cadence estimator will trust. A gap
+// wider than this means "nobody observed the shelf for that long", not a
+// real two-hour cadence — counting it would drag the median toward fiction.
+// Mirrors the gap_min <= 120 filter migration 030 applied to the aggregate
+// get_stats_snapshot() RPC; this brings the per-shelf client forecaster in
+// line so the user-facing number matches the community metric.
+const MAX_RESTOCK_GAP_MINS = 120;
+
 // Forecasting model version. Logged with every prediction (migration 035)
-// so resolved-accuracy cohorts stay comparable across model changes — bump
-// this string whenever the depletion or cadence math changes materially.
-const MODEL_VERSION = 'v1';
+// so resolved-accuracy cohorts stay comparable across model changes.
+//   v1 — initial pooled-slope + median-cadence model.
+//   v2 — Phase 1 data quality: backfill excluded + 120-min gap cap in the
+//        cadence calc, and restock times debiased to the (pre, post]
+//        midpoint via migration 036's pre_observed_at.
+const MODEL_VERSION = 'v2';
 
 // Prediction-accuracy logging throttle. recordForecastPredictions() writes
 // at most one batch per browser per interval; the DB additionally dedups
@@ -91,7 +102,10 @@ const restockCache = new Map();
 // band already absorbs that much drift. Bump the version suffix (v1)
 // if the serialised shape ever changes so old blobs deserialise cleanly
 // instead of landing as noise in the fitter.
-const FORECAST_CACHE_KEY = 'valigia_forecast_cache_v1';
+// v2: restock entries gained a `preTime` field and the restock query now
+// excludes backfill rows — bump so pre-deploy v1 blobs (backfill-polluted,
+// no preTime) are discarded instead of feeding the new estimator stale data.
+const FORECAST_CACHE_KEY = 'valigia_forecast_cache_v2';
 const FORECAST_CACHE_TTL_MS = 15 * 60 * 1000;
 
 function cacheKey(itemId, destination) {
@@ -250,6 +264,10 @@ export async function recordSnapshots(items) {
         item_id: row.item_id,
         destination: row.destination,
         restocked_at: nowIso,
+        // Pre-restock observation time (migration 036) — the prior
+        // snapshot's timestamp. Lets the estimator midpoint-debias the
+        // (pre, post] censoring window instead of dating the refill late.
+        pre_observed_at: prev.snapped_at ?? null,
         pre_qty: prev.quantity,
         post_qty: row.quantity,
         source: 'snapshot',
@@ -331,11 +349,16 @@ export async function loadForecastData(items) {
       .gte('snapped_at', snapshotCutoff)
       .order('snapped_at', { ascending: true })
       .then(r => r, e => ({ error: e })),
+    // Exclude the one-time migration 018 backfill: those rows carry
+    // historical YATA sampling gaps, not current scout cadence, and would
+    // pollute the per-shelf median exactly as they did the aggregate before
+    // migration 030 filtered them out.
     supabase
       .from('restock_events')
-      .select('item_id, destination, restocked_at, post_qty')
+      .select('item_id, destination, restocked_at, pre_observed_at, post_qty')
       .in('item_id', itemIds)
       .gte('restocked_at', restockCutoff)
+      .neq('source', 'backfill')
       .order('restocked_at', { ascending: true })
       .then(r => r, e => ({ error: e })),
   ]);
@@ -368,6 +391,10 @@ export async function loadForecastData(items) {
       }
       arr.push({
         atTime: new Date(row.restocked_at).getTime(),
+        // Pre-restock observation time (migration 036). null on legacy rows
+        // → estimator falls back to the raw observation time. Used to
+        // midpoint-debias the censoring interval (pre, post].
+        preTime: row.pre_observed_at ? new Date(row.pre_observed_at).getTime() : null,
         postQty: row.post_qty,
       });
     }
@@ -456,11 +483,28 @@ function computeInSampleMAE(gaps) {
 function estimateNextRestock(events, nowMs) {
   if (!events || events.length < MIN_RESTOCK_EVENTS) return null;
 
-  // Intervals between consecutive restock events, in minutes.
+  // Effective restock time per event. The real refill happened uniformly
+  // somewhere in the censoring window (preTime, atTime]; its midpoint is the
+  // minimum-variance estimate and debiases the "observed late" skew sparse
+  // sampling introduces. Legacy rows with no preTime fall back to the raw
+  // observation time. Guard preTime < atTime so a bad row can't push the
+  // effective time forward.
+  const effTimes = events.map(e =>
+    (e.preTime != null && e.preTime < e.atTime)
+      ? (e.preTime + e.atTime) / 2
+      : e.atTime
+  );
+
+  // Intervals between consecutive effective restock times, in minutes.
+  // Drop non-positive gaps and any gap wider than MAX_RESTOCK_GAP_MINS —
+  // a multi-hour gap is an observation hole, not a real cadence (see the
+  // constant's note re: migration 030).
   const gaps = [];
-  for (let i = 1; i < events.length; i++) {
-    gaps.push((events[i].atTime - events[i - 1].atTime) / 60_000);
+  for (let i = 1; i < effTimes.length; i++) {
+    const g = (effTimes[i] - effTimes[i - 1]) / 60_000;
+    if (g > 0 && g <= MAX_RESTOCK_GAP_MINS) gaps.push(g);
   }
+  if (gaps.length === 0) return null;
   const sortedGaps = gaps.slice().sort((a, b) => a - b);
   const medianInterval = sortedGaps[Math.floor(sortedGaps.length / 2)];
   if (!(medianInterval > 0)) return null;
@@ -468,7 +512,7 @@ function estimateNextRestock(events, nowMs) {
   const postQtys = events.map(e => e.postQty).slice().sort((a, b) => a - b);
   const typicalPostQty = postQtys[Math.floor(postQtys.length / 2)];
 
-  const lastRestockAt = events[events.length - 1].atTime;
+  const lastRestockAt = effTimes[effTimes.length - 1];
   const sinceLastMins = (nowMs - lastRestockAt) / 60_000;
   const timeToNextMins = Math.max(0, medianInterval - sinceLastMins);
 
