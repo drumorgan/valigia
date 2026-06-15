@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.28.0
+// @version      0.29.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.28.0';
+  const SCRIPT_VERSION = '0.29.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1022,10 +1022,22 @@
   // For each row we scraped, compute profit and inject a cell at the end of
   // the row showing margin + profit/hr. Mark the top profit/hr row with a
   // BEST badge and a subtle green highlight.
+  // Remove any cells/classes a previous render left behind so renderOverlay
+  // can be called repeatedly (e.g. a pooled-data first pass followed by a
+  // live-price repaint) without stacking duplicate annotations.
+  function clearOverlayDecorations() {
+    document.querySelectorAll('.valigia-cell').forEach(function (n) { n.remove(); });
+    document.querySelectorAll('.valigia-decorated').forEach(function (n) {
+      n.classList.remove('valigia-decorated');
+      n.classList.remove('valigia-best');
+    });
+  }
+
   function renderOverlay(shops, sellPriceMap, refillEtaMap) {
     if (indicatorsHidden) return { total: 0, withMetrics: 0, best: null };
     if (!(refillEtaMap instanceof Map)) refillEtaMap = new Map();
     injectStyles();
+    clearOverlayDecorations();
 
     // Flatten every scraped item into a row descriptor with a reference to
     // its DOM row container so we can inject directly. We re-walk the same
@@ -2232,6 +2244,133 @@
       return null;
     } catch (e) {
       return null;
+    }
+  }
+
+  // Session cache of live Item Market fetches so a re-render or another
+  // landing inside the window doesn't re-spend Torn API. item_id ->
+  // { price, minPrice, at }.
+  const liveSellCache = new Map();
+  const LIVE_SELL_CACHE_TTL_MS = 30 * 60 * 1000; // 30 min
+  // Refresh a pooled price the overlay already has if it's older than this.
+  // (It still shows the stale number meanwhile — this just queues a refresh.)
+  const LIVE_SELL_STALE_MS = 2 * 60 * 60 * 1000; // 2 h
+  // Hard cap on live fetches per landing so a huge shop can't blow the
+  // 100/min Torn key budget. A travel shop is ~35 items, so this rarely bites.
+  const LIVE_SELL_MAX_FETCH = 45;
+  const LIVE_SELL_CONCURRENCY = 5;
+
+  // Full Item Market listings for an item, reduced to the same two prices
+  // sell_prices stores: min_price = absolute floor (cheapest listing, any
+  // qty) and price = first listing with qty >= 2 (skips single-unit loss-
+  // leaders that would overstate a multi-unit travel run), falling back to
+  // the floor when every listing is a single. Mirrors buildSellPriceRows()
+  // and src/market.js. Returns { price, minPrice, floorQty, listingCount }
+  // or null on any failure.
+  async function fetchLiveItemMarketPrices(itemId) {
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return null;
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: 'https://api.torn.com/market/' + encodeURIComponent(itemId) +
+             '?selections=itemmarket&key=' + encodeURIComponent(TORN_API_KEY),
+        headers: { 'Accept': 'application/json' },
+      });
+      let data = null;
+      try { data = JSON.parse(res.responseText || '{}'); } catch (_) { return null; }
+      if (!data || data.error) return null;
+      const listings = (data.itemmarket && data.itemmarket.listings) || data.itemmarket;
+      if (!Array.isArray(listings) || listings.length === 0) return null;
+      const norm = [];
+      for (const l of listings) {
+        const cost = Number(l.cost != null ? l.cost : l.price);
+        // Quantity field name varies across API shapes (amount / quantity).
+        // Default to 1 so an unknown qty is treated as a single-unit listing.
+        const qtyRaw = l.amount != null ? l.amount : (l.quantity != null ? l.quantity : 1);
+        const qty = Number(qtyRaw);
+        if (Number.isFinite(cost) && cost > 0) {
+          norm.push({ price: cost, qty: Number.isFinite(qty) && qty > 0 ? qty : 1 });
+        }
+      }
+      if (norm.length === 0) return null;
+      norm.sort(function (a, b) { return a.price - b.price; });
+      const minPrice = norm[0].price;
+      let floor = null;
+      for (const l of norm) { if (l.qty >= 2) { floor = l; break; } }
+      if (!floor) floor = norm[0];
+      return { price: floor.price, minPrice: minPrice, floorQty: floor.qty, listingCount: norm.length };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Fill in sell prices the shared pool is missing or stale on by fetching
+  // them live from the Torn Item Market, painting them into sellPriceMap,
+  // and upserting them back into sell_prices so every other Valigia user
+  // benefits. Bounded: session-cached, capped at LIVE_SELL_MAX_FETCH, and
+  // run with limited concurrency. Best-effort — a failed fetch just leaves
+  // that row without a price, exactly as before. Mutates sellPriceMap.
+  async function enrichSellPricesLive(itemIds, sellPriceMap) {
+    if (indicatorsHidden) return; // silent mode paints nothing; don't spend API
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return;
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return;
+
+    const now = Date.now();
+    const todo = [];
+    for (const id of itemIds) {
+      // Reuse a fresh session-cached live value without re-spending API.
+      const cached = liveSellCache.get(id);
+      if (cached && (now - cached.at) < LIVE_SELL_CACHE_TTL_MS) {
+        if (!sellPriceMap.has(id)) {
+          sellPriceMap.set(id, {
+            price: cached.price,
+            minPrice: cached.minPrice,
+            updatedAt: new Date(cached.at).toISOString(),
+          });
+        }
+        continue;
+      }
+      const pooled = sellPriceMap.get(id);
+      const stale = pooled && pooled.updatedAt
+        && (now - new Date(pooled.updatedAt).getTime()) > LIVE_SELL_STALE_MS;
+      if (!pooled || stale) todo.push(id);
+    }
+    if (todo.length === 0) return;
+
+    const batch = todo.slice(0, LIVE_SELL_MAX_FETCH);
+    const fetched = [];
+    let idx = 0;
+    async function worker() {
+      while (idx < batch.length) {
+        const id = batch[idx++];
+        const r = await fetchLiveItemMarketPrices(id);
+        if (!r) continue;
+        const at = Date.now();
+        liveSellCache.set(id, { price: r.price, minPrice: r.minPrice, at: at });
+        sellPriceMap.set(id, {
+          price: r.price,
+          minPrice: r.minPrice,
+          updatedAt: new Date(at).toISOString(),
+        });
+        fetched.push({
+          item_id: id,
+          price: r.price,
+          min_price: r.minPrice,
+          floor_qty: r.floorQty,
+          listing_count: r.listingCount,
+        });
+      }
+    }
+    const workers = [];
+    const n = Math.min(LIVE_SELL_CONCURRENCY, batch.length);
+    for (let i = 0; i < n; i++) workers.push(worker());
+    await Promise.all(workers);
+
+    // Densify the shared pool. Same canonical path the Item Market runner
+    // uses (rate-limited + key-validated edge function). Fire-and-forget.
+    if (fetched.length > 0) {
+      try { await postIngestRows(INGEST_SELL_URL, fetched); }
+      catch (e) { log('live sell-price upsert failed:', e); }
     }
   }
 
@@ -5294,6 +5433,18 @@
           const etaMins = estimateRefillMins(events, nowMs);
           if (etaMins != null) refillEtaMap.set(itemId, etaMins);
         }
+        // First pass: paint whatever the shared pool already has so the
+        // overlay appears immediately rather than waiting on live fetches.
+        renderOverlay(shops, sellPriceMap, refillEtaMap);
+        // Live-fill: the pool only covers items someone has already scraped
+        // into sell_prices, so most abroad rows (weapons, tools, country-
+        // specific artifacts) show no margin. Fetch the current Item Market
+        // price for everything the pool is missing/stale on, then upsert it
+        // back so the shared pool's coverage improves for everyone. Mutates
+        // sellPriceMap; throttled + session-cached (~one Torn API burst per
+        // landing).
+        await enrichSellPricesLive(itemIds, sellPriceMap);
+        // Second pass: repaint with the freshly-filled prices.
         const stats = renderOverlay(shops, sellPriceMap, refillEtaMap);
         if (DEBUG) {
           const bestLine = stats.best
