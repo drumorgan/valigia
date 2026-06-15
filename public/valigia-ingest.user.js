@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.27.0
+// @version      0.28.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.27.0';
+  const SCRIPT_VERSION = '0.28.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -185,6 +185,7 @@
   // ASCII for the FTP deploy.
   const CITY_TO_DESTINATION = {
     'Ciudad Ju\u00E1rez': 'Mexico',
+    'Ciudad Juarez': 'Mexico',
     'Mexico': 'Mexico',
     'George Town': 'Caymans',
     'Cayman Islands': 'Caymans',
@@ -208,6 +209,36 @@
     'Johannesburg': 'South Africa',
     'South Africa': 'South Africa',
   };
+
+  // Strip diacritics so "Ciudad Ju\u00E1rez" and "Ciudad Juarez" (Torn renders
+  // the latter, the accented form was the live-observation guess) resolve
+  // identically. NFD splits accented chars into base + combining mark, then
+  // we drop the marks. Wrapped in try/catch because String.normalize is
+  // absent on ancient engines \u2014 PDA's webview has it, but failing soft to
+  // the raw string is harmless.
+  function stripDiacritics(s) {
+    try { return String(s).normalize('NFD').replace(/[\u0300-\u036F]/g, ''); }
+    catch (e) { return String(s); }
+  }
+
+  // Accent- and case-insensitive index of CITY_TO_DESTINATION, built once.
+  const CITY_TO_DESTINATION_NORM = (function () {
+    const idx = {};
+    for (const key in CITY_TO_DESTINATION) {
+      idx[stripDiacritics(key).toLowerCase()] = CITY_TO_DESTINATION[key];
+    }
+    return idx;
+  })();
+
+  // Resolve a banner city name to a canonical destination. Tries the exact
+  // map first (fast path), then the accent/case-normalized index, then falls
+  // back to the raw city so an unmapped name at least flows through (and
+  // shows up in the "no rows" log) instead of silently becoming undefined.
+  function resolveCityToDestination(city) {
+    if (CITY_TO_DESTINATION[city]) return CITY_TO_DESTINATION[city];
+    const norm = CITY_TO_DESTINATION_NORM[stripDiacritics(city).toLowerCase()];
+    return norm || city;
+  }
 
   // In-flight banner reads: "Torn to {City}. Remaining Flight Time - HH:MM:SS"
   // (or the inverse "{City} to Torn..." when returning home — we only show
@@ -235,13 +266,13 @@
     let m = body.match(/Torn to ([^.]+?)\.\s*Remaining Flight Time/);
     if (m) {
       const city = m[1].trim();
-      const dest = CITY_TO_DESTINATION[city] || city;
+      const dest = resolveCityToDestination(city);
       return { destination: dest, returning: false, remainingMins: remainingMins };
     }
     m = body.match(/([^.]+?) to Torn\.\s*Remaining Flight Time/);
     if (m) {
       const city = m[1].trim();
-      const dest = CITY_TO_DESTINATION[city] || city;
+      const dest = resolveCityToDestination(city);
       return { destination: dest, returning: true, remainingMins: remainingMins };
     }
     return null;
