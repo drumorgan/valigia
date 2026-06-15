@@ -435,6 +435,12 @@ async function startDashboard(playerId, playerName) {
     );
   });
 
+  // Phase 2 densification: keep re-polling YATA while this tab stays open so
+  // the shared snapshot/restock history gets fresh samples every few minutes
+  // across every destination — not just the one a PDA staker is sitting in.
+  // Idempotent; the initial fetch above already seeded this visit.
+  startAbroadRepoll();
+
   // Fetch live sell prices for every abroad item AND every watchlisted
   // item. Two separate calls because their staleness budgets differ: the
   // Travel table's profit math is fine with a 4-hour-old floor (abroad
@@ -629,6 +635,77 @@ function showTabNav() {
 function hideTabNav() {
   if (tabNav) tabNav.hidden = true;
   currentTab = 'travel';
+}
+
+// ── Phase 2: keep abroad data fresh while the dashboard tab is open ────
+// A depletion slope and a restock cadence are only as good as the sampling
+// density behind them, and YATA publishes new readings every few minutes.
+// On first load we fetch YATA once; this re-polls it on an interval while
+// the tab is visible and feeds each reading back into recordSnapshots(),
+// densifying the shared history for every destination. CORS-free and
+// key-free, so it costs the user nothing but a small background fetch.
+//
+// Deliberately YATA-only: the rate-limited Torn sell-price sweep is NOT
+// repeated. Sell floors move slowly and re-spending the key budget every
+// few minutes isn't worth it.
+const ABROAD_REPOLL_INTERVAL_MS = 2 * 60 * 1000; // 2 min
+let abroadRepollTimer = null;
+let abroadRepollVisWired = false;
+
+async function repollAbroadPrices() {
+  // Skip when the tab is backgrounded — no point spending YATA requests on
+  // a tab nobody's looking at; the visibilitychange handler catches us up
+  // on return.
+  if (typeof document !== 'undefined' && document.hidden) return;
+
+  let priceResult;
+  try {
+    priceResult = await fetchAbroadPrices();
+  } catch {
+    return; // transient YATA/network blip — try again next tick
+  }
+  if (!priceResult || !Array.isArray(priceResult.items) || priceResult.items.length === 0) return;
+
+  // YATA fell back to its own offline cache → identical data we already
+  // have. recordSnapshots would dedup it to nothing and a re-render would
+  // be pure churn, so skip entirely.
+  if (priceResult.cached) return;
+
+  const { items } = priceResult;
+  yataFetchedAt = Date.now();
+
+  // Keep the known-items set and the watchlist matcher's abroad lookup
+  // current regardless of which tab is showing.
+  setKnownItems(items);
+  setAbroadSnapshot(items);
+
+  // The actual densification. Fire-and-forget — same path as the initial
+  // load, with the same minute-dedup + change-only write semantics, so a
+  // stable shelf writes nothing and a moved one contributes a sample (and
+  // a restock_event on a positive delta).
+  recordSnapshots(items);
+
+  // Only repaint the Travel table when it's actually on screen. A full
+  // rebuild resets scroll, so we save and restore the window position to
+  // keep the user's place. Other tabs refresh their Travel view on switch.
+  if (currentTab === 'travel') {
+    const scrollY = typeof window !== 'undefined' ? window.scrollY : 0;
+    renderTable();
+    if (typeof window !== 'undefined' && scrollY) window.scrollTo(0, scrollY);
+  }
+}
+
+function startAbroadRepoll() {
+  if (abroadRepollTimer) return; // already running — keep one timer
+  abroadRepollTimer = setInterval(repollAbroadPrices, ABROAD_REPOLL_INTERVAL_MS);
+  if (!abroadRepollVisWired && typeof document !== 'undefined') {
+    abroadRepollVisWired = true;
+    // Catch up the moment the user returns to a tab that's been hidden,
+    // rather than waiting up to a full interval for fresh data.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) repollAbroadPrices();
+    });
+  }
 }
 
 async function switchTab(nextTab) {
