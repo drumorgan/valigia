@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.30.0
+// @version      0.31.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.30.0';
+  const SCRIPT_VERSION = '0.31.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5305,6 +5305,71 @@
     document.querySelectorAll('#' + INFLIGHT_BAR_ID).forEach(function (n) { n.remove(); });
   }
 
+  // -- Picker: selected-country detail ------------------------------------
+  // On the home travel map, tapping a country populates a footer that reads
+  // "{Country} - {City}  Flight Time - HH:MM  Price ...  TRAVEL". We detect
+  // that selection and reuse injectInFlightStrip() to show the chosen
+  // country's per-item picture (current stock + arrival projection + margin)
+  // before the player commits. Best-effort and silent on any miss.
+  let pickerSelectionObserver = null;
+  let pickerLastSelectedDest = null;
+
+  // Parse the selected destination + flight time from the footer. Returns
+  // { destination, flightMins } or null when nothing is selected yet
+  // ("Please choose a destination" shows no "Flight Time -").
+  function detectSelectedDestination() {
+    const body = document.body ? document.body.innerText : '';
+    if (!body || !/Flight Time\s*-/i.test(body)) return null;
+    // "{Country} - {City}" sits just before "Flight Time - HH:MM". The
+    // country/city groups stay on one line (no newline in the class); the
+    // [\s\S]{0,20}? gap tolerates the airplane glyph / column separators
+    // Torn renders between "{City}" and "Flight Time".
+    const m = body.match(/([A-Za-z][A-Za-z .'-]*?)\s*-\s*[A-Za-z][A-Za-z .'-]*?[\s\S]{0,20}?Flight Time\s*-\s*(\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    const dest = resolveCityToDestination(m[1].trim());
+    if (!dest || !FLIGHT_MINS[dest]) return null;
+    const mins = Number(m[2]) * 60 + Number(m[3]);
+    return {
+      destination: dest,
+      flightMins: Number.isFinite(mins) && mins > 0 ? mins : FLIGHT_MINS[dest],
+    };
+  }
+
+  // Install a debounced observer that reacts to country selection on the
+  // picker. Idempotent — only one observer per page. The "destination
+  // changed" guard makes re-injecting the strip (which itself mutates the
+  // DOM) a no-op, so there's no feedback loop.
+  function watchPickerSelection() {
+    if (pickerSelectionObserver) return;
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    if (!host) return;
+    let timer = null;
+    function evaluate() {
+      timer = null;
+      const sel = detectSelectedDestination();
+      const dest = sel ? sel.destination : null;
+      if (dest === pickerLastSelectedDest) return; // unchanged → no churn
+      pickerLastSelectedDest = dest;
+      if (dest) {
+        injectInFlightStrip(sel.destination, sel.flightMins);
+      } else {
+        document.querySelectorAll('#' + INFLIGHT_BAR_ID).forEach(function (n) { n.remove(); });
+      }
+    }
+    const onChange = function () {
+      if (timer) return;
+      timer = setTimeout(evaluate, 350);
+    };
+    pickerSelectionObserver = new MutationObserver(onChange);
+    pickerSelectionObserver.observe(host, { childList: true, subtree: true, characterData: true });
+    // Handle a country already selected when the script first runs.
+    evaluate();
+  }
+
   // How long to wait for a definitive flight/abroad marker before concluding
   // the player is on the home destination picker. Torn hydrates the flight
   // banner ("Remaining Flight Time") and abroad marker ("You are in X") a
@@ -5366,6 +5431,12 @@
       log('No flight banner or "You are in X" marker - home travel screen, showing best-run board.');
       removeTravelBars();
       try { await injectBestRunBar(); } catch (e) { log('bestrun error', e); }
+      // Tapping a country populates Torn's footer with the selected
+      // destination + flight time. Watch for that and show the chosen
+      // country's per-item strip (current stock + arrival projection +
+      // margins) so the player can judge before tapping TRAVEL. Skipped in
+      // silent mode (injectInFlightStrip self-guards on indicatorsHidden too).
+      if (!silent) watchPickerSelection();
       return;
     }
 
