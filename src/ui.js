@@ -442,7 +442,7 @@ function renderShelfDynamics(forecast, etaLineHtml) {
       && !etaLineHtml.includes('empty ~')) {
     const rate = -forecast.depletionPerMin;
     const rateStr = rate >= 1 ? Math.round(rate) : rate.toFixed(1);
-    parts.push(`<span class="shelf-rate" title="Pooled steady-state depletion rate across observed cycles (${forecast.confidence} conf)">−${rateStr}/min</span>`);
+    parts.push(`<span class="shelf-rate" title="Depletion rate: pooled steady-state units sold per minute across observed cycles (${forecast.confidence} conf)">sells ~${rateStr}/min</span>`);
   }
 
   if (forecast.restockIntervalMins != null
@@ -458,6 +458,29 @@ function renderShelfDynamics(forecast, etaLineHtml) {
 
   if (parts.length === 0) return '';
   return `<div class="shelf-dynamics">${parts.join(' · ')}</div>`;
+}
+
+// Always-on refill status. Guarantees every row says SOMETHING about the
+// next restock, even when we lack a confident cadence — so a blank cell
+// never reads as "no feature". Suppressed only when the etaLine or
+// shelf-dynamics already carry committed restock/refill/leave-in copy
+// (avoids two lines about the same thing).
+function renderRefillStatus(forecast, etaLineHtml, dynamicsHtml) {
+  const combined = `${etaLineHtml} ${dynamicsHtml}`;
+  if (/restock |leave in|refill ~|cadence forming/.test(combined)) return '';
+  const count = forecast?.restockEventCount ?? 0;
+  // Median interval known but confidence too low for the committed line:
+  // show it as a rough hint so the number isn't hidden entirely.
+  if (forecast.restockIntervalMins != null && count > 0) {
+    const m = forecast.restockIntervalMins;
+    const label = m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ' ' + (m % 60) + 'm' : ''}`;
+    return `<div class="shelf-dynamics"><span class="stock-eta__learning" title="${count} restock obs in 30d — rough estimate, low confidence">refill ~${label}? (${count} obs)</span></div>`;
+  }
+  const label = count > 0 ? `refill: forming (${count} obs)` : 'refill: no data yet';
+  const title = count > 0
+    ? `${count} restock observation${count === 1 ? '' : 's'} in 30 days — need a tighter sample for an ETA`
+    : 'No restock observations yet — fills in as PDA scrapes accumulate';
+  return `<div class="shelf-dynamics"><span class="stock-eta__learning" title="${title}">${label}</span></div>`;
 }
 
 function renderStockCell(row) {
@@ -607,10 +630,21 @@ function renderStockCell(row) {
     etaLine = `<span class="stock-eta ${confClass}" title="${confTitle}">ETA ${Number(eta).toLocaleString('en-US')}</span>`;
   }
 
+  // Source chip: "Now" comes from a fresh first-party PDA scrape (LIVE) or
+  // the YATA community feed. The ETA line below is Valigia's own forecast —
+  // so the cell reads YATA/LIVE current stock → Valigia projected stock.
+  const isScrape = row.priceSource === 'scrape';
+  const srcTag = isScrape ? 'LIVE' : 'YATA';
+  const srcTitle = isScrape
+    ? 'Current stock from a fresh first-party PDA scrape (<10 min). ETA below is Valigia’s arrival-time forecast.'
+    : 'Current stock from the YATA community feed. ETA below is Valigia’s arrival-time forecast.';
+  const dynamics = renderShelfDynamics(f, etaLine);
+
   return `
-    <span class="stock-now">Now ${Number(now).toLocaleString('en-US')}</span>
+    <span class="stock-now">Now ${Number(now).toLocaleString('en-US')} <em class="stock-src stock-src--${isScrape ? 'live' : 'yata'}" title="${srcTitle}">${srcTag}</em></span>
     ${etaLine}
-    ${renderShelfDynamics(f, etaLine)}
+    ${dynamics}
+    ${renderRefillStatus(f, etaLine, dynamics)}
   `;
 }
 
