@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.33.0
+// @version      0.34.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.31.0';
+  const SCRIPT_VERSION = '0.34.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5263,7 +5263,7 @@
 
     const bar = document.createElement('div');
     bar.id = COUNTRY_DETAIL_BAR_ID;
-    bar.classList.add('vgl-cd-open');
+    // Collapsed by default — tap the header to expand (per user request).
 
     const head = document.createElement('div');
     head.className = 'vgl-cd-head';
@@ -5275,7 +5275,7 @@
     destEl.textContent = destination;
     const caret = document.createElement('span');
     caret.className = 'vgl-cd-caret';
-    caret.textContent = '▾';
+    caret.textContent = '\u25BE';
     head.appendChild(label);
     head.appendChild(destEl);
     head.appendChild(caret);
@@ -5305,9 +5305,8 @@
   function buildBestRunBar(runs) {
     const bar = document.createElement('div');
     bar.id = BESTRUN_BAR_ID;
-    // Open by default so stock + refill ETA for every destination is visible
-    // at decision time without an extra tap. Header still toggles it closed.
-    bar.classList.add('vgl-br-open');
+    // Collapsed by default — tap the header to expand. Keeps the travel
+    // page uncluttered (per user request).
 
     const head = document.createElement('div');
     head.className = 'vgl-br-head';
@@ -5321,7 +5320,7 @@
     const top = runs[0];
     // Arrow (U+2192) and middle dot (U+00B7) escaped to survive the FTP
     // latin-1 mangle, matching the in-flight strip's convention.
-    pick.textContent = top.name + ' → ' + top.destination;
+    pick.textContent = top.name + ' \u2192 ' + top.destination;
 
     const rate = document.createElement('span');
     rate.className = 'vgl-br-rate';
@@ -5329,7 +5328,7 @@
 
     const caret = document.createElement('span');
     caret.className = 'vgl-br-caret';
-    caret.textContent = '▾';
+    caret.textContent = '\u25BE';
 
     head.appendChild(label);
     head.appendChild(pick);
@@ -5355,7 +5354,7 @@
       const stockStr = (r.stock != null && Number.isFinite(Number(r.stock)))
         ? Number(r.stock).toLocaleString('en-US')
         : '?';
-      dest.textContent = r.destination + ' · ' + stockStr + ' stk';
+      dest.textContent = r.destination + ' \u00B7 ' + stockStr + ' stk';
       if (r.stockLimited) dest.classList.add('vgl-br-dest--limited');
 
       const refill = document.createElement('span');
@@ -5370,7 +5369,7 @@
         refill.textContent = formatRefillEta(r.restockMins);
         refill.title = 'Estimated time to next restock';
       } else {
-        refill.textContent = 'refill —';
+        refill.textContent = 'refill \u2014';
         refill.classList.add('vgl-br-refill--none');
         refill.title = 'Not enough restock history yet';
       }
@@ -5599,18 +5598,17 @@
       if (dest === pickerLastSelectedDest) return; // unchanged → no churn
       pickerLastSelectedDest = dest;
       if (dest) {
-        // Tapped a country: show that destination's full item list (stock /
-        // price / depletion / restock) and hide the all-countries board so
-        // the chosen country is the only thing on screen.
+        // Tapped a country: show that destination's full item list and hide
+        // the all-countries board so the chosen country is the only thing on
+        // screen.
         const board = document.getElementById(BESTRUN_BAR_ID);
         if (board) board.style.display = 'none';
         injectCountryDetailBar(dest);
-      } else {
-        // Deselected: drop the detail bar and restore the board.
-        document.querySelectorAll('#' + COUNTRY_DETAIL_BAR_ID).forEach(function (n) { n.remove(); });
-        const board = document.getElementById(BESTRUN_BAR_ID);
-        if (board) board.style.display = '';
       }
+      // Deliberately do nothing when the selection clears: tapping Travel to
+      // fly briefly drops the footer selection, and flipping back to the Best
+      // Run board right before takeoff is just noise. The detail bar persists;
+      // a phase change (flight/return) clears it via removeTravelBars().
     }
     const onChange = function () {
       if (timer) return;
