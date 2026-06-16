@@ -54,6 +54,14 @@ const PRUNE_OLDER_THAN_MINS = 48 * 60;
 // the row is recorded fresh — exactly what we want.
 const LATEST_LOOKBACK_MINS = 120;
 
+// Transient-failure retry for the YATA fetch (see fetchYataRows).
+const YATA_FETCH_ATTEMPTS = 3;
+const YATA_BACKOFF_MS = [500, 1500];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 interface YataRow {
   item_id: number;
   destination: string;
@@ -62,9 +70,35 @@ interface YataRow {
 }
 
 async function fetchYataRows(): Promise<YataRow[]> {
-  const res = await fetch(YATA_EXPORT_URL, { headers: { Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`yata_http_${res.status}`);
-  const data = await res.json();
+  // YATA's export occasionally returns a transient 5xx or drops the
+  // connection. Retry a couple of times with short backoff, and send a
+  // browser User-Agent (some tiers reject UA-less requests). A persistent
+  // failure still throws → the caller returns 502 and the next 5-min tick
+  // recovers, so a bad moment costs at most one skipped sample.
+  // deno-lint-ignore no-explicit-any
+  let data: any = null;
+  let lastErr = 'unknown';
+  for (let attempt = 0; attempt < YATA_FETCH_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(YATA_EXPORT_URL, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+        },
+      });
+      if (res.ok) {
+        data = await res.json();
+        break;
+      }
+      lastErr = `yata_http_${res.status}`;
+    } catch (err) {
+      lastErr = (err as Error).message;
+    }
+    if (attempt < YATA_FETCH_ATTEMPTS - 1) await sleep(YATA_BACKOFF_MS[attempt]);
+  }
+  if (data == null) throw new Error(lastErr);
+
   const countries = data?.stocks || data || {};
   const out: YataRow[] = [];
   for (const code of Object.keys(countries)) {
