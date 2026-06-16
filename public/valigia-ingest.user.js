@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.31.0
+// @version      0.31.1
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -5128,7 +5128,13 @@
       // dash when we don't have enough cadence history yet.
       const refill = document.createElement('span');
       refill.className = 'vgl-br-refill';
-      if (r.restockMins != null && Number.isFinite(Number(r.restockMins))) {
+      // Refill timing is only shown on stock-limited shelves (see idsByDest
+      // filter above). On a deep shelf the column stays present but empty so
+      // the 5-col grid alignment holds \u2014 no misleading "refill imminent" on a
+      // full shelf whose cadence estimate has merely gone stale.
+      if (!r.stockLimited) {
+        refill.classList.add('vgl-br-refill--none');
+      } else if (r.restockMins != null && Number.isFinite(Number(r.restockMins))) {
         refill.textContent = formatRefillEta(r.restockMins);
         refill.title = 'Estimated time to next restock';
       } else {
@@ -5257,8 +5263,13 @@
     // destination, so we group the picks and fire one GET per destination).
     // Best-effort: a row with too little cadence history just shows no ETA.
     const nowMs = Date.now();
+    // Only thin (stock-limited) shelves get a refill ETA — that's the only
+    // case where waiting for a top-up is actionable. Deep shelves are bought
+    // now, so skip their reads entirely (also avoids surfacing a stale-cadence
+    // "refill imminent" on a shelf that's actually full).
     const idsByDest = new Map();
     for (const r of ranked) {
+      if (!r.stockLimited) continue;
       let arr = idsByDest.get(r.destination);
       if (!arr) { arr = []; idsByDest.set(r.destination, arr); }
       arr.push(r.itemId);
