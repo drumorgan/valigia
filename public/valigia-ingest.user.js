@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.31.1
+// @version      0.32.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -5061,11 +5061,171 @@
       '#' + BESTRUN_BAR_ID + ' .vgl-br-refill--none { color: #5a6070; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-run { color: #c8cdd8; white-space: nowrap; text-align: right; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-hr { color: #e8c84a; font-weight: 700; white-space: nowrap; text-align: right; }',
+      // Country picker in the header. Flex-grows to fill the space the
+      // collapsed headline used to take. Dark to match the cargo terminal.
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-select {',
+      '  flex: 1 1 auto; min-width: 0; max-width: 100%;',
+      '  background: #0d0f14; color: #c8cdd8; border: 1px solid #252a35;',
+      '  border-radius: 3px; font-size: 12px; font-family: inherit;',
+      '  padding: 2px 4px;',
+      '}',
+      // Country-detail row cells. Price (gold), depletion (muted), restock
+      // reuses .vgl-br-refill (green). Same 5-col grid as the best-run rows.
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-price { color: #e8c84a; white-space: nowrap; text-align: right; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-depl { color: #8a8fa0; font-size: 11px; white-space: nowrap; text-align: right; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-detail-msg { color: #8a8fa0; font-size: 12px; padding: 6px 8px; }',
     ].join('\n');
     const style = document.createElement('style');
     style.id = 'valigia-bestrun-styles';
     style.textContent = css;
     document.head.appendChild(style);
+  }
+
+  // localStorage-persisted country-view selection. Empty string = "Top
+  // picks" (the cross-country best-run ranking); any other value is a single
+  // destination whose full item list is shown instead.
+  const COUNTRY_VIEW_KEY = 'valigia_pda_country_view';
+  function getCountryView() {
+    try { return localStorage.getItem(COUNTRY_VIEW_KEY) || ''; }
+    catch (e) { return ''; }
+  }
+  function setCountryView(v) {
+    try {
+      if (v) localStorage.setItem(COUNTRY_VIEW_KEY, v);
+      else localStorage.removeItem(COUNTRY_VIEW_KEY);
+    } catch (e) { /* private mode \u2014 selection just won't persist */ }
+  }
+
+  // Per-country detail list. Answers "should I fly here?": every item the
+  // country stocks, with current stock, price, depletion rate, and \u2014 the key
+  // bit \u2014 the next restock ETA for items that are out of stock right now.
+  // Deliberately NO profit math or ranking: this is an "is my item here /
+  // when will it be / how much" lookup, not a best-run board.
+  async function renderCountryDetail(destination, body, generation) {
+    body.textContent = '';
+    const loading = document.createElement('div');
+    loading.className = 'vgl-br-detail-msg';
+    loading.textContent = 'Loading ' + destination + '\u2026';
+    body.appendChild(loading);
+
+    const [yataRows, scoutMap] = await Promise.all([
+      fetchYataForDestination(destination),
+      fetchAbroadScrapes(destination),
+    ]);
+    if (generation !== bestRunGeneration) return;
+
+    // Merge YATA with fresh first-party scrapes (scout stock/price wins).
+    // Scout-only items (a shelf YATA hasn't picked up) are appended after.
+    const merged = [];
+    const seen = new Set();
+    for (const y of yataRows) {
+      const s = scoutMap.get(y.item_id);
+      merged.push({
+        item_id: y.item_id,
+        name: (s && s.name) || y.name,
+        buy_price: (s && Number.isFinite(s.buy_price)) ? s.buy_price : y.buy_price,
+        stock: (s && s.stock != null) ? s.stock : y.stock,
+      });
+      seen.add(y.item_id);
+    }
+    for (const [itemId, s] of scoutMap) {
+      if (seen.has(itemId)) continue;
+      merged.push({ item_id: itemId, name: s.name, buy_price: s.buy_price, stock: s.stock });
+    }
+
+    if (merged.length === 0) {
+      body.textContent = '';
+      const msg = document.createElement('div');
+      msg.className = 'vgl-br-detail-msg';
+      msg.textContent = 'No data for ' + destination + ' yet.';
+      body.appendChild(msg);
+      return;
+    }
+
+    const itemIds = merged.map(function (r) { return r.item_id; });
+    const [snapshotsMap, restockMap] = await Promise.all([
+      fetchYataSnapshots(itemIds, destination),
+      fetchRestockEvents(itemIds, destination),
+    ]);
+    if (generation !== bestRunGeneration) return;
+
+    const slots = getSlotCount();
+    const nowMs = Date.now();
+    // Alphabetical so a player can scan for one specific item rather than
+    // hunting through a profit ranking.
+    merged.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+
+    body.textContent = '';
+    for (const r of merged) {
+      const row = document.createElement('div');
+      row.className = 'vgl-br-row';
+
+      const name = document.createElement('span');
+      name.className = 'vgl-br-name';
+      name.textContent = r.name;
+
+      const stockNum = Number(r.stock);
+      const hasStock = Number.isFinite(stockNum) && stockNum > 0;
+      const stockLimited = Number.isFinite(stockNum) && stockNum < slots;
+
+      const stock = document.createElement('span');
+      stock.className = 'vgl-br-dest';
+      if (!Number.isFinite(stockNum)) {
+        stock.textContent = '? stk';
+      } else if (stockNum <= 0) {
+        stock.textContent = 'empty';
+        stock.classList.add('vgl-br-dest--limited');
+      } else {
+        stock.textContent = stockNum.toLocaleString('en-US') + ' stk';
+        if (stockLimited) stock.classList.add('vgl-br-dest--limited');
+      }
+
+      const price = document.createElement('span');
+      price.className = 'vgl-br-price';
+      price.textContent = (Number.isFinite(r.buy_price) && r.buy_price > 0)
+        ? formatMoneyCompact(r.buy_price)
+        : '\u2014';
+
+      const depl = document.createElement('span');
+      depl.className = 'vgl-br-depl';
+      const slope = depletionRatePerMin(snapshotsMap.get(r.item_id));
+      if (slope != null && slope < 0) {
+        const rate = -slope;
+        depl.textContent = 'sells ~' + (rate >= 1 ? Math.round(rate) : rate.toFixed(1)) + '/min';
+        depl.title = 'Observed depletion rate';
+      } else {
+        depl.textContent = '\u2014';
+        depl.title = 'No depletion data yet';
+      }
+
+      // Restock ETA only matters when the shelf is empty/thin \u2014 that's the
+      // "when will it be there if it isn't now" answer. Deep shelves show
+      // "in stock" rather than a stale-cadence ETA (same honesty rule as the
+      // best-run rows).
+      const refill = document.createElement('span');
+      refill.className = 'vgl-br-refill';
+      if (hasStock && !stockLimited) {
+        refill.textContent = 'in stock';
+        refill.classList.add('vgl-br-refill--none');
+      } else {
+        const eta = formatRefillEta(estimateRefillMins(restockMap.get(r.item_id), nowMs));
+        if (eta) {
+          refill.textContent = eta;
+          refill.title = 'Estimated time to next restock';
+        } else {
+          refill.textContent = hasStock ? 'low' : 'no ETA';
+          refill.classList.add('vgl-br-refill--none');
+          refill.title = 'Not enough restock history yet';
+        }
+      }
+
+      row.appendChild(name);
+      row.appendChild(stock);
+      row.appendChild(price);
+      row.appendChild(depl);
+      row.appendChild(refill);
+      body.appendChild(row);
+    }
   }
 
   function buildBestRunBar(runs) {
@@ -5080,90 +5240,122 @@
 
     const label = document.createElement('span');
     label.className = 'vgl-br-label';
-    label.textContent = 'Best Run';
+    label.textContent = 'Travel';
 
-    const pick = document.createElement('span');
-    pick.className = 'vgl-br-pick';
-    const top = runs[0];
-    // Arrow (U+2192) and middle dot (U+00B7) escaped to survive the FTP
-    // latin-1 mangle, matching the in-flight strip's convention.
-    pick.textContent = top.name + ' \u2192 ' + top.destination;
+    // Country picker: "Top picks" keeps the cross-country best-run ranking;
+    // selecting a destination swaps the body to that country's full item list.
+    const select = document.createElement('select');
+    select.className = 'vgl-br-select';
+    const topOpt = document.createElement('option');
+    topOpt.value = '';
+    topOpt.textContent = 'Top picks (all countries)';
+    select.appendChild(topOpt);
+    // Every travel destination, not just the profit-ranked ones — a player
+    // may want to check a country that currently has no arbitrage at all.
+    const dests = Array.from(new Set(Object.values(YATA_COUNTRY_MAP)))
+      .sort(function (a, b) { return String(a).localeCompare(String(b)); });
+    for (const d of dests) {
+      const o = document.createElement('option');
+      o.value = d;
+      o.textContent = d;
+      select.appendChild(o);
+    }
+    const saved = getCountryView();
+    if (saved && dests.indexOf(saved) !== -1) select.value = saved;
+    // Interacting with the select must not toggle the panel open/closed.
+    select.addEventListener('click', function (e) { e.stopPropagation(); });
 
     const rate = document.createElement('span');
     rate.className = 'vgl-br-rate';
-    rate.textContent = formatMoneyCompact(top.profitPerHour) + '/hr';
 
     const caret = document.createElement('span');
     caret.className = 'vgl-br-caret';
     caret.textContent = '\u25BE';
 
     head.appendChild(label);
-    head.appendChild(pick);
+    head.appendChild(select);
     head.appendChild(rate);
     head.appendChild(caret);
     bar.appendChild(head);
 
     const body = document.createElement('div');
     body.className = 'vgl-br-body';
-    for (const r of runs) {
-      const row = document.createElement('div');
-      row.className = 'vgl-br-row';
-
-      const name = document.createElement('span');
-      name.className = 'vgl-br-name';
-      name.textContent = r.name;
-
-      const dest = document.createElement('span');
-      dest.className = 'vgl-br-dest';
-      // Always show current stock so the player can judge whether a shelf is
-      // deep enough to be worth the flight. Stock-limited runs (shelf thinner
-      // than a full slot fill) are flagged amber via the --limited class.
-      const stockStr = (r.stock != null && Number.isFinite(Number(r.stock)))
-        ? Number(r.stock).toLocaleString('en-US')
-        : '?';
-      dest.textContent = r.destination + ' \u00B7 ' + stockStr + ' stk';
-      if (r.stockLimited) dest.classList.add('vgl-br-dest--limited');
-
-      // Time-to-next-refill (U+21BB recycle glyph). Green when known, muted
-      // dash when we don't have enough cadence history yet.
-      const refill = document.createElement('span');
-      refill.className = 'vgl-br-refill';
-      // Refill timing is only shown on stock-limited shelves (see idsByDest
-      // filter above). On a deep shelf the column stays present but empty so
-      // the 5-col grid alignment holds \u2014 no misleading "refill imminent" on a
-      // full shelf whose cadence estimate has merely gone stale.
-      if (!r.stockLimited) {
-        refill.classList.add('vgl-br-refill--none');
-      } else if (r.restockMins != null && Number.isFinite(Number(r.restockMins))) {
-        refill.textContent = formatRefillEta(r.restockMins);
-        refill.title = 'Estimated time to next restock';
-      } else {
-        refill.textContent = 'refill \u2014';
-        refill.classList.add('vgl-br-refill--none');
-        refill.title = 'Not enough restock history yet';
-      }
-
-      const run = document.createElement('span');
-      run.className = 'vgl-br-run';
-      run.textContent = formatMoneyCompact(r.profitPerRun) + '/run';
-
-      const hr = document.createElement('span');
-      hr.className = 'vgl-br-hr';
-      hr.textContent = formatMoneyCompact(r.profitPerHour) + '/hr';
-
-      row.appendChild(name);
-      row.appendChild(dest);
-      row.appendChild(refill);
-      row.appendChild(run);
-      row.appendChild(hr);
-      body.appendChild(row);
-    }
     bar.appendChild(body);
 
-    head.addEventListener('click', function () {
+    function renderTopPicks() {
+      rate.textContent = formatMoneyCompact(runs[0].profitPerHour) + '/hr';
+      body.textContent = '';
+      for (const r of runs) {
+        const row = document.createElement('div');
+        row.className = 'vgl-br-row';
+
+        const name = document.createElement('span');
+        name.className = 'vgl-br-name';
+        name.textContent = r.name;
+
+        const dest = document.createElement('span');
+        dest.className = 'vgl-br-dest';
+        // Always show current stock so the player can judge whether a shelf is
+        // deep enough to be worth the flight. Stock-limited runs (shelf thinner
+        // than a full slot fill) are flagged amber via the --limited class.
+        const stockStr = (r.stock != null && Number.isFinite(Number(r.stock)))
+          ? Number(r.stock).toLocaleString('en-US')
+          : '?';
+        dest.textContent = r.destination + ' \u00B7 ' + stockStr + ' stk';
+        if (r.stockLimited) dest.classList.add('vgl-br-dest--limited');
+
+        const refill = document.createElement('span');
+        refill.className = 'vgl-br-refill';
+        // Refill timing is only shown on stock-limited shelves (see idsByDest
+        // filter above). On a deep shelf the column stays present but empty so
+        // the 5-col grid alignment holds \u2014 no misleading "refill imminent" on a
+        // full shelf whose cadence estimate has merely gone stale.
+        if (!r.stockLimited) {
+          refill.classList.add('vgl-br-refill--none');
+        } else if (r.restockMins != null && Number.isFinite(Number(r.restockMins))) {
+          refill.textContent = formatRefillEta(r.restockMins);
+          refill.title = 'Estimated time to next restock';
+        } else {
+          refill.textContent = 'refill \u2014';
+          refill.classList.add('vgl-br-refill--none');
+          refill.title = 'Not enough restock history yet';
+        }
+
+        const run = document.createElement('span');
+        run.className = 'vgl-br-run';
+        run.textContent = formatMoneyCompact(r.profitPerRun) + '/run';
+
+        const hr = document.createElement('span');
+        hr.className = 'vgl-br-hr';
+        hr.textContent = formatMoneyCompact(r.profitPerHour) + '/hr';
+
+        row.appendChild(name);
+        row.appendChild(dest);
+        row.appendChild(refill);
+        row.appendChild(run);
+        row.appendChild(hr);
+        body.appendChild(row);
+      }
+    }
+
+    function applyMode() {
+      const dest = select.value;
+      setCountryView(dest);
+      if (!dest) {
+        renderTopPicks();
+      } else {
+        rate.textContent = '';
+        renderCountryDetail(dest, body, bestRunGeneration);
+      }
+    }
+
+    select.addEventListener('change', applyMode);
+    head.addEventListener('click', function (e) {
+      if (e.target === select) return;
       bar.classList.toggle('vgl-br-open');
     });
 
+    applyMode();
     return bar;
   }
 
