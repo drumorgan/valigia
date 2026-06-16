@@ -93,8 +93,8 @@ editor; Supabase does not auto-apply them).
 | `bazaar_prices` | Crowd-sourced bazaar pool (item_id + bazaar_owner_id composite key, with `miss_count` for pool hygiene). Written by the web-app scanner and the PDA userscript's Bazaar runner. |
 | `abroad_prices` | First-party travel-shop observations (item_id + destination composite key). Written ONLY by the `ingest-travel-shop` edge function, which validates the submitting key's `player_id` before upserting. Publicly readable. Resurrected in migration 013 to carry live PDA scrapes. |
 | `community_stats` | Single-row spin counter. |
-| `yata_snapshots` | Short-term stock-history samples that feed the depletion-slope fitter in `stock-forecast.js`. 48 h prune window. Two writers: the web app's `recordSnapshots()` (merged YATA + scrape on dashboard load) and a DB trigger on `abroad_prices` that mirrors every PDA-scrape change into here too, so a user who only uses PDA still contributes slope samples (migration 025). Concurrent writers are dedupped at the DB level via a unique index on `(item_id, destination, snapped_minute)` where `snapped_minute` rounds `snapped_at` to the minute (migration 026). |
-| `restock_events` | Append-only log of observed positive stock deltas. Fed by the client's `recordSnapshots()` and an AFTER-UPDATE trigger on `abroad_prices`. 30-day read window powers restock cadence estimation in `stock-forecast.js`. Migration 018. |
+| `yata_snapshots` | Short-term stock-history samples that feed the depletion-slope fitter in `stock-forecast.js`. 48 h prune window. Two writers: the web app's `recordSnapshots()` (merged YATA + scrape on dashboard load) and a DB trigger on `abroad_prices` that mirrors every PDA-scrape change into here too, so a user who only uses PDA still contributes slope samples (migration 025). Concurrent writers are dedupped at the DB level via a unique index on `(item_id, destination, snapped_minute)` where `snapped_minute` rounds `snapped_at` to the minute (migration 026). A third writer, the `cron-snapshot-yata` edge function (migration 039), polls YATA every 5 min and writes here server-side so depletion slopes build even at zero user activity. |
+| `restock_events` | Append-only log of observed positive stock deltas. Fed by the client's `recordSnapshots()`, an AFTER-UPDATE trigger on `abroad_prices`, and the `cron-snapshot-yata` poller (`source='cron'`, migration 039). 30-day read window powers restock cadence estimation in `stock-forecast.js`. Migration 018. |
 | `watchlist_alerts` | Per-player price-drop watchlist (`player_id + item_id` composite key, `max_price` threshold, `venues` array). Writes go exclusively through the `watchlist` edge function (session-token gated); reads are public. Migration 019. |
 | `ingest_rate_limits` | Per-`(player_id, endpoint)` gate enforcing a minimum interval between ingest writes. Service-role only (no RLS policies). The `ingest_rate_check()` RPC does an atomic check-and-set with a row-level `FOR UPDATE` lock, returning `false` if the caller's last write was too recent. Migration 027. |
 | `te_traders` | Catalog of TornExchange trader pages we scrape (handle PK, optional `torn_player_id`, `submitted_by`, `last_scraped_at`, `last_scrape_ok`, `consecutive_fails`, `item_count`). Writes via the `ingest-te-trader` edge fn only; reads public. Migration 028. |
@@ -320,6 +320,7 @@ valigia.girovagabondo.com/
 │   │   ├── pda-prefs/            — writes to pda_prefs (indicator toggle); session-token (web) or api_key (PDA "V" button) auth
 │   │   ├── ingest-te-trader/     — session-gated TornExchange page scraper → te_traders + te_buy_prices
 │   │   ├── cron-refresh-traders/ — daily pg_cron-triggered bulk refresh of every te_traders row
+│   │   ├── cron-snapshot-yata/   — 5-min pg_cron-triggered YATA poller → yata_snapshots + restock_events (activity-independent forecast data)
 │   │   └── _shared/              — cors + crypto helpers
 │   └── migrations/
 │       ├── 001_initial_schema.sql
@@ -355,7 +356,12 @@ valigia.girovagabondo.com/
 │       ├── 031_cron_refresh_traders.sql
 │       ├── 032_points_market_rate.sql
 │       ├── 033_points_market_rate_insert_policy.sql
-│       └── 034_pda_prefs.sql
+│       ├── 034_pda_prefs.sql
+│       ├── 035_forecast_predictions.sql
+│       ├── 036_restock_pre_observed_at.sql
+│       ├── 037_resolve_against_midpoint.sql
+│       ├── 038_forecast_accuracy_by_model.sql
+│       └── 039_cron_snapshot_yata.sql
 ├── .env
 ├── vite.config.js
 └── .github/
