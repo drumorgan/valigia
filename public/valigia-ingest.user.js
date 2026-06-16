@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.32.0
+// @version      0.33.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -5061,19 +5061,6 @@
       '#' + BESTRUN_BAR_ID + ' .vgl-br-refill--none { color: #5a6070; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-run { color: #c8cdd8; white-space: nowrap; text-align: right; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-hr { color: #e8c84a; font-weight: 700; white-space: nowrap; text-align: right; }',
-      // Country picker in the header. Flex-grows to fill the space the
-      // collapsed headline used to take. Dark to match the cargo terminal.
-      '#' + BESTRUN_BAR_ID + ' .vgl-br-select {',
-      '  flex: 1 1 auto; min-width: 0; max-width: 100%;',
-      '  background: #0d0f14; color: #c8cdd8; border: 1px solid #252a35;',
-      '  border-radius: 3px; font-size: 12px; font-family: inherit;',
-      '  padding: 2px 4px;',
-      '}',
-      // Country-detail row cells. Price (gold), depletion (muted), restock
-      // reuses .vgl-br-refill (green). Same 5-col grid as the best-run rows.
-      '#' + BESTRUN_BAR_ID + ' .vgl-br-price { color: #e8c84a; white-space: nowrap; text-align: right; }',
-      '#' + BESTRUN_BAR_ID + ' .vgl-br-depl { color: #8a8fa0; font-size: 11px; white-space: nowrap; text-align: right; }',
-      '#' + BESTRUN_BAR_ID + ' .vgl-br-detail-msg { color: #8a8fa0; font-size: 12px; padding: 6px 8px; }',
     ].join('\n');
     const style = document.createElement('style');
     style.id = 'valigia-bestrun-styles';
@@ -5081,20 +5068,11 @@
     document.head.appendChild(style);
   }
 
-  // localStorage-persisted country-view selection. Empty string = "Top
-  // picks" (the cross-country best-run ranking); any other value is a single
-  // destination whose full item list is shown instead.
-  const COUNTRY_VIEW_KEY = 'valigia_pda_country_view';
-  function getCountryView() {
-    try { return localStorage.getItem(COUNTRY_VIEW_KEY) || ''; }
-    catch (e) { return ''; }
-  }
-  function setCountryView(v) {
-    try {
-      if (v) localStorage.setItem(COUNTRY_VIEW_KEY, v);
-      else localStorage.removeItem(COUNTRY_VIEW_KEY);
-    } catch (e) { /* private mode \u2014 selection just won't persist */ }
-  }
+  // Per-country detail bar, shown when the player taps a country on the
+  // travel map (see watchPickerSelection). Its own DOM id + generation
+  // counter so a rapid sequence of taps always renders the latest pick.
+  const COUNTRY_DETAIL_BAR_ID = 'valigia-country-detail-bar';
+  let countryDetailGeneration = 0;
 
   // Per-country detail list. Answers "should I fly here?": every item the
   // country stocks, with current stock, price, depletion rate, and \u2014 the key
@@ -5112,7 +5090,7 @@
       fetchYataForDestination(destination),
       fetchAbroadScrapes(destination),
     ]);
-    if (generation !== bestRunGeneration) return;
+    if (generation !== countryDetailGeneration) return;
 
     // Merge YATA with fresh first-party scrapes (scout stock/price wins).
     // Scout-only items (a shelf YATA hasn't picked up) are appended after.
@@ -5147,7 +5125,7 @@
       fetchYataSnapshots(itemIds, destination),
       fetchRestockEvents(itemIds, destination),
     ]);
-    if (generation !== bestRunGeneration) return;
+    if (generation !== countryDetailGeneration) return;
 
     const slots = getSlotCount();
     const nowMs = Date.now();
@@ -5228,6 +5206,102 @@
     }
   }
 
+  function injectCountryDetailStyles() {
+    if (document.getElementById('valigia-country-detail-styles')) return;
+    const ID = '#' + COUNTRY_DETAIL_BAR_ID;
+    // Green accent (vs the board's gold) so the "you tapped this country"
+    // surface reads as distinct. Body reuses the .vgl-br-* row classes,
+    // re-scoped here so renderCountryDetail's markup styles in this bar too.
+    const css = [
+      ID + ' {',
+      '  margin: 6px 8px; border: 1px solid #4ae8a0; border-radius: 5px;',
+      '  background: #161a22; font-family: inherit; overflow: hidden;',
+      '}',
+      ID + ' .vgl-cd-head {',
+      '  display: flex; align-items: baseline; gap: 8px; cursor: pointer; padding: 8px 10px;',
+      '}',
+      ID + ' .vgl-cd-label {',
+      '  font-size: 11px; font-weight: 700; text-transform: uppercase;',
+      '  letter-spacing: 0.06em; color: #4ae8a0; white-space: nowrap;',
+      '}',
+      ID + ' .vgl-cd-dest {',
+      '  flex: 1 1 auto; min-width: 0; font-weight: 700; color: #c8cdd8; font-size: 12px;',
+      '  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
+      '}',
+      ID + ' .vgl-cd-caret { color: #4ae8a0; font-size: 10px; transition: transform 0.15s ease; }',
+      ID + '.vgl-cd-open .vgl-cd-caret { transform: rotate(180deg); }',
+      ID + ' .vgl-br-body { display: none; flex-direction: column; gap: 3px; padding: 0 10px 10px; }',
+      ID + '.vgl-cd-open .vgl-br-body { display: flex; }',
+      ID + ' .vgl-br-row {',
+      '  display: grid; grid-template-columns: minmax(0,1fr) auto auto auto auto;',
+      '  align-items: baseline; gap: 10px; padding: 5px 8px;',
+      '  border: 1px solid #252a35; border-radius: 3px;',
+      '  background: rgba(74,232,160,0.04); font-size: 12px;',
+      '}',
+      ID + ' .vgl-br-name { font-weight: 700; color: #c8cdd8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }',
+      ID + ' .vgl-br-dest { color: #8a8fa0; font-size: 11px; white-space: nowrap; text-align: right; }',
+      ID + ' .vgl-br-dest--limited { color: #e8824a; }',
+      ID + ' .vgl-br-price { color: #e8c84a; white-space: nowrap; text-align: right; }',
+      ID + ' .vgl-br-depl { color: #8a8fa0; font-size: 11px; white-space: nowrap; text-align: right; }',
+      ID + ' .vgl-br-refill { color: #4ae8a0; font-size: 11px; white-space: nowrap; text-align: right; }',
+      ID + ' .vgl-br-refill--none { color: #5a6070; }',
+      ID + ' .vgl-br-detail-msg { color: #8a8fa0; font-size: 12px; padding: 6px 8px; }',
+    ].join('\n');
+    const style = document.createElement('style');
+    style.id = 'valigia-country-detail-styles';
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  // Mount the per-country detail bar for a tapped destination. Called from
+  // watchPickerSelection when the player selects a country on the travel map.
+  async function injectCountryDetailBar(destination) {
+    if (indicatorsHidden) return;
+    const myGen = ++countryDetailGeneration;
+    injectCountryDetailStyles();
+    document.querySelectorAll('#' + COUNTRY_DETAIL_BAR_ID).forEach(function (n) { n.remove(); });
+
+    const bar = document.createElement('div');
+    bar.id = COUNTRY_DETAIL_BAR_ID;
+    bar.classList.add('vgl-cd-open');
+
+    const head = document.createElement('div');
+    head.className = 'vgl-cd-head';
+    const label = document.createElement('span');
+    label.className = 'vgl-cd-label';
+    label.textContent = 'Before you fly';
+    const destEl = document.createElement('span');
+    destEl.className = 'vgl-cd-dest';
+    destEl.textContent = destination;
+    const caret = document.createElement('span');
+    caret.className = 'vgl-cd-caret';
+    caret.textContent = '▾';
+    head.appendChild(label);
+    head.appendChild(destEl);
+    head.appendChild(caret);
+    bar.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'vgl-br-body';
+    bar.appendChild(body);
+
+    head.addEventListener('click', function () { bar.classList.toggle('vgl-cd-open'); });
+
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    if (myGen !== countryDetailGeneration) return;
+    host.insertBefore(bar, host.firstChild);
+
+    try {
+      await renderCountryDetail(destination, body, myGen);
+    } catch (e) {
+      log('country-detail error', e);
+    }
+  }
+
   function buildBestRunBar(runs) {
     const bar = document.createElement('div');
     bar.id = BESTRUN_BAR_ID;
@@ -5240,122 +5314,88 @@
 
     const label = document.createElement('span');
     label.className = 'vgl-br-label';
-    label.textContent = 'Travel';
+    label.textContent = 'Best Run';
 
-    // Country picker: "Top picks" keeps the cross-country best-run ranking;
-    // selecting a destination swaps the body to that country's full item list.
-    const select = document.createElement('select');
-    select.className = 'vgl-br-select';
-    const topOpt = document.createElement('option');
-    topOpt.value = '';
-    topOpt.textContent = 'Top picks (all countries)';
-    select.appendChild(topOpt);
-    // Every travel destination, not just the profit-ranked ones — a player
-    // may want to check a country that currently has no arbitrage at all.
-    const dests = Array.from(new Set(Object.values(YATA_COUNTRY_MAP)))
-      .sort(function (a, b) { return String(a).localeCompare(String(b)); });
-    for (const d of dests) {
-      const o = document.createElement('option');
-      o.value = d;
-      o.textContent = d;
-      select.appendChild(o);
-    }
-    const saved = getCountryView();
-    if (saved && dests.indexOf(saved) !== -1) select.value = saved;
-    // Interacting with the select must not toggle the panel open/closed.
-    select.addEventListener('click', function (e) { e.stopPropagation(); });
+    const pick = document.createElement('span');
+    pick.className = 'vgl-br-pick';
+    const top = runs[0];
+    // Arrow (U+2192) and middle dot (U+00B7) escaped to survive the FTP
+    // latin-1 mangle, matching the in-flight strip's convention.
+    pick.textContent = top.name + ' → ' + top.destination;
 
     const rate = document.createElement('span');
     rate.className = 'vgl-br-rate';
+    rate.textContent = formatMoneyCompact(top.profitPerHour) + '/hr';
 
     const caret = document.createElement('span');
     caret.className = 'vgl-br-caret';
-    caret.textContent = '\u25BE';
+    caret.textContent = '▾';
 
     head.appendChild(label);
-    head.appendChild(select);
+    head.appendChild(pick);
     head.appendChild(rate);
     head.appendChild(caret);
     bar.appendChild(head);
 
     const body = document.createElement('div');
     body.className = 'vgl-br-body';
+    for (const r of runs) {
+      const row = document.createElement('div');
+      row.className = 'vgl-br-row';
+
+      const name = document.createElement('span');
+      name.className = 'vgl-br-name';
+      name.textContent = r.name;
+
+      const dest = document.createElement('span');
+      dest.className = 'vgl-br-dest';
+      // Always show current stock so the player can judge whether a shelf is
+      // deep enough to be worth the flight. Stock-limited runs (shelf thinner
+      // than a full slot fill) are flagged amber via the --limited class.
+      const stockStr = (r.stock != null && Number.isFinite(Number(r.stock)))
+        ? Number(r.stock).toLocaleString('en-US')
+        : '?';
+      dest.textContent = r.destination + ' · ' + stockStr + ' stk';
+      if (r.stockLimited) dest.classList.add('vgl-br-dest--limited');
+
+      const refill = document.createElement('span');
+      refill.className = 'vgl-br-refill';
+      // Refill timing is only shown on stock-limited shelves. On a deep shelf
+      // the column stays present but empty so the 5-col grid alignment holds
+      // — no misleading "refill imminent" on a full shelf whose cadence
+      // estimate has merely gone stale.
+      if (!r.stockLimited) {
+        refill.classList.add('vgl-br-refill--none');
+      } else if (r.restockMins != null && Number.isFinite(Number(r.restockMins))) {
+        refill.textContent = formatRefillEta(r.restockMins);
+        refill.title = 'Estimated time to next restock';
+      } else {
+        refill.textContent = 'refill —';
+        refill.classList.add('vgl-br-refill--none');
+        refill.title = 'Not enough restock history yet';
+      }
+
+      const run = document.createElement('span');
+      run.className = 'vgl-br-run';
+      run.textContent = formatMoneyCompact(r.profitPerRun) + '/run';
+
+      const hr = document.createElement('span');
+      hr.className = 'vgl-br-hr';
+      hr.textContent = formatMoneyCompact(r.profitPerHour) + '/hr';
+
+      row.appendChild(name);
+      row.appendChild(dest);
+      row.appendChild(refill);
+      row.appendChild(run);
+      row.appendChild(hr);
+      body.appendChild(row);
+    }
     bar.appendChild(body);
 
-    function renderTopPicks() {
-      rate.textContent = formatMoneyCompact(runs[0].profitPerHour) + '/hr';
-      body.textContent = '';
-      for (const r of runs) {
-        const row = document.createElement('div');
-        row.className = 'vgl-br-row';
-
-        const name = document.createElement('span');
-        name.className = 'vgl-br-name';
-        name.textContent = r.name;
-
-        const dest = document.createElement('span');
-        dest.className = 'vgl-br-dest';
-        // Always show current stock so the player can judge whether a shelf is
-        // deep enough to be worth the flight. Stock-limited runs (shelf thinner
-        // than a full slot fill) are flagged amber via the --limited class.
-        const stockStr = (r.stock != null && Number.isFinite(Number(r.stock)))
-          ? Number(r.stock).toLocaleString('en-US')
-          : '?';
-        dest.textContent = r.destination + ' \u00B7 ' + stockStr + ' stk';
-        if (r.stockLimited) dest.classList.add('vgl-br-dest--limited');
-
-        const refill = document.createElement('span');
-        refill.className = 'vgl-br-refill';
-        // Refill timing is only shown on stock-limited shelves (see idsByDest
-        // filter above). On a deep shelf the column stays present but empty so
-        // the 5-col grid alignment holds \u2014 no misleading "refill imminent" on a
-        // full shelf whose cadence estimate has merely gone stale.
-        if (!r.stockLimited) {
-          refill.classList.add('vgl-br-refill--none');
-        } else if (r.restockMins != null && Number.isFinite(Number(r.restockMins))) {
-          refill.textContent = formatRefillEta(r.restockMins);
-          refill.title = 'Estimated time to next restock';
-        } else {
-          refill.textContent = 'refill \u2014';
-          refill.classList.add('vgl-br-refill--none');
-          refill.title = 'Not enough restock history yet';
-        }
-
-        const run = document.createElement('span');
-        run.className = 'vgl-br-run';
-        run.textContent = formatMoneyCompact(r.profitPerRun) + '/run';
-
-        const hr = document.createElement('span');
-        hr.className = 'vgl-br-hr';
-        hr.textContent = formatMoneyCompact(r.profitPerHour) + '/hr';
-
-        row.appendChild(name);
-        row.appendChild(dest);
-        row.appendChild(refill);
-        row.appendChild(run);
-        row.appendChild(hr);
-        body.appendChild(row);
-      }
-    }
-
-    function applyMode() {
-      const dest = select.value;
-      setCountryView(dest);
-      if (!dest) {
-        renderTopPicks();
-      } else {
-        rate.textContent = '';
-        renderCountryDetail(dest, body, bestRunGeneration);
-      }
-    }
-
-    select.addEventListener('change', applyMode);
-    head.addEventListener('click', function (e) {
-      if (e.target === select) return;
+    head.addEventListener('click', function () {
       bar.classList.toggle('vgl-br-open');
     });
 
-    applyMode();
     return bar;
   }
 
@@ -5506,14 +5546,15 @@
   function removeTravelBars() {
     document.querySelectorAll('#' + BESTRUN_BAR_ID).forEach(function (n) { n.remove(); });
     document.querySelectorAll('#' + INFLIGHT_BAR_ID).forEach(function (n) { n.remove(); });
+    document.querySelectorAll('#' + COUNTRY_DETAIL_BAR_ID).forEach(function (n) { n.remove(); });
   }
 
   // -- Picker: selected-country detail ------------------------------------
   // On the home travel map, tapping a country populates a footer that reads
   // "{Country} - {City}  Flight Time - HH:MM  Price ...  TRAVEL". We detect
-  // that selection and reuse injectInFlightStrip() to show the chosen
-  // country's per-item picture (current stock + arrival projection + margin)
-  // before the player commits. Best-effort and silent on any miss.
+  // that selection and show that country's full item list (stock / price /
+  // depletion / restock) via injectCountryDetailBar so the player can judge
+  // before committing. Best-effort and silent on any miss.
   let pickerSelectionObserver = null;
   let pickerLastSelectedDest = null;
 
@@ -5558,9 +5599,17 @@
       if (dest === pickerLastSelectedDest) return; // unchanged → no churn
       pickerLastSelectedDest = dest;
       if (dest) {
-        injectInFlightStrip(sel.destination, sel.flightMins);
+        // Tapped a country: show that destination's full item list (stock /
+        // price / depletion / restock) and hide the all-countries board so
+        // the chosen country is the only thing on screen.
+        const board = document.getElementById(BESTRUN_BAR_ID);
+        if (board) board.style.display = 'none';
+        injectCountryDetailBar(dest);
       } else {
-        document.querySelectorAll('#' + INFLIGHT_BAR_ID).forEach(function (n) { n.remove(); });
+        // Deselected: drop the detail bar and restore the board.
+        document.querySelectorAll('#' + COUNTRY_DETAIL_BAR_ID).forEach(function (n) { n.remove(); });
+        const board = document.getElementById(BESTRUN_BAR_ID);
+        if (board) board.style.display = '';
       }
     }
     const onChange = function () {
