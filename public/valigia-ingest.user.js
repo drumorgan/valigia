@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.36.0
+// @version      0.37.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.36.0';
+  const SCRIPT_VERSION = '0.37.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2274,11 +2274,40 @@
     }
   }
 
-  // Session cache of live Item Market fetches so a re-render or another
-  // landing inside the window doesn't re-spend Torn API. item_id ->
-  // { price, minPrice, at }.
-  const liveSellCache = new Map();
+  // Cache of live Item Market fetches so a re-render or another landing
+  // inside the window doesn't re-spend Torn API. item_id -> { price, minPrice, at }.
+  //
+  // Persisted to localStorage: PDA reloads the whole page on every in-game
+  // navigation, which would wipe a plain in-memory Map. That's what made
+  // non-pool abroad prices flicker — an item priced on one landing vanished
+  // on the next reload whenever its re-fetch happened to rate-limit. Hydrating
+  // from storage (and writing back on each set) keeps a fetched price visible
+  // for the full TTL regardless of reloads or an intermittent API.
   const LIVE_SELL_CACHE_TTL_MS = 30 * 60 * 1000; // 30 min
+  const LIVE_SELL_CACHE_KEY = 'valigia_live_sell_cache';
+  const liveSellCache = (function () {
+    const m = new Map();
+    try {
+      const raw = JSON.parse(localStorage.getItem(LIVE_SELL_CACHE_KEY) || '{}');
+      const now = Date.now();
+      for (const id in raw) {
+        const e = raw[id];
+        if (e && Number.isFinite(e.at) && (now - e.at) < LIVE_SELL_CACHE_TTL_MS) m.set(Number(id), e);
+      }
+    } catch (_) { /* corrupt cache — start empty */ }
+    return m;
+  })();
+  function persistLiveSellCache() {
+    try {
+      const now = Date.now();
+      const obj = {};
+      for (const entry of liveSellCache) {
+        const id = entry[0], e = entry[1];
+        if (e && Number.isFinite(e.at) && (now - e.at) < LIVE_SELL_CACHE_TTL_MS) obj[id] = e;
+      }
+      localStorage.setItem(LIVE_SELL_CACHE_KEY, JSON.stringify(obj));
+    } catch (_) { /* storage full / disabled — falls back to in-memory only */ }
+  }
   // Refresh a pooled price the overlay already has if it's older than this.
   // (It still shows the stale number meanwhile — this just queues a refresh.)
   const LIVE_SELL_STALE_MS = 2 * 60 * 60 * 1000; // 2 h
@@ -2295,7 +2324,7 @@
   // and src/market.js. Returns { price, minPrice, floorQty, listingCount }
   // or null on any failure.
   async function fetchLiveItemMarketPrices(itemId) {
-    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return null;
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) { lastLiveFetchDiag = 'nokey'; return null; }
     try {
       const res = await gmRequest({
         method: 'GET',
@@ -2303,11 +2332,16 @@
              '/itemmarket?key=' + encodeURIComponent(TORN_API_KEY),
         headers: { 'Accept': 'application/json' },
       });
+      if (res && typeof res.status === 'number' && (res.status < 200 || res.status >= 300)) {
+        lastLiveFetchDiag = 'http_' + res.status;
+        return null;
+      }
       let data = null;
-      try { data = JSON.parse(res.responseText || '{}'); } catch (_) { return null; }
-      if (!data || data.error) return null;
+      try { data = JSON.parse(res.responseText || '{}'); } catch (_) { lastLiveFetchDiag = 'parsefail'; return null; }
+      if (!data) { lastLiveFetchDiag = 'nodata'; return null; }
+      if (data.error) { lastLiveFetchDiag = 'apierr_' + (data.error.code != null ? data.error.code : '?'); return null; }
       const listings = (data.itemmarket && data.itemmarket.listings) || data.itemmarket;
-      if (!Array.isArray(listings) || listings.length === 0) return null;
+      if (!Array.isArray(listings) || listings.length === 0) { lastLiveFetchDiag = 'empty'; return null; }
       const norm = [];
       for (const l of listings) {
         const cost = Number(l.cost != null ? l.cost : l.price);
@@ -2327,9 +2361,15 @@
       if (!floor) floor = norm[0];
       return { price: floor.price, minPrice: minPrice, floorQty: floor.qty, listingCount: norm.length };
     } catch (e) {
+      lastLiveFetchDiag = 'neterr';
       return null;
     }
   }
+
+  // TEMP DIAGNOSTIC: last failure reason from fetchLiveItemMarketPrices, so
+  // the landed overlay can toast WHY abroad rows aren't pricing (auth error,
+  // empty listings, parse fail, etc.). Remove once the cause is identified.
+  let lastLiveFetchDiag = null;
 
   // Fill in sell prices the shared pool is missing or stale on by fetching
   // them live from the Torn Item Market, painting them into sellPriceMap,
@@ -2338,9 +2378,9 @@
   // run with limited concurrency. Best-effort — a failed fetch just leaves
   // that row without a price, exactly as before. Mutates sellPriceMap.
   async function enrichSellPricesLive(itemIds, sellPriceMap) {
-    if (indicatorsHidden) return; // silent mode paints nothing; don't spend API
-    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return;
-    if (!Array.isArray(itemIds) || itemIds.length === 0) return;
+    if (indicatorsHidden) return { skip: 'hidden' }; // silent mode paints nothing
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return { skip: 'nokey' };
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return { skip: 'noids' };
 
     const now = Date.now();
     const todo = [];
@@ -2362,7 +2402,7 @@
         && (now - new Date(pooled.updatedAt).getTime()) > LIVE_SELL_STALE_MS;
       if (!pooled || stale) todo.push(id);
     }
-    if (todo.length === 0) return;
+    if (todo.length === 0) return { attempted: 0, ok: 0, fail: 0, reason: 'allcached' };
 
     const batch = todo.slice(0, LIVE_SELL_MAX_FETCH);
     const fetched = [];
@@ -2388,10 +2428,14 @@
         });
       }
     }
+    lastLiveFetchDiag = null;
     const workers = [];
     const n = Math.min(LIVE_SELL_CONCURRENCY, batch.length);
     for (let i = 0; i < n; i++) workers.push(worker());
     await Promise.all(workers);
+    // Persist the cache so this landing's fetched prices survive the next PDA
+    // page reload — the fix for non-pool rows flickering in and out.
+    persistLiveSellCache();
 
     // Densify the shared pool. Same canonical path the Item Market runner
     // uses (rate-limited + key-validated edge function). Fire-and-forget.
@@ -2399,6 +2443,12 @@
       try { await postIngestRows(INGEST_SELL_URL, fetched); }
       catch (e) { log('live sell-price upsert failed:', e); }
     }
+    return {
+      attempted: batch.length,
+      ok: fetched.length,
+      fail: batch.length - fetched.length,
+      sample: lastLiveFetchDiag,
+    };
   }
 
   function invalidateWatchlistWriteCaches() {
