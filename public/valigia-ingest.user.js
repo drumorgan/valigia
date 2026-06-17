@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.37.0
+// @version      0.38.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.37.0';
+  const SCRIPT_VERSION = '0.38.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1088,6 +1088,18 @@
           }
         }
         if (buyPrice != null) break;
+      }
+      // scrapeShops drops rows it can't fully validate for INGEST (e.g. an
+      // out-of-stock row whose stock cell reads oddly, or a row whose name
+      // didn't resolve). Those rows still deserve a DISPLAY cell, so fall
+      // back to a direct parse of this row when the scrape lookup missed —
+      // this is what makes every shop row (in-stock and empty) show data.
+      if (buyPrice == null) {
+        const parsed = parseItemRow(img);
+        if (parsed && Number.isFinite(parsed.buy_price) && parsed.buy_price > 0) {
+          buyPrice = parsed.buy_price;
+          stock = Number.isFinite(parsed.stock) ? parsed.stock : null;
+        }
       }
       if (buyPrice == null) continue;
 
