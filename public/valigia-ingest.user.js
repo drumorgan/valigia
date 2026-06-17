@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.39.0
+// @version      0.40.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.39.0';
+  const SCRIPT_VERSION = '0.40.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2395,9 +2395,9 @@
   // run with limited concurrency. Best-effort — a failed fetch just leaves
   // that row without a price, exactly as before. Mutates sellPriceMap.
   async function enrichSellPricesLive(itemIds, sellPriceMap) {
-    if (indicatorsHidden) return { skip: 'hidden' }; // silent mode paints nothing
-    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return { skip: 'nokey' };
-    if (!Array.isArray(itemIds) || itemIds.length === 0) return { skip: 'noids' };
+    if (indicatorsHidden) { lastLiveFetchDiag = 'skip_hidden'; return { skip: 'hidden' }; }
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) { lastLiveFetchDiag = 'skip_nokey'; return { skip: 'nokey' }; }
+    if (!Array.isArray(itemIds) || itemIds.length === 0) { lastLiveFetchDiag = 'skip_noids'; return { skip: 'noids' }; }
 
     const now = Date.now();
     const todo = [];
@@ -2419,7 +2419,7 @@
         && (now - new Date(pooled.updatedAt).getTime()) > LIVE_SELL_STALE_MS;
       if (!pooled || stale) todo.push(id);
     }
-    if (todo.length === 0) return { attempted: 0, ok: 0, fail: 0, reason: 'allcached' };
+    if (todo.length === 0) { lastLiveFetchDiag = 'allcached'; return { attempted: 0, ok: 0, fail: 0, reason: 'allcached' }; }
 
     const batch = todo.slice(0, LIVE_SELL_MAX_FETCH);
     const fetched = [];
