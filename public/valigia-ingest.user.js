@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.38.0
+// @version      0.39.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.38.0';
+  const SCRIPT_VERSION = '0.39.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1197,8 +1197,13 @@
       } else {
         // In stock but the Item Market lists no price for this item (not
         // tradeable there, or no current listings).
+        // TEMP DIAGNOSTIC: append the last live-fetch failure reason so we can
+        // see, on a DevTools-less iPad, WHY the live price isn't filling
+        // (apierr_5 = rate limit, http_403 = auth, empty = no listings,
+        // nokey, neterr, parsefail). Remove once diagnosed.
+        const why = lastLiveFetchDiag ? ' · live:' + lastLiveFetchDiag : '';
         cell.innerHTML = r.sellPrice == null
-          ? '<span class="v-muted">no market price data</span>'
+          ? '<span class="v-muted">no market price data' + why + '</span>'
           : '<span class="v-muted">-</span>';
       }
 
