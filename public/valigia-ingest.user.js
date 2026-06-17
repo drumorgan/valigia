@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.40.0
+// @version      0.41.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.40.0';
+  const SCRIPT_VERSION = '0.41.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5814,16 +5814,24 @@
     }
 
     // Collect the item_ids we need sell prices for (single Supabase GET).
+    // Walk every shop item image directly, not just scrapeShops's validated
+    // rows: scrapeShops drops rows it can't fully validate for ingest, and
+    // those dropped rows were never getting a price fetch — the diagnostic's
+    // "nomap,allcached" case, where the displayed set (image walk, with the
+    // overlay's fallback parse) and the fetched set (scrapeShops) diverged.
+    // Union both so the fetch set always covers what the overlay shows.
     const itemIds = [];
     const seen = new Set();
-    for (const sh of shops) {
-      for (const it of sh.items) {
-        if (!seen.has(it.item_id)) {
-          seen.add(it.item_id);
-          itemIds.push(it.item_id);
-        }
-      }
+    function addItemId(id) {
+      if (Number.isFinite(id) && !seen.has(id)) { seen.add(id); itemIds.push(id); }
     }
+    for (const sh of shops) {
+      for (const it of sh.items) addItemId(it.item_id);
+    }
+    document.querySelectorAll('img[src*="/images/items/"]').forEach(function (img) {
+      const m = (img.getAttribute('src') || '').match(/\/images\/items\/(\d+)\//);
+      if (m) addItemId(Number(m[1]));
+    });
 
     // Surface silent selector drift: if nearestShopCategoryFor couldn't
     // match any heading in an item's ancestry, rows get tagged 'Unknown'.
