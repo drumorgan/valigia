@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.35.0
+// @version      0.36.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.35.0';
+  const SCRIPT_VERSION = '0.36.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2244,17 +2244,18 @@
   }
 
   // Absolute cheapest live Item Market listing for an item, straight from
-  // the Torn API (the userscript already holds the key). Parsing mirrors
-  // src/market.js: v1 returns { itemmarket: [...] }, newer shapes nest a
+  // the Torn API (the userscript already holds the key). Uses the v2
+  // endpoint (v1 selections=itemmarket is deprecated and returns the API
+  // help page). Parsing mirrors src/market.js: v2 nests
   // { itemmarket: { listings: [...] } }; listings come cheapest-first, so
-  // [0].cost is the floor. Best-effort — returns null on any failure.
+  // [0].price is the floor. Best-effort — returns null on any failure.
   async function fetchLiveItemMarketFloor(itemId) {
     if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return null;
     try {
       const res = await gmRequest({
         method: 'GET',
-        url: 'https://api.torn.com/market/' + encodeURIComponent(itemId) +
-             '?selections=itemmarket&key=' + encodeURIComponent(TORN_API_KEY),
+        url: 'https://api.torn.com/v2/market/' + encodeURIComponent(itemId) +
+             '/itemmarket?key=' + encodeURIComponent(TORN_API_KEY),
         headers: { 'Accept': 'application/json' },
       });
       let data = null;
@@ -2298,8 +2299,8 @@
     try {
       const res = await gmRequest({
         method: 'GET',
-        url: 'https://api.torn.com/market/' + encodeURIComponent(itemId) +
-             '?selections=itemmarket&key=' + encodeURIComponent(TORN_API_KEY),
+        url: 'https://api.torn.com/v2/market/' + encodeURIComponent(itemId) +
+             '/itemmarket?key=' + encodeURIComponent(TORN_API_KEY),
         headers: { 'Accept': 'application/json' },
       });
       let data = null;
