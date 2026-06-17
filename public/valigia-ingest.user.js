@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.42.0
+// @version      0.43.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.42.0';
+  const SCRIPT_VERSION = '0.43.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1050,6 +1050,24 @@
     });
   }
 
+  // Decide if a shop row is out of stock. Prefer the parsed stock count;
+  // when Torn doesn't expose a parseable count on a greyed out-of-stock row
+  // (stock comes back null/NaN), fall back to the row's visual dimming. Torn
+  // dims empty rows regardless of whether the player can afford them, so
+  // opacity is a reliable "empty" signal where a disabled Buy button is not.
+  function rowOutOfStock(row, stock) {
+    if (Number.isFinite(stock)) return stock <= 0;
+    try {
+      let el = row;
+      for (let i = 0; el && i < 4; i++) {
+        const op = parseFloat(getComputedStyle(el).opacity);
+        if (Number.isFinite(op) && op > 0 && op < 0.85) return true;
+        el = el.parentElement;
+      }
+    } catch (_) { /* getComputedStyle unavailable — treat as in stock */ }
+    return false;
+  }
+
   function renderOverlay(shops, sellPriceMap, refillEtaMap) {
     if (indicatorsHidden) return { total: 0, withMetrics: 0, best: null };
     if (!(refillEtaMap instanceof Map)) refillEtaMap = new Map();
@@ -1158,7 +1176,7 @@
       const cell = document.createElement(isTr ? 'td' : 'div');
       cell.className = 'valigia-cell';
 
-      const outOfStock = (r.stock != null && r.stock <= 0);
+      const outOfStock = rowOutOfStock(r.row, r.stock);
       if (outOfStock) {
         // Empty shelf: lead with the refill ETA, independent of whether we
         // have a market price. "When will it restock" is the answer the
@@ -5843,31 +5861,18 @@
       }
     })();
 
-    // Identify items currently at stock 0 — those are the only rows where
-    // a refill ETA is useful to show. Skipping the fetch entirely when none
-    // are zero-stock keeps the common case (fully stocked shelves) free of
-    // an extra round-trip.
-    const zeroStockIds = [];
-    const seenZero = new Set();
-    for (const sh of shops) {
-      for (const it of sh.items) {
-        if (it.stock === 0 && !seenZero.has(it.item_id)) {
-          seenZero.add(it.item_id);
-          zeroStockIds.push(it.item_id);
-        }
-      }
-    }
-
     // Silent stakeout ticks skip the overlay entirely: it's a read + repaint
     // with no data contribution, and at 15 s cadence the repaint is exactly
     // the "display churn" we're avoiding. The ingest above still runs.
     const overlayPromise = silent ? Promise.resolve() : (async function () {
       try {
+        // Fetch restock cadence for ALL shop items, not just rows the scrape
+        // marked stock===0. Torn doesn't expose a parseable "0" on greyed
+        // out-of-stock rows, so those are detected visually in renderOverlay
+        // and still need their refill ETA ready. One bounded query either way.
         const [sellPriceMap, restockEventsMap] = await Promise.all([
           fetchSellPrices(itemIds),
-          zeroStockIds.length > 0
-            ? fetchRestockEvents(zeroStockIds, destination)
-            : Promise.resolve(new Map()),
+          fetchRestockEvents(itemIds, destination),
         ]);
         const refillEtaMap = new Map();
         const nowMs = Date.now();
