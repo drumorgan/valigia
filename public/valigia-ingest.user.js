@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.34.0
+// @version      0.35.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.34.0';
+  const SCRIPT_VERSION = '0.35.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1146,39 +1146,48 @@
       const cell = document.createElement(isTr ? 'td' : 'div');
       cell.className = 'valigia-cell';
 
-      if (!r.metrics) {
-        if (r.sellPrice == null) {
-          cell.innerHTML = '<span class="v-muted">no market price data</span>';
-        } else {
-          cell.innerHTML = '<span class="v-muted">-</span>';
-        }
-      } else {
-        const m = r.metrics;
-        const marginClass = m.marginPerItem >= 0 ? 'v-margin-pos' : 'v-margin-neg';
-        const outOfStock = (r.stock != null && r.stock <= 0);
-
-        let html = '';
-        if (outOfStock) {
-          const etaMins = refillEtaMap.get(r.item_id);
-          const etaText = formatRefillEta(etaMins != null ? etaMins : null);
-          if (etaText) {
-            html += '<span class="v-muted">stock 0 &middot; ' + etaText + '</span>';
-          } else {
-            html += '<span class="v-muted">stock 0 &middot; skip</span>';
-          }
-        } else {
-          // Label the number "Market Price" so it's clearly distinct from
-          // Torn's existing "Cost" / "Buy" columns on the shop page. The
-          // value shown is the net per-unit Item Market sell price (after
-          // the 5% market fee) — what the player actually realises per unit.
-          html += '<span class="v-label">Market Price</span> ';
-          html += '<span class="v-sell">' + formatMoney(m.netSell) + '</span>';
+      const outOfStock = (r.stock != null && r.stock <= 0);
+      if (outOfStock) {
+        // Empty shelf: lead with the refill ETA, independent of whether we
+        // have a market price. "When will it restock" is the answer the
+        // player wants on an empty row, and gating it behind a known market
+        // price (the old behaviour) hid it for every item the Item Market
+        // doesn't list. Append the market net-sell + margin% when we do know
+        // it, so the flip is still judgeable once the shelf refills.
+        const etaMins = refillEtaMap.get(r.item_id);
+        const etaText = formatRefillEta(etaMins != null ? etaMins : null);
+        let html = '<span class="v-muted">stock 0 &middot; ' +
+          (etaText || 'no refill data yet') + '</span>';
+        if (r.metrics) {
+          const marginClass = r.metrics.marginPerItem >= 0 ? 'v-margin-pos' : 'v-margin-neg';
           html += '<span class="v-sep">&middot;</span>';
-          html += '<span class="' + marginClass + '">' + formatMoney(m.marginPerItem) + '</span>';
+          html += '<span class="v-label">Mkt</span> ';
+          html += '<span class="v-sell">' + formatMoney(r.metrics.netSell) + '</span>';
           html += '<span class="v-sep">&middot;</span>';
-          html += '<span class="' + marginClass + '">' + formatPct(m.marginPct) + '</span>';
+          html += '<span class="' + marginClass + '">' + formatPct(r.metrics.marginPct) + '</span>';
         }
         cell.innerHTML = html;
+      } else if (r.metrics) {
+        // In stock with a known price: full Market Price / margin line.
+        // Label the number "Market Price" so it's clearly distinct from
+        // Torn's existing "Cost" / "Buy" columns. The value is the net
+        // per-unit Item Market sell price (after the 5% market fee).
+        const m = r.metrics;
+        const marginClass = m.marginPerItem >= 0 ? 'v-margin-pos' : 'v-margin-neg';
+        let html = '';
+        html += '<span class="v-label">Market Price</span> ';
+        html += '<span class="v-sell">' + formatMoney(m.netSell) + '</span>';
+        html += '<span class="v-sep">&middot;</span>';
+        html += '<span class="' + marginClass + '">' + formatMoney(m.marginPerItem) + '</span>';
+        html += '<span class="v-sep">&middot;</span>';
+        html += '<span class="' + marginClass + '">' + formatPct(m.marginPct) + '</span>';
+        cell.innerHTML = html;
+      } else {
+        // In stock but the Item Market lists no price for this item (not
+        // tradeable there, or no current listings).
+        cell.innerHTML = r.sellPrice == null
+          ? '<span class="v-muted">no market price data</span>'
+          : '<span class="v-muted">-</span>';
       }
 
       if (isTr) {
