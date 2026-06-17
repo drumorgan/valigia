@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.41.0
+// @version      0.42.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.41.0';
+  const SCRIPT_VERSION = '0.42.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1119,7 +1119,6 @@
         stock: stock,
         sellPrice: sellPrice,
         metrics: metrics,
-        inMap: !!sp, // TEMP DIAGNOSTIC: was this item in the sell-price pool at all
       });
     }
 
@@ -1198,15 +1197,8 @@
       } else {
         // In stock but the Item Market lists no price for this item (not
         // tradeable there, or no current listings).
-        // TEMP DIAGNOSTIC: append the last live-fetch failure reason so we can
-        // see, on a DevTools-less iPad, WHY the live price isn't filling
-        // (apierr_5 = rate limit, http_403 = auth, empty = no listings,
-        // nokey, neterr, parsefail). Remove once diagnosed.
-        const tags = [r.inMap ? 'poolnull' : 'nomap'];
-        if (lastLiveFetchDiag) tags.push(lastLiveFetchDiag);
-        const why = ' · ' + tags.join(',');
         cell.innerHTML = r.sellPrice == null
-          ? '<span class="v-muted">no market price data' + why + '</span>'
+          ? '<span class="v-muted">no market price data</span>'
           : '<span class="v-muted">-</span>';
       }
 
@@ -2344,7 +2336,7 @@
   // and src/market.js. Returns { price, minPrice, floorQty, listingCount }
   // or null on any failure.
   async function fetchLiveItemMarketPrices(itemId) {
-    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) { lastLiveFetchDiag = 'nokey'; return null; }
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return null;
     try {
       const res = await gmRequest({
         method: 'GET',
@@ -2352,16 +2344,12 @@
              '/itemmarket?key=' + encodeURIComponent(TORN_API_KEY),
         headers: { 'Accept': 'application/json' },
       });
-      if (res && typeof res.status === 'number' && (res.status < 200 || res.status >= 300)) {
-        lastLiveFetchDiag = 'http_' + res.status;
-        return null;
-      }
+      if (res && typeof res.status === 'number' && (res.status < 200 || res.status >= 300)) return null;
       let data = null;
-      try { data = JSON.parse(res.responseText || '{}'); } catch (_) { lastLiveFetchDiag = 'parsefail'; return null; }
-      if (!data) { lastLiveFetchDiag = 'nodata'; return null; }
-      if (data.error) { lastLiveFetchDiag = 'apierr_' + (data.error.code != null ? data.error.code : '?'); return null; }
+      try { data = JSON.parse(res.responseText || '{}'); } catch (_) { return null; }
+      if (!data || data.error) return null;
       const listings = (data.itemmarket && data.itemmarket.listings) || data.itemmarket;
-      if (!Array.isArray(listings) || listings.length === 0) { lastLiveFetchDiag = 'empty'; return null; }
+      if (!Array.isArray(listings) || listings.length === 0) return null;
       const norm = [];
       for (const l of listings) {
         const cost = Number(l.cost != null ? l.cost : l.price);
@@ -2381,15 +2369,9 @@
       if (!floor) floor = norm[0];
       return { price: floor.price, minPrice: minPrice, floorQty: floor.qty, listingCount: norm.length };
     } catch (e) {
-      lastLiveFetchDiag = 'neterr';
       return null;
     }
   }
-
-  // TEMP DIAGNOSTIC: last failure reason from fetchLiveItemMarketPrices, so
-  // the landed overlay can toast WHY abroad rows aren't pricing (auth error,
-  // empty listings, parse fail, etc.). Remove once the cause is identified.
-  let lastLiveFetchDiag = null;
 
   // Fill in sell prices the shared pool is missing or stale on by fetching
   // them live from the Torn Item Market, painting them into sellPriceMap,
@@ -2398,9 +2380,9 @@
   // run with limited concurrency. Best-effort — a failed fetch just leaves
   // that row without a price, exactly as before. Mutates sellPriceMap.
   async function enrichSellPricesLive(itemIds, sellPriceMap) {
-    if (indicatorsHidden) { lastLiveFetchDiag = 'skip_hidden'; return { skip: 'hidden' }; }
-    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) { lastLiveFetchDiag = 'skip_nokey'; return { skip: 'nokey' }; }
-    if (!Array.isArray(itemIds) || itemIds.length === 0) { lastLiveFetchDiag = 'skip_noids'; return { skip: 'noids' }; }
+    if (indicatorsHidden) return; // silent mode paints nothing; don't spend API
+    if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return;
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return;
 
     const now = Date.now();
     const todo = [];
@@ -2422,7 +2404,7 @@
         && (now - new Date(pooled.updatedAt).getTime()) > LIVE_SELL_STALE_MS;
       if (!pooled || stale) todo.push(id);
     }
-    if (todo.length === 0) { lastLiveFetchDiag = 'allcached'; return { attempted: 0, ok: 0, fail: 0, reason: 'allcached' }; }
+    if (todo.length === 0) return;
 
     const batch = todo.slice(0, LIVE_SELL_MAX_FETCH);
     const fetched = [];
@@ -2448,7 +2430,6 @@
         });
       }
     }
-    lastLiveFetchDiag = null;
     const workers = [];
     const n = Math.min(LIVE_SELL_CONCURRENCY, batch.length);
     for (let i = 0; i < n; i++) workers.push(worker());
@@ -2463,12 +2444,6 @@
       try { await postIngestRows(INGEST_SELL_URL, fetched); }
       catch (e) { log('live sell-price upsert failed:', e); }
     }
-    return {
-      attempted: batch.length,
-      ok: fetched.length,
-      fail: batch.length - fetched.length,
-      sample: lastLiveFetchDiag,
-    };
   }
 
   function invalidateWatchlistWriteCaches() {
@@ -5816,9 +5791,9 @@
     // Collect the item_ids we need sell prices for (single Supabase GET).
     // Walk every shop item image directly, not just scrapeShops's validated
     // rows: scrapeShops drops rows it can't fully validate for ingest, and
-    // those dropped rows were never getting a price fetch — the diagnostic's
-    // "nomap,allcached" case, where the displayed set (image walk, with the
-    // overlay's fallback parse) and the fetched set (scrapeShops) diverged.
+    // those dropped rows were never getting a price fetch. The overlay still
+    // displays them (via its own image-walk fallback parse), so the displayed
+    // set and the fetched set would diverge and those rows stayed blank.
     // Union both so the fetch set always covers what the overlay shows.
     const itemIds = [];
     const seen = new Set();
