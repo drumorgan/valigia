@@ -54,6 +54,46 @@ export async function getShowIndicators() {
  * straight into button handlers without leaving them stuck on "Saving…".
  */
 export async function setShowIndicators(show) {
+  return postPdaPrefs({ show_indicators: !!show });
+}
+
+/**
+ * Read this player's synced travel capacity (the userscript-detected carry
+ * max, shared via pda_prefs). Returns the integer slot count, or null when
+ * there's no value yet (never detected, not logged in, or a read error) so
+ * the caller can fall back to the perks estimate / localStorage default.
+ */
+export async function getTravelCapacity() {
+  const playerId = getPlayerId();
+  if (!playerId) return null;
+  try {
+    const { data } = await supabase
+      .from('pda_prefs')
+      .select('travel_capacity')
+      .eq('player_id', Number(playerId))
+      .maybeSingle();
+    const cap = data ? Number(data.travel_capacity) : NaN;
+    return Number.isInteger(cap) && cap >= 10 && cap <= 86 ? cap : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a manual capacity edit so the in-game overlays pick it up too.
+ * Same session-gated channel as the indicator flag. Fire-and-forget at the
+ * call site — never throws.
+ */
+export async function setTravelCapacity(capacity) {
+  return postPdaPrefs({ travel_capacity: Number(capacity) });
+}
+
+/**
+ * Shared POST to the session-gated pda-prefs edge function. `fields` carries
+ * whichever pda_prefs columns to write (show_indicators and/or
+ * travel_capacity); the edge function leaves the others untouched.
+ */
+async function postPdaPrefs(fields) {
   const player_id = getPlayerId();
   const session_token = getSessionToken();
   if (!player_id || !session_token) {
@@ -70,7 +110,7 @@ export async function setShowIndicators(show) {
         action: 'set',
         player_id: Number(player_id),
         session_token,
-        show_indicators: !!show,
+        ...fields,
       }),
     });
     try {

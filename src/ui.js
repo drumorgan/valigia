@@ -7,6 +7,7 @@ import { calculateMargins, formatFlightTime, formatMoney, formatMarginPctCompact
 import { forecastStock } from './stock-forecast.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
 import { safeGetItem, safeSetItem } from './storage.js';
+import { setTravelCapacity } from './pda-prefs.js';
 
 // ── Flight type definitions ───────────────────────────────────
 // `short` is what we display in the collapsed control so the whole bar
@@ -163,7 +164,7 @@ export function renderControls(container, onChange, onCategoryChange) {
       <label class="control-group">
         <span class="control-label">Slots</span>
         <input type="number" id="ctl-slots" class="control-input control-input--slim"
-               value="${slotCount}" min="10" max="43" />
+               value="${slotCount}" min="10" max="86" />
       </label>
       <label class="control-group">
         <span class="control-label">Flight</span>
@@ -200,10 +201,19 @@ export function renderControls(container, onChange, onCategoryChange) {
     </div>
   `;
 
-  container.querySelector('#ctl-slots').addEventListener('input', (e) => {
-    slotCount = Math.max(10, Math.min(43, parseInt(e.target.value) || 29));
+  const slotsInput = container.querySelector('#ctl-slots');
+  slotsInput.addEventListener('input', (e) => {
+    // Phase 2 ceiling is 43 normally, 86 on World Tourism Day.
+    slotCount = Math.max(10, Math.min(86, parseInt(e.target.value) || 29));
     persistControls();
     onChange();
+  });
+  // Sync a manual edit to the shared pool on commit (blur / Enter) rather
+  // than on every keystroke, so the in-game userscript overlays converge on
+  // the same number. Fire-and-forget — a failed write only means the other
+  // surface keeps its old value, never a broken control here.
+  slotsInput.addEventListener('change', () => {
+    setTravelCapacity(slotCount).catch(() => {});
   });
   container.querySelector('#ctl-flight-type').addEventListener('change', (e) => {
     flightType = e.target.value;
@@ -250,6 +260,25 @@ export function renderControls(container, onChange, onCategoryChange) {
       onChange();
     });
   });
+}
+
+/**
+ * Apply the authoritative travel capacity synced from pda_prefs (the value
+ * the PDA userscript auto-detected off the travel shop's "purchased X / Y"
+ * line). Unlike setPlayerTravel's perks estimate — a lower bound that only
+ * ever raises the count — this is the player's TRUE current max, so it sets
+ * the count EXACTLY in both directions (a real 29 → 28 change sticks).
+ * No write-back: this value came from the shared pool.
+ */
+export function setDetectedCapacity(cap) {
+  const n = Number(cap);
+  if (!Number.isInteger(n) || n < 10 || n > 86) return;
+  if (n === slotCount) return;
+  slotCount = n;
+  safeSetItem(STORAGE_SLOTS, String(slotCount));
+  const el = document.getElementById('ctl-slots');
+  if (el) el.value = slotCount;
+  renderTable();
 }
 
 /**

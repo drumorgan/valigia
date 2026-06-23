@@ -21,8 +21,9 @@ import { initStatsPanel } from './stats-panel.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
-  getStaleItemIdsForCategory, getTopTravelCandidateIds
+  setDetectedCapacity, getStaleItemIdsForCategory, getTopTravelCandidateIds
 } from './ui.js';
+import { getTravelCapacity } from './pda-prefs.js';
 
 // Category chip clicks top up any sell prices in that category older than
 // this threshold. Kept short — the whole point is to surface fresh margins
@@ -370,11 +371,18 @@ async function startDashboard(playerId, playerName) {
   // Swallow failures to []: the matcher handles an empty list gracefully.
   const watchlistAlertsPromise = listAlerts().catch(() => []);
 
-  // Fetch abroad prices from YATA and detect travel perks in parallel
-  const [priceResult] = await Promise.all([
+  // Fetch abroad prices from YATA, detect travel perks, and pull the synced
+  // capacity in parallel. The synced value (auto-detected by the PDA
+  // userscript off the real travel page and shared via pda_prefs) is the
+  // player's true current max, so apply it AFTER the perks estimate so it
+  // wins — and unlike the perks path it can lower the count too (e.g. the
+  // Phase 2 29 → 28 change), since it's an exact reading, not a lower bound.
+  const [priceResult, , syncedCapacity] = await Promise.all([
     fetchAbroadPrices().catch(() => null),
     detectPlayerTravel(playerId).catch(() => {}),
+    getTravelCapacity().catch(() => null),
   ]);
+  if (syncedCapacity != null) setDetectedCapacity(syncedCapacity);
 
   if (!priceResult || priceResult.items.length === 0) {
     showToast('Could not fetch abroad prices from YATA. Try refreshing.', 'warning');
