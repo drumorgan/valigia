@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.43.0
+// @version      0.44.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.43.0';
+  const SCRIPT_VERSION = '0.44.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4604,9 +4604,53 @@
     }
   }
 
-  // Walk a chronologically-sorted sample series and split into runs of
-  // non-increasing quantity; a strictly-positive delta is a restock and
-  // breaks the run. Same shape as stock-forecast.js's allDepletionSegments.
+  // Fallback source for the "Before you fly" list when YATA's live export is
+  // momentarily unreachable: the latest yata_snapshots reading per item for a
+  // destination. The cron-snapshot-yata edge function keeps this table fresh
+  // every ~5 min server-side, so it covers a transient YATA outage with our
+  // own data instead of an empty "No data" panel. Returns
+  // Map item_id -> { item_id, stock, buy_price, snapped_at }.
+  async function fetchLatestSnapshotsForDestination(destination) {
+    if (!destination) return new Map();
+    const cutoffIso = new Date(Date.now() - SNAPSHOTS_HISTORY_MINS * 60_000).toISOString();
+    const url = YATA_SNAPSHOTS_URL +
+      '?select=item_id,quantity,buy_price,snapped_at' +
+      '&destination=eq.' + encodeURIComponent(destination) +
+      '&snapped_at=gte.' + encodeURIComponent(cutoffIso) +
+      '&order=snapped_at.desc' +
+      '&limit=20000';
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: url,
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.status < 200 || res.status >= 300) return new Map();
+      const rows = JSON.parse(res.responseText || '[]');
+      const latest = new Map();
+      for (const r of rows) {
+        if (!r) continue;
+        const itemId = Number(r.item_id);
+        if (!Number.isFinite(itemId) || latest.has(itemId)) continue; // desc → first wins
+        const qty = Number(r.quantity);
+        const buy = Number(r.buy_price);
+        latest.set(itemId, {
+          item_id: itemId,
+          stock: Number.isFinite(qty) ? qty : null,
+          buy_price: Number.isFinite(buy) ? buy : null,
+          snapped_at: r.snapped_at || null,
+        });
+      }
+      return latest;
+    } catch (e) {
+      return new Map();
+    }
+  }
+
   function splitDepletionSegments(samples) {
     if (!samples || samples.length < 2) return [];
     const segs = [];
@@ -5184,6 +5228,28 @@
       merged.push({ item_id: itemId, name: s.name, buy_price: s.buy_price, stock: s.stock });
     }
 
+    let usingSnapshotFallback = false;
+    if (merged.length === 0) {
+      // YATA's live export was empty/unreachable and we have no fresh scrape.
+      // Fall back to our own cron-fed snapshot history rather than showing
+      // "No data" — covers a transient YATA outage with the latest reading
+      // we recorded for this destination.
+      const [snapLatest] = await Promise.all([
+        fetchLatestSnapshotsForDestination(destination),
+        ensureItemCatalog(),
+      ]);
+      if (generation !== countryDetailGeneration) return;
+      for (const [itemId, snap] of snapLatest) {
+        merged.push({
+          item_id: itemId,
+          name: itemNameFor(itemId),
+          buy_price: snap.buy_price,
+          stock: snap.stock,
+        });
+      }
+      usingSnapshotFallback = merged.length > 0;
+    }
+
     if (merged.length === 0) {
       body.textContent = '';
       const msg = document.createElement('div');
@@ -5207,6 +5273,12 @@
     merged.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
 
     body.textContent = '';
+    if (usingSnapshotFallback) {
+      const note = document.createElement('div');
+      note.className = 'vgl-br-detail-msg';
+      note.textContent = 'YATA unavailable — showing our latest recorded data';
+      body.appendChild(note);
+    }
     for (const r of merged) {
       const row = document.createElement('div');
       row.className = 'vgl-br-row';
