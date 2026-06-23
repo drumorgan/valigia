@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.48.0
+// @version      0.49.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.48.0';
+  const SCRIPT_VERSION = '0.49.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4352,6 +4352,14 @@
   // but the next pda_prefs read will overwrite it with the shared value.
   // Default 29 is the fallback before any detection has happened.
   const SLOTS_STORAGE_KEY = 'valigia_pda_slots';
+  // Last capacity value we successfully pushed to the shared pool. Tracked
+  // separately from SLOTS_STORAGE_KEY so the sync still fires on the upgrade
+  // path: an older userscript already wrote the real capacity to the slot key
+  // locally but never to Supabase, so keying the sync off "slot value changed"
+  // would skip it forever. We push whenever the detected value differs from
+  // what we last confirmed synced, and only mark it synced on a successful
+  // write (so a failure — e.g. before the migration is live — retries).
+  const CAPACITY_SYNCED_KEY = 'valigia_pda_capacity_synced';
   function getSlotCount() {
     try {
       const raw = localStorage.getItem(SLOTS_STORAGE_KEY);
@@ -4378,15 +4386,26 @@
       if (!m) return;
       const cap = Number(m[1]);
       if (!Number.isFinite(cap) || cap < 10 || cap > 86) return;
-      if (Number(localStorage.getItem(SLOTS_STORAGE_KEY)) === cap) return;
-      localStorage.setItem(SLOTS_STORAGE_KEY, String(cap));
-      log('travel capacity auto-detected: ' + cap);
-      // Sync to the shared pool (fire-and-forget). postPdaFields self-guards
-      // on a missing/placeholder key and never rejects.
-      if (TORN_API_KEY && TORN_API_KEY.indexOf('PDA-APIKEY') === -1) {
+      // Update the local display value only when it actually changed.
+      if (Number(localStorage.getItem(SLOTS_STORAGE_KEY)) !== cap) {
+        localStorage.setItem(SLOTS_STORAGE_KEY, String(cap));
+        log('travel capacity auto-detected: ' + cap);
+      }
+      // Sync to the shared pool whenever the pool doesn't already have this
+      // exact value from us — independent of the local-display check above, so
+      // an upgrade from a version that only wrote locally still pushes once.
+      // Fire-and-forget; postPdaFields self-guards on a missing/placeholder
+      // key and never rejects. Mark synced only on success so a failure (e.g.
+      // migration 040 not yet applied) retries on the next landing.
+      if (TORN_API_KEY && TORN_API_KEY.indexOf('PDA-APIKEY') === -1
+          && Number(localStorage.getItem(CAPACITY_SYNCED_KEY)) !== cap) {
         postPdaFields({ travel_capacity: cap }).then(function (r) {
-          if (r && r.ok) log('travel capacity synced to pool: ' + cap);
-          else log('travel capacity sync failed: ' + (r && r.error));
+          if (r && r.ok) {
+            try { localStorage.setItem(CAPACITY_SYNCED_KEY, String(cap)); } catch (_) { /* ignore */ }
+            log('travel capacity synced to pool: ' + cap);
+          } else {
+            log('travel capacity sync failed: ' + (r && r.error));
+          }
         });
       }
     } catch (e) { /* non-fatal */ }
@@ -7563,10 +7582,13 @@
       return;
     }
     // One read carries both prefs: the indicator flag and the synced capacity.
+    // select=* (not an explicit column list) so the query still succeeds in
+    // the window before migration 040 adds travel_capacity — naming a missing
+    // column would 400 the whole read and drop show_indicators with it.
     const rows = await fetchJSON(
       PDA_PREFS_URL +
       '?player_id=eq.' + encodeURIComponent(playerId) +
-      '&select=show_indicators,travel_capacity'
+      '&select=*'
     );
     let show;
     let capacity = cached ? cached.capacity : null;
