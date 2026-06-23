@@ -163,7 +163,7 @@ export function renderControls(container, onChange, onCategoryChange) {
       <label class="control-group">
         <span class="control-label">Slots</span>
         <input type="number" id="ctl-slots" class="control-input control-input--slim"
-               value="${slotCount}" min="5" max="44" />
+               value="${slotCount}" min="10" max="43" />
       </label>
       <label class="control-group">
         <span class="control-label">Flight</span>
@@ -201,7 +201,7 @@ export function renderControls(container, onChange, onCategoryChange) {
   `;
 
   container.querySelector('#ctl-slots').addEventListener('input', (e) => {
-    slotCount = Math.max(5, Math.min(44, parseInt(e.target.value) || 29));
+    slotCount = Math.max(10, Math.min(43, parseInt(e.target.value) || 29));
     persistControls();
     onChange();
   });

@@ -28,20 +28,23 @@ export const CANONICAL_DESTINATIONS = [
   'South Africa',
 ];
 
+// flightMins = Standard one-way time from Torn's official flight table after
+// Traveling 2.0 Phase 2 (Jun 2026). Airstrip / WLT / Business are derived via
+// the flight-type multipliers in ui.js.
 export const DESTINATIONS = {
-  'South Africa':     { flightMins: 311, flag: '🇿🇦', code: 'ZAF' },
-  'UAE':              { flightMins: 259, flag: '🇦🇪', code: 'UAE' },
-  'China':            { flightMins: 219, flag: '🇨🇳', code: 'CHN' },
-  'Japan':            { flightMins: 203, flag: '🇯🇵', code: 'JPN' },
-  'Argentina':        { flightMins: 189, flag: '🇦🇷', code: 'ARG' },
-  'Switzerland':      { flightMins: 169, flag: '🇨🇭', code: 'SWI' },
-  'UK':               { flightMins: 152, flag: '🇬🇧', code: 'UK'  },
-  'United Kingdom':   { flightMins: 152, flag: '🇬🇧', code: 'UK'  },
-  'Hawaii':           { flightMins: 121, flag: '🏝️', code: 'HAW' },
-  'Caymans':          { flightMins: 57,  flag: '🇰🇾', code: 'CAY' },
-  'Cayman Islands':   { flightMins: 57,  flag: '🇰🇾', code: 'CAY' },
-  'Canada':           { flightMins: 37,  flag: '🇨🇦', code: 'CAN' },
-  'Mexico':           { flightMins: 20,  flag: '🇲🇽', code: 'MEX' },
+  'South Africa':     { flightMins: 281, flag: '🇿🇦', code: 'ZAF' },
+  'UAE':              { flightMins: 257, flag: '🇦🇪', code: 'UAE' },
+  'China':            { flightMins: 229, flag: '🇨🇳', code: 'CHN' },
+  'Japan':            { flightMins: 213, flag: '🇯🇵', code: 'JPN' },
+  'Argentina':        { flightMins: 158, flag: '🇦🇷', code: 'ARG' },
+  'Switzerland':      { flightMins: 166, flag: '🇨🇭', code: 'SWI' },
+  'UK':               { flightMins: 151, flag: '🇬🇧', code: 'UK'  },
+  'United Kingdom':   { flightMins: 151, flag: '🇬🇧', code: 'UK'  },
+  'Hawaii':           { flightMins: 127, flag: '🏝️', code: 'HAW' },
+  'Caymans':          { flightMins: 33,  flag: '🇰🇾', code: 'CAY' },
+  'Cayman Islands':   { flightMins: 33,  flag: '🇰🇾', code: 'CAY' },
+  'Canada':           { flightMins: 39,  flag: '🇨🇦', code: 'CAN' },
+  'Mexico':           { flightMins: 25,  flag: '🇲🇽', code: 'MEX' },
 };
 
 // Long-form → canonical short-form. Anything not in the map is returned
