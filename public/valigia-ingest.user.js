@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.46.0
+// @version      0.47.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.46.0';
+  const SCRIPT_VERSION = '0.47.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4328,12 +4328,16 @@
   // this. Keeps a safety net against runaway DOM cost if Torn ever
   // dramatically expands the catalog.
   const INFLIGHT_MAX_ROWS = 50;
-  // Slots to multiply the buy price by for the run-cost column. The web
-  // app stores its slot count in localStorage under 'valigia_slots' on the
-  // valigia.girovagabondo.com origin, which the userscript can't read
-  // (cross-origin). Use a separate key the player can override:
+  // Slots to multiply the buy price by for the run-cost column. The web app
+  // stores its slot count under 'valigia_slots' on its own origin, which we
+  // can't read cross-origin — so capacity is now synced through the shared
+  // pda_prefs.travel_capacity column instead: detectAndStoreTravelCapacity()
+  // writes the real value to Supabase, refreshIndicatorPref() reads it back
+  // into this local key on every dispatch, and the web app reads the same
+  // row. A manual override still works between syncs:
   //   localStorage.setItem('valigia_pda_slots', '32')
-  // Default 29 matches the web app and is correct for most players.
+  // but the next pda_prefs read will overwrite it with the shared value.
+  // Default 29 is the fallback before any detection has happened.
   const SLOTS_STORAGE_KEY = 'valigia_pda_slots';
   function getSlotCount() {
     try {
@@ -4346,11 +4350,14 @@
   }
 
   // Auto-detect the player's exact travel capacity from the abroad shop page,
-  // which prints "You have purchased X / Y items so far" — Y is the total
-  // travel capacity (base + suitcases + stocks + perks), the precise number
-  // the web app's perks-only estimate can't compute. Store it so the best-run
-  // math uses the real value automatically on each landing. Text-based, so far
-  // more reliable than counting the inventory grid squares.
+  // which prints "You have purchased X / Y items so far". We read Y, the
+  // DENOMINATOR — the total travel capacity (base + suitcases + stocks +
+  // perks) — never X, the number bought this trip. So buying fewer items than
+  // the cap never lowers the stored value, but a real capacity change (e.g.
+  // the Phase 2 29 → 28) is captured because Y itself changes. On a change we
+  // store it locally AND push it to the shared pda_prefs row so the web table
+  // and every other Torn page converge on the same number. Runs even in
+  // silent mode — capacity is a data contribution, not a visual surface.
   function detectAndStoreTravelCapacity() {
     try {
       const body = document.body ? document.body.innerText : '';
@@ -4361,7 +4368,30 @@
       if (Number(localStorage.getItem(SLOTS_STORAGE_KEY)) === cap) return;
       localStorage.setItem(SLOTS_STORAGE_KEY, String(cap));
       log('travel capacity auto-detected: ' + cap);
+      // Sync to the shared pool (fire-and-forget). postPdaFields self-guards
+      // on a missing/placeholder key and never rejects.
+      if (TORN_API_KEY && TORN_API_KEY.indexOf('PDA-APIKEY') === -1) {
+        postPdaFields({ travel_capacity: cap }).then(function (r) {
+          if (r && r.ok) log('travel capacity synced to pool: ' + cap);
+          else log('travel capacity sync failed: ' + (r && r.error));
+        });
+      }
     } catch (e) { /* non-fatal */ }
+  }
+
+  // Write a Supabase-synced capacity into the local slot key. Used by
+  // refreshIndicatorPref so non-travel pages (and other devices) pick up the
+  // shared value without needing a fresh travel-page scrape. Bounds-checked;
+  // no-op when unchanged or out of range.
+  function applySyncedCapacity(cap) {
+    const n = Number(cap);
+    if (!Number.isFinite(n) || n < 10 || n > 86) return;
+    try {
+      if (Number(localStorage.getItem(SLOTS_STORAGE_KEY)) !== n) {
+        localStorage.setItem(SLOTS_STORAGE_KEY, String(n));
+        log('travel capacity synced from pool: ' + n);
+      }
+    } catch (_) { /* ignore */ }
   }
   // One-way flight times in minutes, mirroring src/data/destinations.js
   // (game constants). The home-screen Best Run board uses these to turn
@@ -7508,6 +7538,9 @@
     if (cached && typeof cached.show === 'boolean'
         && Date.now() - cached.fetchedAt < INDICATOR_PREF_TTL_MS) {
       indicatorsHidden = !cached.show;
+      // Keep the local slot key aligned with the synced capacity even on a
+      // cache hit (the travel-page detect still overrides this afterwards).
+      applySyncedCapacity(cached.capacity);
       return;
     }
 
@@ -7516,25 +7549,31 @@
       indicatorsHidden = false;
       return;
     }
+    // One read carries both prefs: the indicator flag and the synced capacity.
     const rows = await fetchJSON(
       PDA_PREFS_URL +
       '?player_id=eq.' + encodeURIComponent(playerId) +
-      '&select=show_indicators'
+      '&select=show_indicators,travel_capacity'
     );
     let show;
+    let capacity = cached ? cached.capacity : null;
     if (Array.isArray(rows)) {
       // No row yet means the player never touched the toggle → show.
       show = !(rows.length > 0 && rows[0] && rows[0].show_indicators === false);
+      if (rows.length > 0 && rows[0] && rows[0].travel_capacity != null) {
+        capacity = rows[0].travel_capacity;
+      }
     } else if (cached && typeof cached.show === 'boolean') {
       show = cached.show;
     } else {
       show = true;
     }
     indicatorsHidden = !show;
+    applySyncedCapacity(capacity);
     try {
       localStorage.setItem(
         INDICATOR_PREF_CACHE_KEY,
-        JSON.stringify({ playerId: playerId, show: show, fetchedAt: Date.now() })
+        JSON.stringify({ playerId: playerId, show: show, capacity: capacity, fetchedAt: Date.now() })
       );
     } catch (_) { /* ignore quota / disabled storage */ }
   }
@@ -7553,16 +7592,19 @@
         JSON.stringify({
           playerId: (prev && prev.playerId) || null,
           show: show,
+          capacity: (prev && prev.capacity) || null,
           fetchedAt: Date.now(),
         })
       );
     } catch (_) { /* ignore quota / disabled storage */ }
   }
 
-  // Persist the player's show/hide choice to pda_prefs via the edge function's
-  // api_key auth branch — same trust model as the watchlist writes, since the
-  // userscript holds the raw Torn key but no Valigia session token.
-  async function postPdaPref(showIndicators) {
+  // Persist one or more pda_prefs fields via the edge function's api_key auth
+  // branch — same trust model as the watchlist writes, since the userscript
+  // holds the raw Torn key but no Valigia session token. `fields` carries
+  // whichever columns to write (show_indicators and/or travel_capacity); the
+  // edge function leaves the others untouched. Never rejects.
+  async function postPdaFields(fields) {
     try {
       const res = await gmRequest({
         method: 'POST',
@@ -7572,11 +7614,10 @@
           'apikey': SUPABASE_ANON_KEY,
           'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
         },
-        data: JSON.stringify({
-          action: 'set',
-          api_key: TORN_API_KEY,
-          show_indicators: !!showIndicators,
-        }),
+        data: JSON.stringify(Object.assign(
+          { action: 'set', api_key: TORN_API_KEY },
+          fields
+        )),
       });
       let data = null;
       try { data = JSON.parse(res.responseText || '{}'); } catch (_) { /* ignore */ }
@@ -7587,6 +7628,11 @@
     } catch (e) {
       return { ok: false, error: 'network' };
     }
+  }
+
+  // Back-compat wrapper for the in-game "V" toggle.
+  async function postPdaPref(showIndicators) {
+    return postPdaFields({ show_indicators: !!showIndicators });
   }
 
   // -- In-game overlay toggle ("V" button) ---------------------------------

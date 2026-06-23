@@ -56,7 +56,11 @@ type Body = {
   session_token?: string;
   // PDA path: raw Torn key, validated against user/basic to derive player_id.
   api_key?: string;
-  show_indicators: boolean;
+  // At least one of these must be present. show_indicators flips the
+  // userscript's visual surfaces; travel_capacity is the player's true
+  // current carry max, synced between the web table and the in-game overlays.
+  show_indicators?: boolean;
+  travel_capacity?: number | null;
 };
 
 serve(async (req) => {
@@ -70,8 +74,28 @@ serve(async (req) => {
 
     const body = (await req.json()) as Body;
     if (body.action !== 'set') return json({ success: false, error: 'unknown_action' }, 400);
-    if (typeof body.show_indicators !== 'boolean') {
+
+    // Validate whichever fields are present; require at least one. This lets
+    // the web overlay modal write show_indicators, the userscript's "V"
+    // button write show_indicators, and the capacity sync (both surfaces)
+    // write travel_capacity — all through the one endpoint.
+    const hasShow = body.show_indicators !== undefined;
+    const hasCapacity = body.travel_capacity !== undefined && body.travel_capacity !== null;
+    if (!hasShow && !hasCapacity) {
+      return json({ success: false, error: 'no_fields' }, 400);
+    }
+    if (hasShow && typeof body.show_indicators !== 'boolean') {
       return json({ success: false, error: 'invalid_show_indicators' }, 400);
+    }
+    let capacityValue: number | undefined;
+    if (hasCapacity) {
+      capacityValue = Number(body.travel_capacity);
+      // Traveling 2.0 Phase 2 range: base 10, max 43 (86 on World Tourism
+      // Day). Reject anything outside it so a bad scrape can't poison the
+      // shared value for the web table or the in-game overlays.
+      if (!Number.isInteger(capacityValue) || capacityValue < 10 || capacityValue > 86) {
+        return json({ success: false, error: 'invalid_travel_capacity' }, 400);
+      }
     }
 
     // Resolve player_id from one of two auth methods. Both end in the same
@@ -114,16 +138,20 @@ serve(async (req) => {
       player_id = pid;
     }
 
+    // Build the upsert from only the fields the caller sent. Columns left
+    // out keep their existing value on update (and take their table default
+    // on a first insert — show_indicators defaults to true), so a
+    // capacity-only write never clobbers the indicator flag and vice versa.
+    const row: Record<string, unknown> = {
+      player_id,
+      updated_at: new Date().toISOString(),
+    };
+    if (hasShow) row.show_indicators = body.show_indicators;
+    if (hasCapacity) row.travel_capacity = capacityValue;
+
     const { error } = await supabase
       .from('pda_prefs')
-      .upsert(
-        {
-          player_id,
-          show_indicators: body.show_indicators,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'player_id' }
-      );
+      .upsert(row, { onConflict: 'player_id' });
     if (error) return json({ success: false, error: error.message }, 500);
     return json({ success: true });
   } catch (_err) {

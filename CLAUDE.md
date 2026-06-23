@@ -99,7 +99,7 @@ editor; Supabase does not auto-apply them).
 | `ingest_rate_limits` | Per-`(player_id, endpoint)` gate enforcing a minimum interval between ingest writes. Service-role only (no RLS policies). The `ingest_rate_check()` RPC does an atomic check-and-set with a row-level `FOR UPDATE` lock, returning `false` if the caller's last write was too recent. Migration 027. |
 | `te_traders` | Catalog of TornExchange trader pages we scrape (handle PK, optional `torn_player_id`, `submitted_by`, `last_scraped_at`, `last_scrape_ok`, `consecutive_fails`, `item_count`). Writes via the `ingest-te-trader` edge fn only; reads public. Migration 028. |
 | `te_buy_prices` | Per-trader standing buy-offers (`handle + item_id` composite key). `buy_price` is what the trader advertises they'll pay per unit. The Sell tab's inventory matcher picks the highest across all traders per item_id. Migration 028. |
-| `pda_prefs` | Per-player PDA userscript preferences (`player_id` PK). Currently one flag: `show_indicators` — false puts the userscript in silent mode (no bars/overlays/toasts/badges) while every scrape keeps contributing to the pool. Set from either the website's PDA overlay modal (session-token auth) or the userscript's in-game "V" overlay toggle (raw Torn `api_key` auth), both through the `pda-prefs` edge function; reads are public (the userscript polls with an anon SELECT, 60 s localStorage cache). Migration 034. |
+| `pda_prefs` | Per-player PDA userscript preferences (`player_id` PK). Two fields: (1) `show_indicators` — false puts the userscript in silent mode (no bars/overlays/toasts/badges) while every scrape keeps contributing to the pool; (2) `travel_capacity` (migration 040) — the player's true current carry max, the shared source of truth for the slot count on both surfaces. The userscript auto-detects it off the travel shop's "purchased X / **Y** items" line (reads **Y**, the denominator/capacity, never X the quantity bought — so buying fewer never lowers it, but a real change like the Phase 2 29→28 is captured) and writes it here; the web app reads it on load and applies it exactly (overriding the rough perks estimate, in both directions), and a manual web Slots edit writes back so the in-game overlays converge. Both fields are set from either the website (session-token auth) or the userscript (raw Torn `api_key` auth), through the `pda-prefs` edge function; reads are public (the userscript polls with an anon SELECT, 60 s localStorage cache). Range-checked 10–86. Migration 034, 040. |
 
 **RPC functions** (granted to anon + authenticated):
 - `record_scan(found_deal boolean)` — atomic increment after each scan
@@ -224,9 +224,13 @@ when the savings warrant it.
 
 All persisted in `localStorage`:
 
-- **Slot count** — number input, default 29, min 10, max 43 (Traveling 2.0
-  Phase 2: base capacity 10, max 43; 86 on World Tourism Day). Auto-detect
-  from perks misses faction perks, so the user can override manually.
+- **Slot count** — number input, default 29, min 10, max 86 (Traveling 2.0
+  Phase 2: base capacity 10, max 43; 86 on World Tourism Day). Three sources,
+  in precedence order: (1) the exact value the PDA userscript auto-detects
+  off the travel page, synced via `pda_prefs.travel_capacity` and applied on
+  load in both directions; (2) the perks estimate (lower bound, only ever
+  raises); (3) the stored/default value. A manual edit writes back to
+  `pda_prefs` so the in-game overlays show the same number.
 - **Flight type** — dropdown: Standard (default) | Airstrip. Auto-detected
   from perks, manually overridable.
 - **Destination filter** — dropdown: All | one specific country.
@@ -362,7 +366,8 @@ valigia.girovagabondo.com/
 │       ├── 036_restock_pre_observed_at.sql
 │       ├── 037_resolve_against_midpoint.sql
 │       ├── 038_forecast_accuracy_by_model.sql
-│       └── 039_cron_snapshot_yata.sql
+│       ├── 039_cron_snapshot_yata.sql
+│       └── 040_pda_prefs_travel_capacity.sql
 ├── .env
 ├── vite.config.js
 └── .github/
