@@ -224,7 +224,8 @@ when the savings warrant it.
 
 All persisted in `localStorage`:
 
-- **Slot count** — number input, default 29, min 5, max 44. Auto-detect
+- **Slot count** — number input, default 29, min 10, max 43 (Traveling 2.0
+  Phase 2: base capacity 10, max 43; 86 on World Tourism Day). Auto-detect
   from perks misses faction perks, so the user can override manually.
 - **Flight type** — dropdown: Standard (default) | Airstrip. Auto-detected
   from perks, manually overridable.

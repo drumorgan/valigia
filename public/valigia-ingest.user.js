@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.44.0
+// @version      0.45.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.44.0';
+  const SCRIPT_VERSION = '0.45.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4347,18 +4347,20 @@
   // (game constants). The home-screen Best Run board uses these to turn
   // profit/run into profit/hr so destinations with different flight times
   // rank fairly against each other.
+  // Standard one-way flight times, official Torn table after Traveling 2.0
+  // Phase 2 (Jun 2026). Airstrip/WLT/Business are derived via the multiplier.
   const FLIGHT_MINS = {
-    'Mexico': 20,
-    'Canada': 37,
-    'Caymans': 57,
-    'Hawaii': 121,
-    'UK': 152,
-    'Switzerland': 169,
-    'Argentina': 189,
-    'Japan': 203,
-    'China': 219,
-    'UAE': 259,
-    'South Africa': 311,
+    'Mexico': 25,
+    'Canada': 39,
+    'Caymans': 33,
+    'Hawaii': 127,
+    'UK': 151,
+    'Switzerland': 166,
+    'Argentina': 158,
+    'Japan': 213,
+    'China': 229,
+    'UAE': 257,
+    'South Africa': 281,
   };
   // Flight-time multiplier: 1.0 standard, 0.7 airstrip/WLT, 0.49 both.
   // Like the slot count, the web app's value lives on an origin we can't
