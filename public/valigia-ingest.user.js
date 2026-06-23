@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.45.0
+// @version      0.46.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.45.0';
+  const SCRIPT_VERSION = '0.46.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4339,9 +4339,29 @@
     try {
       const raw = localStorage.getItem(SLOTS_STORAGE_KEY);
       const n = Number(raw);
-      if (Number.isFinite(n) && n >= 5 && n <= 44) return n;
+      // Traveling 2.0 Phase 2 range: base 10, max 43 (86 on World Tourism Day).
+      if (Number.isFinite(n) && n >= 10 && n <= 86) return n;
     } catch { /* ignore */ }
     return 29;
+  }
+
+  // Auto-detect the player's exact travel capacity from the abroad shop page,
+  // which prints "You have purchased X / Y items so far" — Y is the total
+  // travel capacity (base + suitcases + stocks + perks), the precise number
+  // the web app's perks-only estimate can't compute. Store it so the best-run
+  // math uses the real value automatically on each landing. Text-based, so far
+  // more reliable than counting the inventory grid squares.
+  function detectAndStoreTravelCapacity() {
+    try {
+      const body = document.body ? document.body.innerText : '';
+      const m = body.match(/purchased\s+\d+\s*\/\s*(\d+)\s+items/i);
+      if (!m) return;
+      const cap = Number(m[1]);
+      if (!Number.isFinite(cap) || cap < 10 || cap > 86) return;
+      if (Number(localStorage.getItem(SLOTS_STORAGE_KEY)) === cap) return;
+      localStorage.setItem(SLOTS_STORAGE_KEY, String(cap));
+      log('travel capacity auto-detected: ' + cap);
+    } catch (e) { /* non-fatal */ }
   }
   // One-way flight times in minutes, mirroring src/data/destinations.js
   // (game constants). The home-screen Best Run board uses these to turn
@@ -5836,6 +5856,10 @@
       if (!silent) watchPickerSelection();
       return;
     }
+
+    // Learn the player's real travel capacity from the shop page's
+    // "purchased X / Y items" line while we're abroad (Y = capacity).
+    detectAndStoreTravelCapacity();
 
     // Mount the stakeout toggle as soon as we know the user is abroad.
     // Idempotent: re-running this on a stakeout tick is a no-op. Must run

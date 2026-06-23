@@ -309,8 +309,12 @@ async function detectPlayerTravel(playerId) {
   // Detect airstrip: look for "Airstrip" in any perk string
   const airstrip = allPerks.some(p => /airstrip/i.test(p));
 
-  // Detect travel capacity: base 5, plus "+N travel item(s)" perks
-  let slots = 5;
+  // Detect travel capacity: base 10 (Traveling 2.0 Phase 2 doubled it from
+  // 5), plus "+N travel item(s)" perks. Note this is a lower bound — Torn
+  // exposes suitcase and stock capacity as items/bonuses, not perk strings,
+  // so they aren't counted here. The player can override manually, and the
+  // PDA userscript reads the exact total off the travel page.
+  let slots = 10;
   const capacityRegex = /\+?(\d+)\s+travel\s+items?\b/i;
   for (const p of allPerks) {
     const match = p.match(capacityRegex);
