@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.47.0
+// @version      0.48.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.47.0';
+  const SCRIPT_VERSION = '0.48.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -992,9 +992,22 @@
       '}',
       // When the host row isn't a <tr>, we inject a block-level <div> below
       // the row instead. Give it a touch of top margin so it reads as an
-      // annotation of the row above rather than a row of its own.
+      // annotation of the row above rather than a row of its own. Torn's
+      // post-Traveling-2.0 shop lays items out as a flex/grid card gallery,
+      // so the cell is often inserted as a sibling INSIDE a flex-wrap or grid
+      // container. Without forcing a full-width line it gets treated as just
+      // another grid item and the nowrap text overflows sideways across the
+      // tiles (the garbled band). flex-basis/grid-column claim a whole row in
+      // those layouts (ignored harmlessly in a plain block parent), and
+      // white-space:normal lets the text wrap instead of bleeding across.
       'div.valigia-cell {',
       '  display: block;',
+      '  flex: 0 0 100%;',
+      '  width: 100%;',
+      '  max-width: 100%;',
+      '  box-sizing: border-box;',
+      '  grid-column: 1 / -1;',
+      '  white-space: normal;',
       '  margin: 2px 0 6px 44px;',
       '  border-left: 3px solid #252a35;',
       '  border-radius: 2px;',
