@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.49.0
+// @version      0.50.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.49.0';
+  const SCRIPT_VERSION = '0.50.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -1102,6 +1102,15 @@
 
       const row = rowContainer(img);
       if (!row) continue;
+      // Skip images that aren't inside a real shop section. Torn's
+      // post-Traveling-2.0 travel page shows an "items purchased this trip"
+      // tile gallery above the shops; those tiles share item_ids with shop
+      // rows, so they'd otherwise borrow a buy price and get decorated with a
+      // redundant Market Price line (the "too much" clutter on a partly-bought
+      // trip). Real shop rows resolve to a known category heading (General
+      // Store, Pharmacy, …); the gallery sits above every heading and resolves
+      // to 'Unknown', so this cleanly excludes it without a brittle selector.
+      if (nearestShopCategoryFor(img) === 'Unknown') continue;
       // Skip rows we've already decorated (in case the script fires twice
       // from tab switches inside the same page).
       if (row.classList && row.classList.contains('valigia-decorated')) continue;
