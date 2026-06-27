@@ -17,6 +17,7 @@
 import { supabase } from './supabase.js';
 import { safeGetItem, safeSetItem } from './storage.js';
 import { normalizeDestination } from './data/destinations.js';
+import { getItemNameById } from './item-resolver.js';
 
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 const CACHE_KEY = 'valigia_yata_cache_v1';
@@ -185,6 +186,41 @@ async function fetchYataAbroadPrices() {
 }
 
 /**
+ * Fall back to our own server-side YATA mirror when the live fetch and the
+ * localStorage cache both come up empty. The cron-snapshot-yata poller writes
+ * yata_snapshots every 5 min for every destination, so this keeps the Travel
+ * table populated through a browser-side YATA blip (or on a fresh device with
+ * no cache) instead of going blank. get_latest_yata_snapshots() (migration
+ * 041) returns the newest reading per (item_id, destination). Names aren't
+ * stored in snapshots, so we resolve them from the curated catalog.
+ * Returns a plain array (possibly empty); never throws.
+ */
+async function fetchSnapshotAbroadPrices() {
+  try {
+    const { data, error } = await supabase.rpc('get_latest_yata_snapshots');
+    if (error || !Array.isArray(data)) return [];
+    const out = [];
+    for (const row of data) {
+      if (row.buy_price == null) continue;
+      out.push({
+        item_id: row.item_id,
+        item_name: getItemNameById(row.item_id) || `Item ${row.item_id}`,
+        destination: normalizeDestination(row.destination),
+        buy_price: row.buy_price,
+        reported_at: row.snapped_at,
+        quantity: row.quantity,
+        // Tagged 'yata' (it is YATA data, just from our mirror); the result's
+        // cached flag drives the offline banner that explains it isn't live.
+        source: 'yata',
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Fetch abroad prices, preferring fresh first-party scrapes over YATA.
  *
  * Returns { items, cached, cachedAt }:
@@ -206,18 +242,40 @@ export async function fetchAbroadPrices() {
     fetchFirstPartyAbroadPrices(),
   ]);
 
-  // No YATA AND no first-party → total failure.
-  if ((!yata || yata.items.length === 0) && firstParty.length === 0) {
+  // The "backbone" is YATA — live, else the localStorage cache. When both come
+  // up empty, fall back to our server-side YATA mirror (yata_snapshots) so a
+  // browser-side YATA blip doesn't blank the table. The mirror isn't live, so
+  // it's flagged cached to trip the offline banner.
+  let backbone = yata;
+  let backboneCached = yata ? yata.cached : false;
+  let backboneCachedAt = yata ? yata.cachedAt : null;
+
+  if (!backbone || backbone.items.length === 0) {
+    const snapshotItems = await fetchSnapshotAbroadPrices();
+    if (snapshotItems.length > 0) {
+      let newest = 0;
+      for (const it of snapshotItems) {
+        const t = new Date(it.reported_at).getTime();
+        if (Number.isFinite(t) && t > newest) newest = t;
+      }
+      backbone = { items: snapshotItems };
+      backboneCached = true;
+      backboneCachedAt = newest || null;
+    }
+  }
+
+  // No backbone AND no first-party → total failure.
+  if ((!backbone || backbone.items.length === 0) && firstParty.length === 0) {
     return null;
   }
 
-  // Build the merged map, YATA first, then overlay fresh scrapes on top.
+  // Build the merged map, backbone first, then overlay fresh scrapes on top.
   // Keyed by item_id|destination so items sold in multiple countries (e.g.
   // African Violet in UAE + SA, Xanax in JP + SA) stay distinct.
   const merged = new Map();
 
-  if (yata && yata.items.length > 0) {
-    for (const it of yata.items) {
+  if (backbone && backbone.items.length > 0) {
+    for (const it of backbone.items) {
       merged.set(`${it.item_id}|${it.destination}`, it);
     }
   }
@@ -227,7 +285,7 @@ export async function fetchAbroadPrices() {
 
   return {
     items: Array.from(merged.values()),
-    cached: yata ? yata.cached : false,
-    cachedAt: yata ? yata.cachedAt : null,
+    cached: backboneCached,
+    cachedAt: backboneCachedAt,
   };
 }

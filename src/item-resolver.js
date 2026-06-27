@@ -35,6 +35,19 @@ export function getItemTypeById(id) {
 }
 
 /**
+ * Resolve a curated abroad item's display name from its id. Used by the
+ * snapshot fallback in log-sync, where yata_snapshots stores ids only (no
+ * name column). Returns null for ids outside the curated ABROAD_ITEMS list,
+ * so the caller can apply its own "Item N" placeholder.
+ */
+export function getItemNameById(id) {
+  for (const item of ABROAD_ITEMS) {
+    if (item.itemId === id) return item.name;
+  }
+  return null;
+}
+
+/**
  * Try to fill null itemIds from localStorage cache.
  * Returns true if all items are now resolved.
  */
