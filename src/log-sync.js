@@ -21,6 +21,14 @@ import { normalizeDestination } from './data/destinations.js';
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 const CACHE_KEY = 'valigia_yata_cache_v1';
 
+// Hard ceiling on the YATA live fetch. Without it, a YATA outage where the
+// host accepts the connection but never responds (a hung socket, not a clean
+// error) leaves the fetch pending forever — the dashboard's load Promise.all
+// never resolves and the Travel table is stuck on its loading state. On abort
+// we fall through to the cache / first-party path, exactly like any other
+// fetch failure.
+const YATA_TIMEOUT_MS = 10 * 1000;
+
 // A scrape counts as "authoritative" for this long after observed_at.
 // 10 minutes matches the bazaar-pool freshness window and covers the
 // typical round trip for a user flying in and back out again.
@@ -122,7 +130,14 @@ async function fetchFirstPartyAbroadPrices() {
  */
 async function fetchYataAbroadPrices() {
   try {
-    const res = await fetch(YATA_URL);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), YATA_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(YATA_URL, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();

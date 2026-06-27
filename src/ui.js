@@ -278,7 +278,12 @@ export function setDetectedCapacity(cap) {
   safeSetItem(STORAGE_SLOTS, String(slotCount));
   const el = document.getElementById('ctl-slots');
   if (el) el.value = slotCount;
-  renderTable();
+  // Only re-render once there's data. During the initial load this runs
+  // before setKnownItems, and an empty render would replace the shimmer with
+  // the "No abroad price data yet" message — which then lingers if the YATA
+  // fetch is slow, looking like a failure. The shimmer (or real rows) is the
+  // right thing to show until knownItems is populated.
+  if (knownItems.length) renderTable();
 }
 
 /**
@@ -302,7 +307,9 @@ export function setPlayerTravel(slots, airstrip) {
     if (disp && ft) disp.textContent = ft.short;
   }
   persistControls();
-  renderTable();
+  // Same guard as setDetectedCapacity: don't paint the empty-state message
+  // before the abroad data has loaded (perks resolve before the YATA fetch).
+  if (knownItems.length) renderTable();
 }
 
 // ── Data ───────────────────────────────────────────────────────
