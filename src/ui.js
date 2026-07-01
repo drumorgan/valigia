@@ -567,6 +567,16 @@ function renderStockCell(row) {
       ? 'stock-eta--restock'
       : 'stock-eta--restock-low';
 
+  // Which model made the restock-timing call (v3). Half-sellout = Torn's
+  // documented mechanic (sold-out shelf refills in ~half its sellout time,
+  // on a quarter-hour tick) computed from THIS cycle's observations;
+  // cadence = median interval across the 30-day event history.
+  const basisNote = f.restockBasis === 'halftime'
+    ? ' Timing via the half-sellout rule (refill ≈ sellout time ÷ 2, on a quarter-hour tick).'
+    : f.restockBasis === 'cadence'
+      ? ' Timing via observed cadence, snapped to Torn’s quarter-hour restock ticks.'
+      : '';
+
   // When the forecaster pushed etaQty from 0 → restockQty (the refill
   // override) but the ±U is too wide to commit to that refill copy, the
   // render should behave as if the override never happened — otherwise
@@ -609,7 +619,7 @@ function renderStockCell(row) {
       ? ` ±${f.restockUncertaintyMins}m`
       : '';
     const refillFull = Number(f.restockQty).toLocaleString('en-US');
-    const title = `Refills to ~${refillFull} but post-refill depletion at the steady-state slope leaves ~${qty} by your arrival. ${f.restockConfidence}-confidence cadence (${f.restockConfidence === 'high' ? 'tight' : 'rough'} interval).`;
+    const title = `Refills to ~${refillFull} but post-refill depletion at the steady-state slope leaves ~${qty} by your arrival. ${f.restockConfidence}-confidence (${f.restockConfidence === 'high' ? 'tight' : 'rough'}).${basisNote}`;
     etaLine = `<span class="stock-eta stock-eta--refill ${restockConfClass}" title="${title}">restock ${minsLabel}${uncertLabel} → ${qty} <em class="stock-eta__tag">post-refill</em></span>`;
   } else if (eta > now && restockConfident) {
     const restockMins = f.restockEtaMins;
@@ -620,19 +630,19 @@ function renderStockCell(row) {
       ? `empty ~${f.timeToEmptyMins}m · `
       : '';
     const refillFull = Number(f.restockQty).toLocaleString('en-US');
-    const title = `Slope depletes the shelf mid-flight; restock cadence (${f.restockConfidence} conf) refills to ~${refillFull}, post-refill depletion leaves ~${qty} by arrival.`;
+    const title = `Slope depletes the shelf mid-flight; restock prediction (${f.restockConfidence} conf) refills to ~${refillFull}, post-refill depletion leaves ~${qty} by arrival.${basisNote}`;
     etaLine = `<span class="stock-eta stock-eta--refill ${restockConfClass}" title="${title}">${emptyClause}restock ~${restockMins}m → ${qty} <em class="stock-eta__tag">post-refill</em></span>`;
   } else if (now === 0 && canShowLeaveIn) {
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const uncertLabel = uncertainty > 0 ? ` ±${uncertainty}m` : '';
-    const title = `Wait ~${Math.round(leaveInMins)}m before leaving so your arrival coincides with the expected restock (${f.restockConfidence} conf, ±${uncertainty}m)`;
+    const title = `Wait ~${Math.round(leaveInMins)}m before leaving so your arrival coincides with the expected restock (${f.restockConfidence} conf, ±${uncertainty}m).${basisNote}`;
     etaLine = `<span class="stock-eta stock-eta--leave-in ${restockConfClass}" title="${title}">leave in ~${Math.round(leaveInMins)}m${uncertLabel} → ${qty}</span>`;
   } else if (displayEta === 0 && now > 0 && canShowLeaveIn) {
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const emptyClause = f.timeToEmptyMins != null
       ? `empty ~${f.timeToEmptyMins}m · `
       : '';
-    const title = `Depletion empties the shelf mid-flight; leaving ~${Math.round(leaveInMins)}m from now (±${uncertainty}m, ${f.restockConfidence} conf) lands you at the refill`;
+    const title = `Depletion empties the shelf mid-flight; leaving ~${Math.round(leaveInMins)}m from now (±${uncertainty}m, ${f.restockConfidence} conf) lands you at the refill.${basisNote}`;
     etaLine = `<span class="stock-eta stock-eta--leave-in ${restockConfClass}" title="${title}">${emptyClause}leave in ~${Math.round(leaveInMins)}m → ${qty}</span>`;
   } else if (displayEta === 0 && now > 0) {
     const label = f.timeToEmptyMins != null

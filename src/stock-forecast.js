@@ -65,13 +65,35 @@ const MIN_SPAN_MINS_FOR_OK = 20;
 // tighten the median and unlock higher confidence tiers downstream.
 const MIN_RESTOCK_EVENTS = 2;
 
-// Cap on the inter-restock interval the cadence estimator will trust. A gap
-// wider than this means "nobody observed the shelf for that long", not a
-// real two-hour cadence — counting it would drag the median toward fiction.
-// Mirrors the gap_min <= 120 filter migration 030 applied to the aggregate
-// get_stats_snapshot() RPC; this brings the per-shelf client forecaster in
-// line so the user-facing number matches the community metric.
-const MAX_RESTOCK_GAP_MINS = 120;
+// Torn restocks land only on quarter-hour ticks — xx:00 / :15 / :30 / :45
+// TCT (TCT is UTC, so epoch-ms math works directly). Community-documented
+// shop mechanic, same as city NPC stores. Exploited in two places:
+//   1. Restock-event timestamps get snapped to the tick inside their
+//      censoring window (pre, post] — with the 5-min cron sampling that
+//      window usually contains exactly ONE tick, recovering the exact
+//      refill time from two loose observations.
+//   2. Predictions get snapped forward onto a tick, because a refill
+//      physically cannot land between ticks.
+const RESTOCK_TICK_MS = 15 * 60_000;
+
+// Cap on the inter-restock interval the cadence estimator will trust.
+// History: this was 120 min when every snapshot writer was user-gated and a
+// wide gap usually meant "nobody watched the shelf". Since migration 039 the
+// cron-snapshot-yata poller samples every destination every ~5 min around
+// the clock, so long gaps are now REAL cadence — the old cap was deleting
+// the entire cadence signal for slow shelves (flowers: ~7 h sellout +
+// ~3.5 h restock delay ≈ 10.5 h cycle). 24 h is a pure sanity bound now;
+// genuinely missed cycles are handled by the adaptive trim below.
+const MAX_RESTOCK_GAP_MINS = 24 * 60;
+
+// Adaptive missed-cycle trim: an observation hole that swallows exactly one
+// restock produces a gap of ~2× the shelf's true cadence. Before taking the
+// final median, gaps beyond this multiple of the provisional median are
+// treated as missed cycles and dropped. 1.75 splits the 1× cluster from the
+// 2× cluster. Only applied at ≥ MIN_GAPS_FOR_TRIM raw gaps so tiny samples
+// don't trim themselves into nothing.
+const MISSED_CYCLE_FACTOR = 1.75;
+const MIN_GAPS_FOR_TRIM = 4;
 
 // Forecasting model version. Logged with every prediction (migration 035)
 // so resolved-accuracy cohorts stay comparable across model changes.
@@ -79,7 +101,14 @@ const MAX_RESTOCK_GAP_MINS = 120;
 //   v2 — Phase 1 data quality: backfill excluded + 120-min gap cap in the
 //        cadence calc, and restock times debiased to the (pre, post]
 //        midpoint via migration 036's pre_observed_at.
-const MODEL_VERSION = 'v2';
+//   v3 — mechanics-aware: restock times tick-attributed to Torn's
+//        quarter-hour restock ticks (often exact), gap cap 120 m → 24 h with
+//        an adaptive missed-cycle trim (slow shelves regain their cadence),
+//        predictions snapped forward to ticks, observation-time stamping of
+//        snapshots/events (YATA per-country `update`), and empty shelves
+//        prefer the half-sellout rule (restock ≈ sellout duration ÷ 2) over
+//        the cadence median.
+const MODEL_VERSION = 'v3';
 
 // Prediction-accuracy logging throttle. recordForecastPredictions() writes
 // at most one batch per browser per interval; the DB additionally dedups
@@ -169,14 +198,32 @@ function persistForecastToStorage() {
 export async function recordSnapshots(items) {
   if (!Array.isArray(items) || items.length === 0) return;
 
+  const nowMs = Date.now();
   const rows = items
     .filter(r => r.item_id && r.destination && r.quantity != null)
-    .map(r => ({
-      item_id: r.item_id,
-      destination: r.destination,
-      quantity: r.quantity,
-      buy_price: r.buy_price ?? null,
-    }));
+    .map(r => {
+      // Observation-time stamping. `reported_at` carries when the reading
+      // was actually collected — YATA's per-country `update` field for feed
+      // rows, the scrape's observed_at for first-party rows (see
+      // log-sync.js). Stamping snapped_at with the OBSERVATION time instead
+      // of the write time is what lets the estimators attribute a restock
+      // to the correct quarter-hour tick: a YATA payload that's 20 min
+      // stale written as "now" smears every downstream timestamp by 20
+      // minutes. Clamped to now (clock skew guard); unparsable → null and
+      // the DB default now() applies, same as the pre-v3 behaviour.
+      let obsMs = null;
+      if (r.reported_at) {
+        const t = new Date(r.reported_at).getTime();
+        if (Number.isFinite(t)) obsMs = Math.min(t, nowMs);
+      }
+      return {
+        item_id: r.item_id,
+        destination: r.destination,
+        quantity: r.quantity,
+        buy_price: r.buy_price ?? null,
+        __obsMs: obsMs,
+      };
+    });
 
   if (rows.length === 0) return;
 
@@ -194,30 +241,57 @@ export async function recordSnapshots(items) {
   // read below is kept as a payload-shrinking optimization, not a correctness
   // requirement — two racing dashboard loads collapse into one row at the
   // index level (see the upsert(..., { ignoreDuplicates: true }) below).
-  const itemIds = [...new Set(rows.map(r => r.item_id))];
-  const latestMap = new Map(); // "itemId|destination" -> { quantity, buy_price }
+  // Latest stored reading per (item, destination) via the
+  // get_latest_yata_snapshots() RPC (migration 041, DISTINCT ON). The old
+  // approach — `.in(itemIds)` ordered desc — silently truncated at
+  // PostgREST's 1000-row default: busy shelves transition every few
+  // minutes, so 48 h of history easily exceeds 1000 rows, and quiet
+  // shelves' latest rows fell off the end of the page. A truncated key
+  // read as "never seen", which both re-wrote a redundant row and — worse
+  // — silently skipped restock detection for exactly the slow shelves
+  // whose cadence data is scarcest. Falls back to the windowed read if
+  // the RPC is unavailable.
+  const latestMap = new Map(); // "itemId|destination" -> { quantity, buy_price, snapped_at }
   try {
-    const { data, error } = await supabase
-      .from('yata_snapshots')
-      .select('item_id, destination, quantity, buy_price, snapped_at')
-      .in('item_id', itemIds)
-      .order('snapped_at', { ascending: false });
-    if (!error && Array.isArray(data)) {
-      for (const row of data) {
-        const key = `${row.item_id}|${row.destination}`;
-        // First row per key wins because we ordered desc by snapped_at.
-        if (!latestMap.has(key)) latestMap.set(key, row);
-      }
+    const { data, error } = await supabase.rpc('get_latest_yata_snapshots');
+    if (error || !Array.isArray(data)) throw error || new Error('empty');
+    for (const row of data) {
+      latestMap.set(`${row.item_id}|${row.destination}`, row);
     }
-    // If the read failed, fall through to unfiltered insert. Worst case is
-    // one duplicate row — better than dropping a transition entirely.
   } catch {
-    // Same fall-through — treat unknown latest as "no prior reading".
+    try {
+      const itemIds = [...new Set(rows.map(r => r.item_id))];
+      const { data, error } = await supabase
+        .from('yata_snapshots')
+        .select('item_id, destination, quantity, buy_price, snapped_at')
+        .in('item_id', itemIds)
+        .order('snapped_at', { ascending: false });
+      if (!error && Array.isArray(data)) {
+        for (const row of data) {
+          const key = `${row.item_id}|${row.destination}`;
+          // First row per key wins because we ordered desc by snapped_at.
+          if (!latestMap.has(key)) latestMap.set(key, row);
+        }
+      }
+      // If the read failed, fall through to unfiltered insert. Worst case
+      // is one duplicate row — better than dropping a transition entirely.
+    } catch {
+      // Same fall-through — treat unknown latest as "no prior reading".
+    }
   }
 
   const changed = rows.filter(r => {
     const prev = latestMap.get(`${r.item_id}|${r.destination}`);
     if (!prev) return true; // never seen — always record
+    // Stale-guard: never write a reading that isn't strictly newer than the
+    // freshest stored row. A lagging YATA payload racing a fresh PDA scrape
+    // (whose trigger already snapshotted a newer observation) would
+    // otherwise register a phantom quantity "change" — and potentially a
+    // phantom restock event — out of pure staleness.
+    if (r.__obsMs != null && prev.snapped_at) {
+      const prevMs = new Date(prev.snapped_at).getTime();
+      if (Number.isFinite(prevMs) && r.__obsMs <= prevMs) return false;
+    }
     const prevPrice = prev.buy_price ?? null;
     const newPrice = r.buy_price ?? null;
     return prev.quantity !== r.quantity || prevPrice !== newPrice;
@@ -235,10 +309,16 @@ export async function recordSnapshots(items) {
   // on (item_id, destination, snapped_minute) quietly discard concurrent
   // writes that land in the same minute bucket, instead of failing the
   // whole batch with a 23505 conflict.
+  // Strip the internal __obsMs field and stamp snapped_at from it. Rows
+  // with no parsable observation time omit snapped_at → DB default now().
+  const inserts = changed.map(({ __obsMs, ...row }) =>
+    __obsMs != null ? { ...row, snapped_at: new Date(__obsMs).toISOString() } : row
+  );
+
   try {
     const { error } = await supabase
       .from('yata_snapshots')
-      .upsert(changed, {
+      .upsert(inserts, {
         onConflict: 'item_id,destination,snapped_minute',
         ignoreDuplicates: true,
       });
@@ -256,17 +336,20 @@ export async function recordSnapshots(items) {
   // the same physical refill into one row. Backfill + this path + the
   // abroad_prices trigger are the three sources feeding restock_events.
   const restockEvents = [];
-  const nowIso = new Date().toISOString();
   for (const row of changed) {
     const prev = latestMap.get(`${row.item_id}|${row.destination}`);
     if (prev && row.quantity > prev.quantity) {
       restockEvents.push({
         item_id: row.item_id,
         destination: row.destination,
-        restocked_at: nowIso,
+        // Observation time, not write time — so two observers of the same
+        // YATA update stamp the same minute and collapse in the
+        // restocked_minute dedup index instead of logging the one physical
+        // refill twice (which used to pollute the cadence with tiny gaps).
+        restocked_at: new Date(row.__obsMs ?? nowMs).toISOString(),
         // Pre-restock observation time (migration 036) — the prior
-        // snapshot's timestamp. Lets the estimator midpoint-debias the
-        // (pre, post] censoring window instead of dating the refill late.
+        // snapshot's timestamp. Bounds the censoring window (pre, post]
+        // that the tick-attribution in effectiveRestockTime() resolves.
         pre_observed_at: prev.snapped_at ?? null,
         pre_qty: prev.quantity,
         post_qty: row.quantity,
@@ -408,6 +491,172 @@ export async function loadForecastData(items) {
   return historyCache.size > 0 || restockCache.size > 0;
 }
 
+// ── Quarter-hour tick helpers ────────────────────────────────────────
+// Torn restocks land exclusively on :00/:15/:30/:45 TCT (= UTC), so epoch
+// math on RESTOCK_TICK_MS gives exact tick boundaries.
+
+function floorTick(ms) {
+  return Math.floor(ms / RESTOCK_TICK_MS) * RESTOCK_TICK_MS;
+}
+
+function nextTickAfter(ms) {
+  return floorTick(ms) + RESTOCK_TICK_MS;
+}
+
+function nearestTick(ms) {
+  return Math.round(ms / RESTOCK_TICK_MS) * RESTOCK_TICK_MS;
+}
+
+/**
+ * Best estimate of when a restock event's refill actually landed.
+ *
+ * The refill happened somewhere in the censoring window (preTime, atTime]
+ * AND only on a quarter-hour tick. With the cron's ~5-min sampling the
+ * window usually contains exactly one tick — in that case we recover the
+ * EXACT refill time, which is strictly better than the v2 midpoint. With
+ * multiple ticks in a wide window, pick the tick nearest the midpoint
+ * (midpoint = minimum-variance estimate; snapping keeps it physical).
+ * If no tick falls inside the window the observation clocks are slightly
+ * off (YATA update lag, device skew) — the plain midpoint is the honest
+ * fallback. Legacy rows with no preTime snap DOWN to the latest tick at
+ * or before the observation, since the refill can't postdate being seen.
+ */
+function effectiveRestockTime(e) {
+  if (e.preTime != null && e.preTime < e.atTime) {
+    const first = nextTickAfter(e.preTime); // first tick strictly after pre
+    const last = floorTick(e.atTime);       // last tick at/before post
+    if (first <= last) {
+      const mid = (e.preTime + e.atTime) / 2;
+      return Math.min(Math.max(nearestTick(mid), first), last);
+    }
+    return (e.preTime + e.atTime) / 2;
+  }
+  return floorTick(e.atTime);
+}
+
+/**
+ * Median post-restock quantity across all observed events. Kept separate
+ * from estimateNextRestock() because it's meaningful from a SINGLE event,
+ * while the cadence median needs two — and the half-sellout path below
+ * only needs one prior refill to make a timing call.
+ */
+function medianPostQty(events) {
+  if (!events || events.length === 0) return null;
+  const q = events.map(e => e.postQty).slice().sort((a, b) => a - b);
+  return q[Math.floor(q.length / 2)];
+}
+
+// ── Half-sellout-rule restock model ──────────────────────────────────
+//
+// Torn's documented shop mechanic: a foreign shelf restocks in HALF the
+// time it took to sell out, landing on a quarter-hour tick. ("Say it took
+// flowers 7 hours to go out of stock, it will take 3 h 30 m to restock.")
+// When we observed both ends of the CURRENT cycle — the last refill and
+// the moment the shelf hit zero — the next restock is directly computable:
+//
+//   selloutMins   = emptiedAt − lastRestockAt
+//   nextRestockAt = emptiedAt + selloutMins / 2   → snapped to a tick
+//
+// This beats the cadence median wherever it applies: it's per-cycle (adapts
+// the moment demand shifts, where a 30-day median lags), and it needs only
+// ONE prior restock event where the cadence needs two. The cadence
+// estimator stays as the fallback for shelves whose empty transition
+// wasn't observed, or that aren't empty right now.
+
+// Zero-crossing censoring window wider than this → emptiedAt too fuzzy for
+// the rule to add anything over the cadence median.
+const HALFLIFE_MAX_EMPTY_CENSOR_MINS = 90;
+// If the rule's prediction is this far in the past while the shelf is still
+// empty, the model missed (bad cycle-start attribution, mechanics edge
+// case) — return null and let the cadence median take over rather than
+// insisting "next tick!" forever.
+const HALFLIFE_MAX_OVERDUE_MINS = 30;
+// Sellout-duration sanity bounds. Below 5 min we likely mis-attributed the
+// cycle start; beyond 36 h the "cycle" spans more than our observation
+// quality supports.
+const HALFLIFE_MIN_SELLOUT_MINS = 5;
+const HALFLIFE_MAX_SELLOUT_MINS = 36 * 60;
+
+/**
+ * Locate the most recent qty>0 → qty=0 transition in the snapshot history.
+ * Requires the trailing run to be zeros (shelf observed empty). Returns
+ * { emptiedAt, censorMins, lastPositiveAt } or null.
+ */
+function estimateEmptiedAt(samples) {
+  if (!samples || samples.length < 2) return null;
+  let i = samples.length - 1;
+  if (samples[i].quantity !== 0) return null;
+  while (i > 0 && samples[i - 1].quantity === 0) i--;
+  if (i === 0) return null; // never observed positive before the zero run
+  const lastPositive = samples[i - 1];
+  const firstZero = samples[i];
+  return {
+    // Sellouts happen whenever the last unit sells (no tick constraint),
+    // so the censoring-window midpoint is the best estimate.
+    emptiedAt: (lastPositive.snappedAt + firstZero.snappedAt) / 2,
+    censorMins: (firstZero.snappedAt - lastPositive.snappedAt) / 60_000,
+    lastPositiveAt: lastPositive.snappedAt,
+  };
+}
+
+/**
+ * Half-sellout-rule prediction for a currently-empty shelf. Returns
+ * { timeToNextMins, uncertaintyMins, confidence, selloutMins } or null
+ * when the current cycle wasn't observed well enough.
+ */
+function estimateHalfSelloutRestock(samples, events, nowMs) {
+  const emptied = estimateEmptiedAt(samples);
+  if (!emptied) return null;
+  if (emptied.censorMins > HALFLIFE_MAX_EMPTY_CENSOR_MINS) return null;
+
+  // Cycle start: the latest refill at/before the last positive observation.
+  // (Using lastPositiveAt, not the emptiedAt midpoint, so a refill that
+  // landed inside the zero-crossing window can't masquerade as the start
+  // of a 2-minute "cycle".)
+  let cycleStart = null;
+  let cycleStartCensorMins = RESTOCK_TICK_MS / 60_000; // legacy floor-tick uncertainty
+  for (let i = events.length - 1; i >= 0; i--) {
+    const t = effectiveRestockTime(events[i]);
+    if (t <= emptied.lastPositiveAt) {
+      cycleStart = t;
+      if (events[i].preTime != null && events[i].preTime < events[i].atTime) {
+        cycleStartCensorMins = (events[i].atTime - events[i].preTime) / 60_000;
+      }
+      break;
+    }
+  }
+  if (cycleStart == null) return null;
+
+  const selloutMins = (emptied.emptiedAt - cycleStart) / 60_000;
+  if (selloutMins < HALFLIFE_MIN_SELLOUT_MINS || selloutMins > HALFLIFE_MAX_SELLOUT_MINS) {
+    return null;
+  }
+
+  const rawPredicted = emptied.emptiedAt + (selloutMins / 2) * 60_000;
+  const predictedAt = nearestTick(rawPredicted);
+  const overdueMins = (nowMs - predictedAt) / 60_000;
+  if (overdueMins > HALFLIFE_MAX_OVERDUE_MINS) return null;
+  // Slightly overdue → the refill can only land on the NEXT tick from now.
+  const targetAt = predictedAt > nowMs ? predictedAt : nextTickAfter(nowMs);
+
+  // Error propagation: emptiedAt appears in both terms of the prediction
+  // (×1.5 total), so its ±censor/2 widens by 1.5 → 0.75 × censorMins. The
+  // cycle-start error enters at ×0.5 → 0.25 × its censor width. Floor of
+  // 8 min covers tick quantization on top.
+  const uncertaintyMins = Math.max(
+    8,
+    Math.round(emptied.censorMins * 0.75 + cycleStartCensorMins * 0.25)
+  );
+  const confidence = uncertaintyMins <= 15 ? 'high' : uncertaintyMins <= 45 ? 'ok' : 'low';
+
+  return {
+    timeToNextMins: (targetAt - nowMs) / 60_000,
+    uncertaintyMins,
+    confidence,
+    selloutMins: Math.round(selloutMins),
+  };
+}
+
 /**
  * Leave-one-out in-sample MAE: for each observed interval, compute the
  * median of the OTHER intervals and measure the residual. Averaging those
@@ -472,7 +721,8 @@ function computeInSampleMAE(gaps) {
  * (which will be 'low' anyway per the sample-depth rule).
  *
  * Returns {
- *   timeToNextMins: number (can be 0 if overdue),
+ *   timeToNextMins: number (minutes to the predicted refill tick; an
+ *     overdue prediction resolves to the next upcoming quarter-hour tick),
  *   typicalPostQty: number,
  *   uncertaintyMins: number (≥1, scaled MAD or MAE — whichever wider),
  *   sampleCount: number of interval samples,
@@ -483,38 +733,48 @@ function computeInSampleMAE(gaps) {
 function estimateNextRestock(events, nowMs) {
   if (!events || events.length < MIN_RESTOCK_EVENTS) return null;
 
-  // Effective restock time per event. The real refill happened uniformly
-  // somewhere in the censoring window (preTime, atTime]; its midpoint is the
-  // minimum-variance estimate and debiases the "observed late" skew sparse
-  // sampling introduces. Legacy rows with no preTime fall back to the raw
-  // observation time. Guard preTime < atTime so a bad row can't push the
-  // effective time forward.
-  const effTimes = events.map(e =>
-    (e.preTime != null && e.preTime < e.atTime)
-      ? (e.preTime + e.atTime) / 2
-      : e.atTime
-  );
+  // Effective restock time per event — tick-attributed inside the
+  // censoring window (see effectiveRestockTime). Sorted and deduped:
+  // two observers of the same physical refill (e.g. a PDA scrape and a
+  // cron poll with different observation stamps) resolve to the SAME
+  // tick, so dedup here collapses them instead of letting a 2-minute
+  // phantom gap drag the median toward zero.
+  const effTimes = [...new Set(events.map(effectiveRestockTime))].sort((a, b) => a - b);
 
   // Intervals between consecutive effective restock times, in minutes.
-  // Drop non-positive gaps and any gap wider than MAX_RESTOCK_GAP_MINS —
-  // a multi-hour gap is an observation hole, not a real cadence (see the
-  // constant's note re: migration 030).
-  const gaps = [];
+  // Drop non-positive gaps and anything beyond the 24 h sanity bound.
+  let gaps = [];
   for (let i = 1; i < effTimes.length; i++) {
     const g = (effTimes[i] - effTimes[i - 1]) / 60_000;
     if (g > 0 && g <= MAX_RESTOCK_GAP_MINS) gaps.push(g);
   }
   if (gaps.length === 0) return null;
+
+  // Adaptive missed-cycle trim: with enough samples, gaps far beyond the
+  // provisional median are almost certainly observation holes that
+  // swallowed a whole refill+sellout cycle (they cluster near integer
+  // multiples of the true cadence). Trim them, then take the final median
+  // from what's left. Guarded so the trim can never empty the pool.
+  if (gaps.length >= MIN_GAPS_FOR_TRIM) {
+    const provisional = gaps.slice().sort((a, b) => a - b)[Math.floor(gaps.length / 2)];
+    const trimmed = gaps.filter(g => g <= provisional * MISSED_CYCLE_FACTOR);
+    if (trimmed.length >= 2) gaps = trimmed;
+  }
+
   const sortedGaps = gaps.slice().sort((a, b) => a - b);
   const medianInterval = sortedGaps[Math.floor(sortedGaps.length / 2)];
   if (!(medianInterval > 0)) return null;
 
-  const postQtys = events.map(e => e.postQty).slice().sort((a, b) => a - b);
-  const typicalPostQty = postQtys[Math.floor(postQtys.length / 2)];
+  const typicalPostQty = medianPostQty(events);
 
+  // Project the next refill and snap it onto a quarter-hour tick — a
+  // restock physically can't land between ticks. An overdue prediction
+  // used to freeze at "0 m / imminent" forever; now it resolves to the
+  // next upcoming tick, which is the soonest a refill can actually occur.
   const lastRestockAt = effTimes[effTimes.length - 1];
-  const sinceLastMins = (nowMs - lastRestockAt) / 60_000;
-  const timeToNextMins = Math.max(0, medianInterval - sinceLastMins);
+  const predictedAt = nearestTick(lastRestockAt + medianInterval * 60_000);
+  const targetAt = predictedAt > nowMs ? predictedAt : nextTickAfter(nowMs);
+  const timeToNextMins = (targetAt - nowMs) / 60_000;
 
   // Spread estimates.
   const deviations = gaps
@@ -715,6 +975,7 @@ function pooledDepletionSlope(segments) {
  *   restockQty: number|null,                // typical post-restock qty, set whenever cadence exists
  *   restockUncertaintyMins: number|null,    // max(scaled MAD, in-sample MAE) — widened when model underclaims
  *   restockConfidence: 'none'|'low'|'ok'|'high',  // auto-capped when MAE exceeds scaledMAD × 2 or 0.75 × median
+ *   restockBasis: 'halftime'|'cadence'|null, // which model made the timing call: Torn's half-sellout rule (empty shelf, observed cycle) or the cadence median
  *   restockIntervalMins: number|null,       // median observed interval between restocks (un-gated by confidence; UI gates display)
  *   cadenceMAE: number|null,                // leave-one-out in-sample MAE (minutes), null when <2 gaps
  *   restockEventCount: number               // raw count of observed restocks (30-day window) for "cadence forming (N obs)" hints
@@ -723,6 +984,7 @@ function pooledDepletionSlope(segments) {
 export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty = null) {
   const key = cacheKey(itemId, destination);
   const samples = historyCache.get(key);
+  const nowMs = Date.now();
 
   // Restock cadence comes from the dedicated `restock_events` table (30-day
   // window, append-only) rather than rescanning the short snapshot window.
@@ -730,7 +992,21 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // a brand-new item with no snapshots yet can still have backfilled restock
   // events, and a shelf at 0 benefits from the refill prediction regardless.
   const restockEvents = restockCache.get(key) || [];
-  const restockEst = estimateNextRestock(restockEvents, Date.now());
+  const cadenceEst = estimateNextRestock(restockEvents, nowMs);
+
+  // Half-sellout-rule prediction — Torn's actual restock mechanic — takes
+  // priority for a currently-empty shelf whose cycle we observed (last
+  // refill + zero-crossing both in view). Empty-shelf timing is exactly
+  // the case players plan flights around ("leave in X → land at refill"),
+  // and the rule is per-cycle where the cadence median is a 30-day blur.
+  const latestSample = samples && samples.length > 0 ? samples[samples.length - 1] : null;
+  const liveNowQty = fallbackNowQty ?? (latestSample ? latestSample.quantity : null);
+  const halfEst = (liveNowQty === 0 && restockEvents.length > 0)
+    ? estimateHalfSelloutRestock(samples, restockEvents, nowMs)
+    : null;
+  const restockEst = halfEst || cadenceEst;
+  const restockBasis = halfEst ? 'halftime' : (cadenceEst ? 'cadence' : null);
+
   const restockDuringFlight = !!(
     restockEst && restockEst.timeToNextMins <= arrivalMins
   );
@@ -745,18 +1021,19 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // Soon card can see them even when the window is in the future rather
   // than currently in-flight. Stock cell still keys off `restockEtaMins`
   // to decide whether to show them, so the cell's behavior is unchanged.
-  const restockQty = restockEst ? restockEst.typicalPostQty : null;
+  // Post-restock qty is a per-shelf property independent of which timing
+  // model fired — the events median covers both (and works from 1 event).
+  const restockQty = restockEst ? medianPostQty(restockEvents) : null;
   const restockUncertaintyMins = restockEst ? restockEst.uncertaintyMins : null;
   const restockConfidence = restockEst ? restockEst.confidence : 'none';
-  // Median observed interval between restocks (minutes). Exposed alongside
-  // confidence so the UI can decide whether to render it ("refill ~42m"
-  // line on the row) — typicalPostQty + timeToNextMins handle the
-  // "what/when" but not the steady-state cadence.
-  const restockIntervalMins = restockEst ? Math.round(restockEst.medianIntervalMins) : null;
+  // Median observed interval between restocks (minutes). A steady-state
+  // descriptor, so it stays cadence-based even when the half-sellout rule
+  // is making the timing call.
+  const restockIntervalMins = cadenceEst ? Math.round(cadenceEst.medianIntervalMins) : null;
   // Cadence MAE (leave-one-out in-sample, minutes). Exposed for future
   // observability — a layer-2 accuracy log or a debug panel can read it
   // without re-running estimateNextRestock. null when <2 gaps.
-  const cadenceMAE = restockEst ? restockEst.cadenceMAE : null;
+  const cadenceMAE = cadenceEst ? cadenceEst.cadenceMAE : null;
   // Raw count of observed restocks for this shelf over the 30-day window.
   // Independent of whether they were enough to produce a prediction — the
   // UI uses this to render "cadence forming (N obs)" hints on rows where
@@ -808,6 +1085,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
       restockQty,
       restockUncertaintyMins,
       restockConfidence,
+      restockBasis,
       restockIntervalMins,
       cadenceMAE,
       restockEventCount,
@@ -845,7 +1123,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
       nowQty, etaQty: eta, etaPostRefill, confidence: 'low', hasHistory: true,
       timeToEmptyMins: null,
       depletionPerMin: null,
-      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockIntervalMins, cadenceMAE, restockEventCount,
+      nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockBasis, restockIntervalMins, cadenceMAE, restockEventCount,
     };
   }
 
@@ -909,7 +1187,7 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
     nowQty, etaQty, etaPostRefill, confidence, hasHistory: true,
     timeToEmptyMins,
     depletionPerMin: slope,
-    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockIntervalMins, cadenceMAE, restockEventCount,
+    nextRestockMins, restockEtaMins, restockQty, restockUncertaintyMins, restockConfidence, restockBasis, restockIntervalMins, cadenceMAE, restockEventCount,
   };
 }
 

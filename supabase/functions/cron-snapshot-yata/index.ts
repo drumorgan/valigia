@@ -67,6 +67,9 @@ interface YataRow {
   destination: string;
   quantity: number;
   buy_price: number | null;
+  // Epoch ms of YATA's per-country `update` field — when the reading was
+  // actually collected, as opposed to when we polled. Null if absent.
+  observed_ms: number | null;
 }
 
 async function fetchYataRows(): Promise<YataRow[]> {
@@ -101,10 +104,22 @@ async function fetchYataRows(): Promise<YataRow[]> {
 
   const countries = data?.stocks || data || {};
   const out: YataRow[] = [];
+  const nowMs = Date.now();
   for (const code of Object.keys(countries)) {
     const dest = YATA_COUNTRY_MAP[code];
     if (!dest) continue;
     const stocks = countries[code]?.stocks || [];
+    // Observation-time stamping: YATA's per-country `update` (epoch
+    // seconds) says when this country's data was actually collected. A
+    // reading can be many minutes stale by the time we poll it — writing
+    // it as "now" smears the timestamps the tick-attribution and
+    // half-sellout estimators depend on (restocks land on exact
+    // quarter-hour ticks, so minutes matter). Clamped to now for skew;
+    // missing/garbage → null and the DB default now() applies.
+    const updRaw = Number(countries[code]?.update);
+    const observedMs = Number.isFinite(updRaw) && updRaw > 0
+      ? Math.min(updRaw * 1000, nowMs)
+      : null;
     for (const s of stocks) {
       if (!s || !s.id) continue;
       const qty = Number(s.quantity);
@@ -114,6 +129,7 @@ async function fetchYataRows(): Promise<YataRow[]> {
         destination: dest,
         quantity: qty,
         buy_price: Number.isFinite(Number(s.cost)) ? Number(s.cost) : null,
+        observed_ms: observedMs,
       });
     }
   }
@@ -148,32 +164,52 @@ serve(async (req) => {
   }
   if (yataRows.length === 0) return json({ ok: true, scanned: 0, snapshots: 0, restocks: 0 });
 
-  // Latest existing reading per (item, destination), within the lookback.
-  const itemIds = [...new Set(yataRows.map((r) => r.item_id))];
-  const cutoffLatest = new Date(Date.now() - LATEST_LOOKBACK_MINS * 60_000).toISOString();
+  // Latest existing reading per (item, destination) via the
+  // get_latest_yata_snapshots() RPC (migration 041, DISTINCT ON — one
+  // newest row per pair regardless of age). The old windowed read missed
+  // the latest row for any shelf whose last transition predated the
+  // lookback, silently skipping restock detection for slow shelves. The
+  // windowed read stays as a fallback if the RPC errors.
   const latestMap = new Map<string, { quantity: number; buy_price: number | null; snapped_at: string }>();
   {
-    const { data, error } = await supabase
-      .from('yata_snapshots')
-      .select('item_id, destination, quantity, buy_price, snapped_at')
-      .in('item_id', itemIds)
-      .gte('snapped_at', cutoffLatest)
-      .order('snapped_at', { ascending: false });
+    const { data, error } = await supabase.rpc('get_latest_yata_snapshots');
     if (!error && Array.isArray(data)) {
       for (const row of data) {
-        const key = `${row.item_id}|${row.destination}`;
-        if (!latestMap.has(key)) latestMap.set(key, row); // desc → first wins
+        latestMap.set(`${row.item_id}|${row.destination}`, row);
       }
+    } else {
+      const itemIds = [...new Set(yataRows.map((r) => r.item_id))];
+      const cutoffLatest = new Date(Date.now() - LATEST_LOOKBACK_MINS * 60_000).toISOString();
+      const { data: winData, error: winError } = await supabase
+        .from('yata_snapshots')
+        .select('item_id, destination, quantity, buy_price, snapped_at')
+        .in('item_id', itemIds)
+        .gte('snapped_at', cutoffLatest)
+        .order('snapped_at', { ascending: false });
+      if (!winError && Array.isArray(winData)) {
+        for (const row of winData) {
+          const key = `${row.item_id}|${row.destination}`;
+          if (!latestMap.has(key)) latestMap.set(key, row); // desc → first wins
+        }
+      }
+      // On a read error we fall through with an empty map: worst case is one
+      // duplicate-minute row that the unique index discards anyway.
     }
-    // On a read error we fall through with an empty map: worst case is one
-    // duplicate-minute row that the unique index discards anyway.
   }
 
   // Record only transitions — a re-observation of the same quantity AND
   // price carries no signal (this is the whole reason the table is small).
+  // Stale-guard: a reading whose observation time isn't strictly newer
+  // than the freshest stored row is the SAME data we already have (or
+  // older than a PDA scrape that beat us to it) — writing it would
+  // register a phantom transition dated at the wrong time.
   const changed = yataRows.filter((r) => {
     const prev = latestMap.get(`${r.item_id}|${r.destination}`);
     if (!prev) return true;
+    if (r.observed_ms != null && prev.snapped_at) {
+      const prevMs = new Date(prev.snapped_at).getTime();
+      if (Number.isFinite(prevMs) && r.observed_ms <= prevMs) return false;
+    }
     return prev.quantity !== r.quantity || (prev.buy_price ?? null) !== (r.buy_price ?? null);
   });
 
@@ -183,11 +219,16 @@ serve(async (req) => {
 
   let snapshotsWritten = 0;
   {
+    // snapped_at = observation time when YATA provided one; otherwise omit
+    // and let the DB default (now()) apply.
     const rows = changed.map((r) => ({
       item_id: r.item_id,
       destination: r.destination,
       quantity: r.quantity,
       buy_price: r.buy_price,
+      ...(r.observed_ms != null
+        ? { snapped_at: new Date(r.observed_ms).toISOString() }
+        : {}),
     }));
     const { error } = await supabase
       .from('yata_snapshots')
@@ -199,6 +240,13 @@ serve(async (req) => {
   // Emit a restock event for any strictly-positive quantity delta. source
   // 'cron' distinguishes these from client ('snapshot') and trigger writes;
   // all non-'backfill' sources feed the cadence estimator.
+  //
+  // restocked_at = observation time, not poll time: the client-side
+  // estimator resolves the refill to a quarter-hour tick inside the
+  // (pre_observed_at, restocked_at] window, and stamping observation
+  // times keeps that window as tight as YATA's own data allows. It also
+  // makes concurrent observers of the same YATA update collapse in the
+  // restocked_minute dedup index instead of double-logging one refill.
   const nowIso = new Date().toISOString();
   const restockEvents = [];
   for (const r of changed) {
@@ -207,7 +255,7 @@ serve(async (req) => {
       restockEvents.push({
         item_id: r.item_id,
         destination: r.destination,
-        restocked_at: nowIso,
+        restocked_at: r.observed_ms != null ? new Date(r.observed_ms).toISOString() : nowIso,
         pre_observed_at: prev.snapped_at ?? null,
         pre_qty: prev.quantity,
         post_qty: r.quantity,
