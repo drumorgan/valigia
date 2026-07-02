@@ -321,7 +321,12 @@ names. `Syne` for headers and labels. Load both via Google Fonts CDN.
 
 - Profit/hr column: primary sort column — accent color, slightly larger
 - Flight column: round-trip e.g. "3h 9m RT"
-- Stock column: YATA stock quantity; stock-limited runs show a badge
+- Stock column: YATA stock quantity; stock-limited runs show a badge.
+  Below the Now/ETA lines, a 48 h step-function sparkline
+  (`src/sparkline.js`, fed by `getStockHistory()`) shows the shelf's
+  cycle shape — sellout cliffs and refill spikes — from the same
+  snapshot history the depletion fitter uses. Hidden when history is
+  too thin (<4 in-window samples) or the shelf never left zero.
 - Negative margin rows: greyed out, sorted to bottom regardless of sort
 
 **Best Run Right Now card:**

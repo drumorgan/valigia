@@ -4,7 +4,8 @@ import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById } from './item-resolver.js';
 import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
-import { forecastStock } from './stock-forecast.js';
+import { forecastStock, getStockHistory } from './stock-forecast.js';
+import { stockSparklineSvg } from './sparkline.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
 import { safeGetItem, safeSetItem } from './storage.js';
 import { setTravelCapacity } from './pda-prefs.js';
@@ -686,11 +687,23 @@ function renderStockCell(row) {
     : 'Current stock from the YATA community feed. ETA below is Valigia’s arrival-time forecast.';
   const dynamics = renderShelfDynamics(f, etaLine);
 
+  // 48 h stock history sparkline — the cycle shape (sellout cliffs,
+  // refill spikes) tells the player at a glance whether a shelf is a
+  // fast cycler worth timing or a slow drifter. Empty string when the
+  // history is too thin to draw.
+  const spark = stockSparklineSvg(getStockHistory(row.itemId, row.destination), {
+    nowMs: Date.now(),
+  });
+  const sparkLine = spark
+    ? `<div class="stock-spark" title="48 h stock history (steps = sales, cliffs up = restocks)">${spark}</div>`
+    : '';
+
   return `
     <span class="stock-now">Now ${Number(now).toLocaleString('en-US')} <em class="stock-src stock-src--${isScrape ? 'live' : 'yata'}" title="${srcTitle}">${srcTag}</em></span>
     ${etaLine}
     ${dynamics}
     ${renderRefillStatus(f, etaLine, dynamics)}
+    ${sparkLine}
   `;
 }
 
