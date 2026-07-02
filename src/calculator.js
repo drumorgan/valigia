@@ -52,6 +52,80 @@ export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, f
 }
 
 /**
+ * Plan a full-capacity run for ONE destination: fill the traveler's slots
+ * greedily by margin-per-item across every positive-margin item the shop
+ * stocks. With unit slot weights, greedy-by-margin IS the optimal knapsack
+ * fill — when the best item can't cover every slot, the remainder goes to
+ * the next-best shelf instead of flying home light.
+ *
+ * Sell-time tail: allocations liquidate side by side after landing (list
+ * everything, wait for the slowest), so the cycle extends by the MAX of
+ * the allocated items' sell times, not the sum.
+ *
+ * @param {object} p
+ * @param {Array<{marginPerItem:number, buyPrice:number, availableQty:number|null,
+ *                sellTimeMins?:number}>} p.candidates - one entry per item at
+ *        this destination. availableQty null = unlimited (ideal mode);
+ *        entries with non-positive margin or zero availability are skipped.
+ *        Extra fields (name, row refs) pass through into allocations.
+ * @param {number} p.slotCount
+ * @param {number} p.flightMins - one-way, pre-multiplier
+ * @param {number} p.flightMultiplier
+ * @returns {{
+ *   allocations: Array<{units:number, ...candidate}>,  // margin-desc order
+ *   filledSlots: number, slotCount: number,
+ *   profitPerRun: number, runCost: number, marginPct: number,
+ *   roundTripMins: number, cycleMins: number, profitPerHour: number,
+ * }|null} null when nothing at this destination is worth a slot
+ */
+export function planDestinationRun({ candidates, slotCount, flightMins, flightMultiplier = 1.0 }) {
+  if (!(slotCount > 0) || !(flightMins > 0)) return null;
+  const usable = (candidates || []).filter(c =>
+    c && c.marginPerItem > 0 && c.buyPrice > 0
+    && (c.availableQty == null || c.availableQty > 0)
+  );
+  if (usable.length === 0) return null;
+
+  usable.sort((a, b) => b.marginPerItem - a.marginPerItem);
+
+  const allocations = [];
+  let remaining = slotCount;
+  for (const c of usable) {
+    if (remaining <= 0) break;
+    const units = c.availableQty == null
+      ? remaining
+      : Math.min(remaining, Math.floor(c.availableQty));
+    if (units <= 0) continue;
+    allocations.push({ ...c, units });
+    remaining -= units;
+  }
+  if (allocations.length === 0) return null;
+
+  let profitPerRun = 0;
+  let runCost = 0;
+  let sellTailMins = 0;
+  for (const a of allocations) {
+    profitPerRun += a.marginPerItem * a.units;
+    runCost += a.buyPrice * a.units;
+    sellTailMins = Math.max(sellTailMins, a.sellTimeMins || 0);
+  }
+
+  const roundTripMins = flightMins * flightMultiplier * 2;
+  const cycleMins = roundTripMins + sellTailMins;
+  return {
+    allocations,
+    filledSlots: slotCount - remaining,
+    slotCount,
+    profitPerRun,
+    runCost,
+    marginPct: runCost > 0 ? (profitPerRun / runCost) * 100 : 0,
+    roundTripMins,
+    cycleMins,
+    profitPerHour: cycleMins > 0 ? (profitPerRun / cycleMins) * 60 : 0,
+  };
+}
+
+/**
  * Format minutes as "Xh Ym" string. Round-trip is implied by the Flight
  * column header — spelling out "RT" on every row was wasted width.
  */

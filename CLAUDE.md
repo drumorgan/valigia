@@ -661,9 +661,16 @@ the script to see drip activity in the on-page panel.
 - **Bazaar scanner** — Crowd-sourced pool, discover/check/prune cycle,
   dynamic watchlist extension, weighted-random deal selection, runners-up
   list under top pick
-- **Best Run Right Now** — Unified card that compares the top travel run
-  against a verified bazaar deal and displays whichever has higher
-  profit/hr
+- **Best Run Right Now** — Travel-only card (bazaar deals stopped
+  competing here — their 5-min profit/hr math inflated unrealizably at
+  size; they live in the Watchlist/scan surfaces instead). Headlines the
+  best full-capacity **destination plan** via `planDestinationRun()` in
+  calculator.js: slots are filled greedily by margin-per-item across
+  every positive-margin shelf at each destination, so a stock-limited
+  top shelf gets topped up with the next-best items in the same shop
+  ("29 slots: 12× Xanax + 17× Vicodin"), and destinations are ranked by
+  the PLAN's profit/hr. Single-winner destinations degenerate to the
+  old per-row math exactly.
 - **PDA userscript** — Three-runner ingest pipeline: travel shop scrapes
   (first-party `abroad_prices`), Item Market listings scrapes (direct
   `sell_prices` refresh), and bazaar page scrapes (direct

@@ -3,7 +3,7 @@
 import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById } from './item-resolver.js';
-import { calculateMargins, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
+import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock } from './stock-forecast.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
 import { safeGetItem, safeSetItem } from './storage.js';
@@ -999,23 +999,67 @@ function renderBestRunCard(rows) {
     r.metrics.effectiveSlots > 0 &&
     (r.quantity == null || r.quantity > 0)
   );
-  const bestTravel = travelCandidates.length > 0
-    ? travelCandidates.slice().sort(
-        (a, b) => (b.metrics.profitPerHour || 0) - (a.metrics.profitPerHour || 0)
-      )[0]
-    : null;
-
-  if (!bestTravel) {
+  if (travelCandidates.length === 0) {
     container.innerHTML = '';
     return;
   }
 
-  renderTravelBestRun(container, bestTravel);
+  // Plan a full-capacity run per destination and headline the best PLAN,
+  // not the best single row. When the top shelf can't fill every slot,
+  // the remainder goes to the next-best shelves in the same shop — and a
+  // short flight with two mid-margin shelves can legitimately out-rate a
+  // long flight with one high-margin shelf. Destinations with one
+  // unconstrained winner produce a single-allocation plan whose numbers
+  // match the old per-row math exactly.
+  const isIdeal = realismMode === 'ideal';
+  const byDest = new Map();
+  for (const r of travelCandidates) {
+    if (!byDest.has(r.destination)) byDest.set(r.destination, []);
+    byDest.get(r.destination).push(r);
+  }
+  let bestPlan = null;
+  for (const destRows of byDest.values()) {
+    const plan = planDestinationRun({
+      candidates: destRows.map(r => ({
+        row: r,
+        buyPrice: r.buyPrice,
+        marginPerItem: r.metrics.marginPerItem,
+        // Same availability the row math uses: arrival-time forecast in
+        // realistic mode, unconstrained in ideal mode.
+        availableQty: isIdeal ? null : (r.forecast?.etaQty ?? r.quantity ?? null),
+        sellTimeMins: isIdeal ? 0 : getSellTimeMins(r.category),
+      })),
+      slotCount,
+      flightMins: destRows[0].flightMins,
+      flightMultiplier: getFlightMultiplier(),
+    });
+    if (plan && (!bestPlan || plan.profitPerHour > bestPlan.profitPerHour)) {
+      bestPlan = plan;
+    }
+  }
+
+  if (!bestPlan) {
+    container.innerHTML = '';
+    return;
+  }
+
+  renderTravelBestRun(container, bestPlan);
 }
 
-function renderTravelBestRun(container, best) {
-  const stockNote = best.metrics.stockLimited
-    ? `<span class="best-run-stock" title="Only ${best.metrics.effectiveSlots} units in stock">stock: ${best.metrics.effectiveSlots}</span>`
+function renderTravelBestRun(container, plan) {
+  const head = plan.allocations[0].row;
+  const multi = plan.allocations.length > 1;
+
+  const stockNote = plan.filledSlots < plan.slotCount
+    ? `<span class="best-run-stock" title="Only ${plan.filledSlots} of ${plan.slotCount} slots fillable — every positive-margin shelf at this destination is exhausted">stock: ${plan.filledSlots}/${plan.slotCount}</span>`
+    : '';
+
+  // Multi-shelf fill plan, e.g. "29 slots: 12× Xanax + 17× Vicodin".
+  const planLine = multi
+    ? `<div class="best-run-plan" title="Top shelf can't fill your capacity — remaining slots go to the next-best margins at the same shop">
+         ${plan.filledSlots} slots: ${plan.allocations.map(a =>
+           `${a.units}&times; ${a.row.name}`).join(' + ')}
+       </div>`
     : '';
 
   container.innerHTML = `
@@ -1023,20 +1067,21 @@ function renderTravelBestRun(container, best) {
       <div class="best-run-label">Best Run Right Now</div>
       <div class="best-run-body">
         <div class="best-run-item">
-          <span class="best-run-name">${best.name}</span>
-          <span class="best-run-dest">&rarr; ${best.destination}</span>
+          <span class="best-run-name">${head.name}${multi ? ' <span class="best-run-plus">+' + (plan.allocations.length - 1) + '</span>' : ''}</span>
+          <span class="best-run-dest">&rarr; ${head.destination}</span>
         </div>
         <div class="best-run-rate">
-          <span class="best-run-rate-value">${formatMoney(best.metrics.profitPerHour)}</span>
+          <span class="best-run-rate-value">${formatMoney(plan.profitPerHour)}</span>
           <span class="best-run-rate-unit">/hr</span>
         </div>
       </div>
+      ${planLine}
       <div class="best-run-meta">
-        <span>${formatMoney(best.metrics.profitPerRun)} per run</span>
+        <span>${formatMoney(plan.profitPerRun)} per run</span>
         <span class="best-run-sep">&middot;</span>
-        <span>${formatFlightTime(best.metrics.roundTripMins)}</span>
+        <span>${formatFlightTime(plan.roundTripMins)}</span>
         <span class="best-run-sep">&middot;</span>
-        <span>${formatMarginPctCompact(best.metrics.marginPct)} margin</span>
+        <span>${formatMarginPctCompact(plan.marginPct)} margin</span>
         ${stockNote ? `<span class="best-run-sep">&middot;</span>${stockNote}` : ''}
       </div>
       <a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener"
