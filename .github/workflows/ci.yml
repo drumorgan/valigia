@@ -30,5 +30,8 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Backtest self-test (synthetic shelves)
+        run: node scripts/backtest.mjs --synthetic
+
       - name: Build
         run: npm run build
