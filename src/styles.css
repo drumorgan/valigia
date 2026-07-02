@@ -1154,6 +1154,20 @@ tr.row--negative td {
   color: var(--warning);
 }
 
+/* 48 h stock-history sparkline in the Stock cell. currentColor drives the
+   stroke, so the muted color here IS the line color; kept dim so the
+   sparkline reads as context under the Now/ETA numbers, not competition. */
+.stock-spark {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  line-height: 0;
+}
+
+.stock-spark svg {
+  display: block;
+  opacity: 0.8;
+}
+
 /* Multi-shelf fill plan line — "29 slots: 12× Xanax + 17× Vicodin".
    Mono to match the numeric meta row; slightly brighter than muted so
    the plan reads as content, not chrome. */

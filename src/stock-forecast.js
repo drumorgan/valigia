@@ -115,6 +115,18 @@ function cacheKey(itemId, destination) {
 }
 
 /**
+ * Read-only view of the loaded snapshot history for one shelf — the same
+ * samples the depletion fitter consumes. Powers the Stock-cell sparkline
+ * in ui.js; returns the cached array directly (callers must not mutate).
+ * Empty array when loadForecastData() hasn't run or has nothing for the key.
+ *
+ * @returns {Array<{quantity:number, snappedAt:number}>}
+ */
+export function getStockHistory(itemId, destination) {
+  return historyCache.get(cacheKey(itemId, destination)) || [];
+}
+
+/**
  * Try to populate historyCache + restockCache from localStorage.
  * Returns true iff a fresh cache was found and hydrated. Any corruption
  * or missing fields → return false and let the caller do a live fetch.
