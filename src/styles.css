@@ -1154,6 +1154,23 @@ tr.row--negative td {
   color: var(--warning);
 }
 
+/* Multi-shelf fill plan line — "29 slots: 12× Xanax + 17× Vicodin".
+   Mono to match the numeric meta row; slightly brighter than muted so
+   the plan reads as content, not chrome. */
+.best-run-plan {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text);
+  margin-top: 0.35rem;
+}
+
+/* "+N" chip after the headline item name when the plan spans shelves */
+.best-run-plus {
+  font-size: 0.85rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .best-run-cta {
   display: inline-block;
   margin-top: 0.75rem;
