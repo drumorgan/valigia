@@ -19,6 +19,7 @@ import {
   allDepletionSegments,
   fitSegmentSlope,
   pooledDepletionSlope,
+  simulateArrivalQty,
 } from '../src/forecast-math.js';
 
 const MIN = 60_000;
@@ -189,6 +190,76 @@ describe('estimateHalfSelloutRestock', () => {
     const nowMs = samples[samples.length - 1].snappedAt + MIN;
     const lateEvent = evt(500, 500); // after the zero-crossing
     expect(estimateHalfSelloutRestock(samples, [lateEvent], nowMs)).toBeNull();
+  });
+});
+
+describe('simulateArrivalQty', () => {
+  it('pure depletion with no refill in window', () => {
+    const r = simulateArrivalQty({
+      nowQty: 100, slope: -1, arrivalMins: 60,
+      firstRestockMins: null, intervalMins: null, restockQty: 500,
+    });
+    expect(r.etaQty).toBe(40);
+    expect(r.refills).toBe(0);
+  });
+
+  it('clamps at zero when the shelf empties before landing', () => {
+    const r = simulateArrivalQty({
+      nowQty: 30, slope: -1, arrivalMins: 60,
+      firstRestockMins: null, intervalMins: null, restockQty: null,
+    });
+    expect(r.etaQty).toBe(0);
+  });
+
+  it('single refill then post-refill depletion (old override behavior)', () => {
+    // empty now, refill of 500 at min 20, deplete 2/min for remaining 40 min
+    const r = simulateArrivalQty({
+      nowQty: 0, slope: -2, arrivalMins: 60,
+      firstRestockMins: 20, intervalMins: null, restockQty: 500,
+    });
+    // mechanic cycle = 1.5 × 500/2 = 375 min → no second refill in window
+    expect(r.refills).toBe(1);
+    expect(r.etaQty).toBe(500 - 2 * 40);
+  });
+
+  it('models recurring refills on a fast shelf over a long flight', () => {
+    // refill 100 @ min 15, rate −2/min → sellout 50 min, cycle 75 min:
+    // refills at 15, 90, 165, 240; arrival 250 → 10 min after last refill
+    const r = simulateArrivalQty({
+      nowQty: 0, slope: -2, arrivalMins: 250,
+      firstRestockMins: 15, intervalMins: null, restockQty: 100,
+    });
+    expect(r.refills).toBe(4);
+    expect(r.etaQty).toBe(100 - 2 * 10);
+    // The old single-refill model would have said max(0, 100 − 2×235) = 0.
+  });
+
+  it('falls back to the cadence interval when there is no slope', () => {
+    // flat rate: qty just becomes restockQty at each refill
+    const r = simulateArrivalQty({
+      nowQty: 0, slope: 0, arrivalMins: 100,
+      firstRestockMins: 10, intervalMins: 30, restockQty: 250,
+    });
+    expect(r.refills).toBe(4); // 10, 40, 70, 100
+    expect(r.etaQty).toBe(250);
+  });
+
+  it('floors the derived cycle at one tick', () => {
+    // tiny refill + huge rate → raw cycle ≪ 15 min; must not spin
+    const r = simulateArrivalQty({
+      nowQty: 0, slope: -100, arrivalMins: 60,
+      firstRestockMins: 0, intervalMins: null, restockQty: 10,
+    });
+    expect(r.refills).toBe(5); // 0, 15, 30, 45, 60
+    expect(r.etaQty).toBe(10); // landing right on a refill
+  });
+
+  it('a refill never lowers the projection', () => {
+    const r = simulateArrivalQty({
+      nowQty: 800, slope: 0, arrivalMins: 30,
+      firstRestockMins: 10, intervalMins: null, restockQty: 100,
+    });
+    expect(r.etaQty).toBe(800);
   });
 });
 

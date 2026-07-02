@@ -24,6 +24,7 @@ import {
   medianPostQty,
   allDepletionSegments,
   pooledDepletionSlope,
+  simulateArrivalQty,
 } from './forecast-math.js';
 import { safeGetItem, safeSetItem } from './storage.js';
 
@@ -665,29 +666,35 @@ export function forecastStock(itemId, destination, arrivalMins, fallbackNowQty =
   // flag tell the rest of the story.
   let etaQty = Math.max(0, Math.min(nowQty, Math.round(projected)));
 
-  // Restock override: if the depletion forecast bottomed out at 0 AND a
-  // restock is expected DURING THIS FLIGHT, replace the empty shelf with
-  // the typical post-restock quantity, then drain it by the steady-state
-  // depletion slope for the time between the restock event and arrival.
-  // Without the post-restock depletion the projection is wildly
-  // optimistic on popular shelves — Xanax-JPN sees ~21 units/min of
-  // buyers, so a 1057-unit refill at the 1-hour mark of a 4-hour flight
-  // realistically lands closer to empty than full.
+  // Restock simulation: if the depletion forecast bottomed out at 0 AND a
+  // restock is expected DURING THIS FLIGHT, walk the full flight timeline
+  // — deplete to the refill, refill to the typical post-restock quantity,
+  // deplete again, refill again... — via simulateArrivalQty(). Without
+  // post-restock depletion the projection is wildly optimistic on popular
+  // shelves (Xanax-JPN sees ~21 units/min of buyers), and without the
+  // RECURRING refills it's wildly pessimistic on long flights: a shelf
+  // with a ~50-min cycle restocks 4-5 times during a 4.5 h Japan leg, and
+  // arrival stock is set by the phase of the LAST cycle at landing, not
+  // the first. Subsequent refill timing is mechanic-derived inside the
+  // simulator (cycle = 1.5 × restockQty / rate, per the half-sellout
+  // rule), with the cadence median as fallback.
   //
   // Gated on `restockEtaMins` (during-flight) rather than `restockQty`
   // (un-gated, set whenever cadence data exists) — otherwise we'd
   // inflate arrival-time stock with a restock that won't land until long
   // after the traveler is home.
-  //
-  // Limitation: models only the *next* restock event. A shelf with a
-  // 1-hour cadence on a 4-hour flight can restock 3-4 times during
-  // flight, which we don't track. Single-event-plus-depletion is still
-  // strictly more accurate than no post-restock depletion.
   let etaPostRefill = false;
   if (etaQty === 0 && restockEtaMins != null) {
-    const minsAfterRestock = arrivalMins - restockEtaMins;
-    etaQty = Math.max(0, Math.round(restockQty + slope * minsAfterRestock));
-    etaPostRefill = true;
+    const sim = simulateArrivalQty({
+      nowQty,
+      slope,
+      arrivalMins,
+      firstRestockMins: restockEtaMins,
+      intervalMins: restockIntervalMins,
+      restockQty,
+    });
+    etaQty = Math.round(sim.etaQty);
+    etaPostRefill = sim.refills > 0;
   }
 
   // Confidence tiers off the pooled totals. Observing the shelf through
