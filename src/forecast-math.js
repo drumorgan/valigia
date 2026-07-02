@@ -384,6 +384,87 @@ export function estimateNextRestock(events, nowMs) {
   };
 }
 
+// ── Flight-window shelf simulation ───────────────────────────────────
+//
+// Projects shelf quantity across a whole flight, modeling EVERY refill in
+// the window rather than just the first. The old single-refill override
+// understated arrival stock on fast shelves observed over long flights: a
+// shelf with a ~50-min cycle restocks 4-5 times during a 4.5 h Japan leg,
+// and what matters is the phase of the LAST cycle at landing, not the
+// first.
+//
+// Refill schedule: the first refill time comes from the caller (half-
+// sellout rule or cadence median — already tick-snapped). Subsequent
+// refills prefer the mechanic-derived cycle — a refill of `restockQty`
+// units at `-slope` units/min sells out in restockQty/-slope minutes and
+// refills half that later, so cycle = 1.5 × restockQty / -slope — falling
+// back to the observed cadence median when there's no usable slope. The
+// cycle is floored at one tick (nothing restocks faster than 15 min).
+//
+// Approximation notes: refills SET the shelf to restockQty (Torn refills
+// a sold-out shelf to its stock level; post_qty medians measure exactly
+// that). We take max(current, restockQty) so a mis-timed schedule can
+// never make a refill LOWER the projection. Subsequent refill times drift
+// off exact tick alignment when the cycle isn't a 15-min multiple —
+// acceptable, since per-cycle phase error is already dominated by slope
+// noise several cycles out.
+
+const MAX_SIMULATED_REFILLS = 50;
+
+/**
+ * @param {object} p
+ * @param {number} p.nowQty            current quantity (≥ 0)
+ * @param {number} p.slope             depletion rate in units/min (≤ 0; 0 = flat)
+ * @param {number} p.arrivalMins       minutes until landing
+ * @param {number|null} p.firstRestockMins  minutes until the first predicted refill
+ *                                     (null or > arrivalMins → no refills modeled)
+ * @param {number|null} p.intervalMins observed cadence median for subsequent refills
+ * @param {number|null} p.restockQty   typical post-refill quantity
+ * @returns {{ etaQty: number, refills: number }} projected arrival quantity
+ *          (unrounded, ≥ 0) and how many refills landed during the flight
+ */
+export function simulateArrivalQty({ nowQty, slope, arrivalMins, firstRestockMins, intervalMins, restockQty }) {
+  const rate = Math.min(0, slope ?? 0);
+  let qty = Math.max(0, nowQty ?? 0);
+
+  // Build the refill schedule inside [0, arrivalMins].
+  const times = [];
+  if (firstRestockMins != null && firstRestockMins <= arrivalMins && restockQty != null && restockQty > 0) {
+    // Mechanic-derived cycle beats the cadence median for refills after
+    // the first: it's consistent with the very slope the simulation
+    // depletes at. Cadence is the fallback; no interval at all → model
+    // only the first refill (the pre-simulation behavior).
+    let cycle = null;
+    if (rate < 0) {
+      cycle = 1.5 * (restockQty / -rate);
+    } else if (intervalMins != null && intervalMins > 0) {
+      cycle = intervalMins;
+    }
+    if (cycle != null) cycle = Math.max(cycle, RESTOCK_TICK_MS / 60_000);
+
+    let t = Math.max(0, firstRestockMins);
+    times.push(t);
+    while (cycle != null && times.length < MAX_SIMULATED_REFILLS) {
+      t += cycle;
+      if (t > arrivalMins) break;
+      times.push(t);
+    }
+  }
+
+  // Walk the timeline: deplete to each refill, refill, deplete to arrival.
+  let cursor = 0;
+  let refills = 0;
+  for (const rt of times) {
+    qty = Math.max(0, qty + rate * (rt - cursor));
+    qty = Math.max(qty, restockQty);
+    refills++;
+    cursor = rt;
+  }
+  qty = Math.max(0, qty + rate * (arrivalMins - cursor));
+
+  return { etaQty: qty, refills };
+}
+
 /**
  * Split a chronologically-sorted sample array into every maximal run of
  * non-increasing quantity. A run ends (and a new one begins) at the first

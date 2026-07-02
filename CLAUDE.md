@@ -237,10 +237,19 @@ and stale-guard against the newest stored reading — so duplicate
 observers of one physical refill collapse in the minute-dedup indexes
 instead of polluting the cadence with phantom 2-minute gaps.
 
+Arrival-time stock runs through `simulateArrivalQty()` (forecast-math.js)
+whenever a refill lands during the flight: the full timeline is walked —
+deplete → refill → deplete → refill… — modeling EVERY refill in the
+window, not just the first. Refills after the first use the
+mechanic-derived cycle (1.5 × restockQty ÷ depletion rate, per the
+half-sellout rule), cadence median as fallback, floored at one tick.
+
 `forecastStock()` exposes `restockBasis: 'halftime' | 'cadence'` so the
 UI can say which model made the timing call. `MODEL_VERSION = 'v3'` tags
 every logged prediction; the accuracy pipeline (migrations 035/037/038)
-scores v3 against v2 out-of-sample automatically.
+scores v3 against v2 out-of-sample automatically. The pure math lives in
+`src/forecast-math.js` (no I/O — unit-tested in `tests/`, reused by
+offline tooling); `stock-forecast.js` owns the Supabase I/O and caching.
 
 ### Margin Calculations
 
