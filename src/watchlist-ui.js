@@ -12,15 +12,6 @@ import { ABROAD_ITEMS } from './data/abroad-items.js';
 import { showToast } from './ui.js';
 import { formatMoney } from './calculator.js';
 import { safeGetItem } from './storage.js';
-import {
-  pushSupported,
-  isStandalone,
-  isSubscribed,
-  enablePush,
-  disablePush,
-  listDepartureAlerts,
-  removeDepartureAlert,
-} from './push.js';
 
 const ITEM_ID_MAP_KEY = 'valigia_item_id_map';
 
@@ -357,11 +348,6 @@ export async function renderWatchlistTab(container) {
         <h3 class="wl-section-title">Your alerts</h3>
         <div id="wl-alerts-host"></div>
       </section>
-
-      <section class="wl-section">
-        <h3 class="wl-section-title">Departure alerts <span class="wl-push-tag">push</span></h3>
-        <div id="wl-push-host"></div>
-      </section>
     </div>
   `;
 
@@ -435,99 +421,6 @@ export async function renderWatchlistTab(container) {
   await refreshAlertsAndMatches();
   renderMatchesBody(container.querySelector('#wl-matches-host'));
   renderAlertsTable(container.querySelector('#wl-alerts-host'), container);
-  renderPushSection(container.querySelector('#wl-push-host'));
-}
-
-// ── Departure alerts (Web Push) ──────────────────────────────────────
-//
-// Push a "Leave for Japan now" notification to this device when a
-// watched shelf's predicted restock is one flight-time away — with the
-// tab closed. iOS only exposes Web Push to installed Home-Screen apps,
-// so the card walks the user through Add-to-Home-Screen first.
-async function renderPushSection(host) {
-  if (!host) return;
-
-  const supported = pushSupported();
-  const standalone = isStandalone();
-  const subscribed = supported ? await isSubscribed() : false;
-  const alerts = subscribed ? await listDepartureAlerts() : [];
-
-  let statusHtml;
-  if (!supported && !standalone) {
-    statusHtml = `
-      <p class="wl-empty">
-        To get departure pushes on this iPad: tap Safari's
-        <strong>Share</strong> button → <strong>Add to Home Screen</strong>,
-        then open Valigia from that icon and enable alerts here.
-      </p>`;
-  } else if (!supported) {
-    statusHtml = `<p class="wl-empty">This browser doesn't support Web Push notifications.</p>`;
-  } else if (!subscribed) {
-    statusHtml = `
-      <p class="wl-empty">
-        Get pinged when it's time to leave so you land right on a restock.
-      </p>
-      <button type="button" class="wl-add-btn" id="wl-push-enable">Enable alerts on this device</button>`;
-  } else {
-    const rows = alerts.length === 0
-      ? `<p class="wl-empty">
-           Armed and ready — now tap any <span class="wl-push-example">leave in ~45m</span>
-           hint on the Travel tab to add a departure alert for that shelf.
-         </p>`
-      : `<ul class="wl-push-list">${alerts.map((a) => `
-          <li class="wl-push-row">
-            <span class="wl-push-item">${a.item_name}</span>
-            <span class="wl-push-dest">→ ${a.destination}</span>
-            <span class="wl-push-lead">${a.lead_mins}m lead</span>
-            <button type="button" class="wl-del-btn" data-push-del
-              data-item-id="${a.item_id}" data-destination="${a.destination}">✕</button>
-          </li>`).join('')}</ul>
-        <p class="wl-push-hint">Tap a "leave in ~Xm" hint on the Travel tab to add more.</p>`;
-    statusHtml = `
-      <p class="wl-push-status">✓ Push enabled on this device</p>
-      ${rows}
-      <button type="button" class="wl-push-disable" id="wl-push-disable">Disable on this device</button>`;
-  }
-
-  host.innerHTML = statusHtml;
-
-  host.querySelector('#wl-push-enable')?.addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    btn.textContent = 'Enabling…';
-    const res = await enablePush();
-    if (res?.success) {
-      showToast('Departure alerts enabled on this device.', 'success');
-    } else {
-      const errMap = {
-        not_standalone: 'Add Valigia to your Home Screen first (Share → Add to Home Screen), then open it from there.',
-        permission_denied: 'Notifications were declined — allow them in Settings → Valigia to enable alerts.',
-        unsupported: 'This browser does not support Web Push.',
-        not_logged_in: 'Your session expired — log in again.',
-        unauthorized: 'Your session expired — log in again.',
-      };
-      showToast(errMap[res?.error] || `Could not enable alerts: ${res?.error || 'unknown'}`);
-    }
-    renderPushSection(host);
-  });
-
-  host.querySelector('#wl-push-disable')?.addEventListener('click', async () => {
-    await disablePush();
-    showToast('Push disabled on this device.', 'success');
-    renderPushSection(host);
-  });
-
-  host.querySelectorAll('[data-push-del]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      const res = await removeDepartureAlert({
-        itemId: btn.dataset.itemId,
-        destination: btn.dataset.destination,
-      });
-      if (!res?.success) showToast(`Could not remove: ${res?.error || 'unknown'}`);
-      renderPushSection(host);
-    });
-  });
 }
 
 function renderMatchesBody(host) {
