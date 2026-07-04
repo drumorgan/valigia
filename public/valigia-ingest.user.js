@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.54.0
+// @version      0.55.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -3307,14 +3307,26 @@
    */
   function findTilePriceElement(row, price) {
     const target = '$' + Number(price).toLocaleString('en-US');
+    // Match on each element's OWN text (direct text nodes only, child
+    // elements excluded). A leaves-only search missed every price that
+    // carries Torn's delta marker — `<div>$823,799 <span>↓2%</span></div>`
+    // has a child, so it isn't a leaf, and the span's text doesn't contain
+    // the price — which is exactly why tiles with a delta % never got
+    // verdicts. Own-text matching finds the container regardless of
+    // decoration children; keeping the LAST hit picks the deepest match
+    // (querySelectorAll is document order: ancestors precede descendants).
     const nodes = row.querySelectorAll('*');
+    let best = null;
     for (let i = 0; i < nodes.length; i++) {
       const el = nodes[i];
-      if (el.children.length > 0) continue; // leaves only
-      const txt = (el.textContent || '');
-      if (txt.indexOf(target) !== -1) return el;
+      let own = '';
+      for (let j = 0; j < el.childNodes.length; j++) {
+        const cn = el.childNodes[j];
+        if (cn.nodeType === 3) own += cn.nodeValue;
+      }
+      if (own.indexOf(target) !== -1) best = el;
     }
-    return null;
+    return best;
   }
 
   function paintBazaarPriceVerdicts(marketByItem) {
