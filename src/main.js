@@ -24,6 +24,7 @@ import {
   setDetectedCapacity, getStaleItemIdsForCategory, getTopTravelCandidateIds
 } from './ui.js';
 import { getTravelCapacity } from './pda-prefs.js';
+import { registerServiceWorker } from './push.js';
 
 // Category chip clicks top up any sell prices in that category older than
 // this threshold. Kept short — the whole point is to surface fresh margins
@@ -820,4 +821,8 @@ function clearPlayerHeader() {
 }
 
 // ── Go ─────────────────────────────────────────────────────────
+// Push-only service worker (no caching — see public/sw.js). Registered
+// unconditionally so an existing push subscription keeps its worker
+// alive across visits; enabling alerts happens in the Watchlist tab.
+registerServiceWorker();
 boot();
