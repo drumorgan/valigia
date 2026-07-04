@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.50.0
+// @version      0.51.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -2990,6 +2990,14 @@
   // Torn takes a 5% fee on item market sales — a flip is only real
   // when net-sell (market * 0.95) exceeds the bazaar buy price.
   const MARKET_FEE_RATE = 0.05;
+  // Minimum bazaar listing price before we spend a live Torn API call to
+  // learn an item's Item Market price. The shared sell_prices pool only
+  // tracks ~200 arbitrage-relevant items, so a bazaar full of random
+  // listings needs live lookups to compare — but a flip on a sub-$10K
+  // item nets pennies after the 5% fee and isn't worth one of the 45
+  // live fetches/landing. Items already in the pool are compared for
+  // free regardless of price.
+  const MIN_LIVE_FLIP_PRICE = 10000;
 
   function injectBazaarDealsStyles() {
     if (document.getElementById('valigia-bazaar-deals-styles')) return;
@@ -3210,16 +3218,59 @@
       fetchJSON(
         SELL_PRICES_URL +
         '?item_id=in.(' + ids.join(',') + ')' +
-        '&select=item_id,price'
+        '&select=item_id,price,min_price,updated_at'
       ),
       ensureItemCatalog(),
       ensurePointsRate(),
     ]);
 
-    const marketByItem = new Map();
+    // Build the pool map in enrichSellPricesLive()'s shape so we can top it
+    // off with LIVE Item Market fetches for anything the shared pool is
+    // missing or stale on. The pool only tracks ~200 arbitrage-relevant
+    // items, so a bazaar full of miscellaneous listings (Wax Seal Stamp,
+    // Meat Hook, Nitrous Tank, …) would otherwise get zero market
+    // comparisons and the whole bar would stay hidden — defeating the
+    // surface's purpose. This is the fix for exactly that.
+    const sellPriceMap = new Map();
     if (Array.isArray(sellRows)) {
       for (const r of sellRows) {
-        if (r.price != null) marketByItem.set(Number(r.item_id), Number(r.price));
+        if (r.price != null) {
+          sellPriceMap.set(Number(r.item_id), {
+            price: Number(r.price),
+            minPrice: r.min_price != null ? Number(r.min_price) : null,
+            updatedAt: r.updated_at || null,
+          });
+        }
+      }
+    }
+
+    // Spend live Torn API only on items worth flipping: the cheapest
+    // bazaar listing for the item must clear MIN_LIVE_FLIP_PRICE.
+    // enrichSellPricesLive() itself dedupes against its 30-min cache and
+    // the pool (only missing/stale ids actually fetch), caps at 45
+    // fetches/landing at 5-concurrent, and upserts results back into
+    // sell_prices so every other Valigia user benefits. Respects silent
+    // mode (no-ops when indicators are hidden).
+    const cheapestByItem = new Map();
+    for (const it of scrapedItems) {
+      const id = Number(it.item_id);
+      const p = Number(it.price);
+      if (!Number.isFinite(p) || p <= 0) continue;
+      const prev = cheapestByItem.get(id);
+      if (prev == null || p < prev) cheapestByItem.set(id, p);
+    }
+    const enrichIds = ids.filter(function (id) {
+      const cheapest = cheapestByItem.get(Number(id));
+      return Number.isFinite(cheapest) && cheapest >= MIN_LIVE_FLIP_PRICE;
+    });
+    if (enrichIds.length > 0) {
+      await enrichSellPricesLive(enrichIds, sellPriceMap);
+    }
+
+    const marketByItem = new Map();
+    for (const entry of sellPriceMap) {
+      if (entry[1] && Number.isFinite(entry[1].price)) {
+        marketByItem.set(entry[0], entry[1].price);
       }
     }
 

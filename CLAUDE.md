@@ -526,6 +526,16 @@ there are zero flippable listings. Earlier versions (0.6.2–0.6.9)
 tried a per-row overlay inside each tile but Torn's bazaar DOM varied
 too much across layouts — the single top bar is the stable replacement.
 
+Market prices come from the shared `sell_prices` pool first, then —
+because that pool only tracks ~200 arbitrage-relevant items and a real
+bazaar is full of arbitrary listings — any item missing/stale in the
+pool whose cheapest listing clears `MIN_LIVE_FLIP_PRICE` ($10K) is
+topped off with a LIVE Torn Item Market fetch via `enrichSellPricesLive()`
+(30-min cache, ≤45 fetches/landing, 5-concurrent, results upserted back
+to `sell_prices` for the whole community). Without this the bar stayed
+hidden on most bazaars because the pool simply didn't know those items'
+prices. Respects silent mode (no live spend when indicators are hidden).
+
 All three runners use a single shared `rowContainer()` heuristic that
 tolerates Torn's migration from `<table>` to div-based layouts.
 
