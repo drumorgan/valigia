@@ -536,6 +536,18 @@ to `sell_prices` for the whole community). Without this the bar stayed
 hidden on most bazaars because the pool simply didn't know those items'
 prices. Respects silent mode (no live spend when indicators are hidden).
 
+The same market map also drives **per-tile price verdicts**
+(`paintBazaarPriceVerdicts`): every tile's price is colored GREEN when
+buy-here-flip-to-market clears a profit after the 5% fee, RED when it
+doesn't, with a compact badge ("▲ +$85K flip" / "mkt $400M") next to
+the price and the full math in the tooltip. Tiles ≥ $10K with no market
+data get a dim "mkt n/a" so silence is distinguishable from "not
+profitable"; sub-$10K tiles are left alone. Runs even when zero deals
+clear the bar (painted before the bar's zero-deals early return). This
+does NOT repeat the 0.6.x per-tile-overlay mistake: it paints only row
+elements the scraper itself located (`lastBazaarTiles`), so there's no
+second DOM heuristic to drift out of sync with Torn's markup.
+
 All three runners use a single shared `rowContainer()` heuristic that
 tolerates Torn's migration from `<table>` to div-based layouts.
 
