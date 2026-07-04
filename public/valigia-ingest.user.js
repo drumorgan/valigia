@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.52.0
+// @version      0.53.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -715,7 +715,7 @@
     // YATA sampling gaps, not real scout cadence (matches the web v2 model and
     // get_stats_snapshot's filter). Keeps the surfaced refill ETA honest.
     const url = RESTOCK_EVENTS_URL +
-      '?select=item_id,restocked_at,post_qty' +
+      '?select=item_id,restocked_at,pre_observed_at,post_qty' +
       '&item_id=in.(' + idList + ')' +
       '&destination=eq.' + encodeURIComponent(destination) +
       '&restocked_at=gte.' + encodeURIComponent(cutoffIso) +
@@ -741,10 +741,17 @@
         if (!Number.isFinite(itemId)) continue;
         const t = new Date(r.restocked_at).getTime();
         if (!Number.isFinite(t)) continue;
+        const preT = r.pre_observed_at ? new Date(r.pre_observed_at).getTime() : NaN;
         const postQty = Number(r.post_qty);
         let arr = byItem.get(itemId);
         if (!arr) { arr = []; byItem.set(itemId, arr); }
-        arr.push({ at: t, postQty: Number.isFinite(postQty) ? postQty : null });
+        arr.push({
+          at: t,
+          // Pre-restock observation time — bounds the censoring window the
+          // tick attribution below resolves. null on legacy rows.
+          pre: Number.isFinite(preT) ? preT : null,
+          postQty: Number.isFinite(postQty) ? postQty : null,
+        });
       }
       return byItem;
     } catch (e) {
@@ -752,63 +759,101 @@
     }
   }
 
-  // Cap on the inter-restock interval the cadence estimators will trust.
-  // Wider than this is an observation hole, not a real two-hour cadence —
-  // mirrors src/stock-forecast.js's MAX_RESTOCK_GAP_MINS and migration 030.
-  const MAX_RESTOCK_GAP_MINS = 120;
+  // ── v3-lite restock estimation (mirrors src/forecast-math.js) ──────
+  //
+  // Torn restocks land ONLY on quarter-hour ticks (xx:00/:15/:30/:45 TCT
+  // = UTC). Event times are tick-attributed inside their censoring window
+  // (pre_observed_at, restocked_at] — with the cron's ~5-min sampling
+  // that window usually holds exactly one tick, recovering the exact
+  // refill time. Predictions snap forward onto ticks; an overdue
+  // prediction resolves to the next upcoming tick instead of freezing at
+  // "imminent". Skips the web model's confidence/MAD/MAE machinery — the
+  // overlays just need the timing numbers.
 
-  // Median observed interval minus time-since-last-restock. Mirrors the
-  // central calculation in stock-forecast.js (estimateNextRestock) without
-  // the confidence/MAD/MAE machinery — the overlay just needs one number.
-  // Needs ≥2 events (one interval sample); returns null otherwise.
-  function estimateRefillMins(events, nowMs) {
-    if (!Array.isArray(events) || events.length < 2) return null;
-    const sorted = events.map(function (e) { return e.at; })
-      .filter(Number.isFinite)
-      .sort(function (a, b) { return a - b; });
-    if (sorted.length < 2) return null;
-    // Drop non-positive gaps and any gap wider than MAX_RESTOCK_GAP_MINS — a
-    // multi-hour gap is an observation hole ("nobody visited"), not a real
-    // cadence. Mirrors the web v2 model + migration 030's 120-min cap.
-    const gaps = [];
-    for (let i = 1; i < sorted.length; i++) {
-      const g = (sorted[i] - sorted[i - 1]) / 60000;
-      if (g > 0 && g <= MAX_RESTOCK_GAP_MINS) gaps.push(g);
+  const RESTOCK_TICK_MS_US = 15 * 60000;
+  function floorTickUS(ms) { return Math.floor(ms / RESTOCK_TICK_MS_US) * RESTOCK_TICK_MS_US; }
+  function nextTickAfterUS(ms) { return floorTickUS(ms) + RESTOCK_TICK_MS_US; }
+  function nearestTickUS(ms) { return Math.round(ms / RESTOCK_TICK_MS_US) * RESTOCK_TICK_MS_US; }
+
+  function effectiveRestockTimeUS(e) {
+    if (e.pre != null && e.pre < e.at) {
+      const first = nextTickAfterUS(e.pre);
+      const last = floorTickUS(e.at);
+      if (first <= last) {
+        const mid = (e.pre + e.at) / 2;
+        return Math.min(Math.max(nearestTickUS(mid), first), last);
+      }
+      return (e.pre + e.at) / 2;
     }
-    if (gaps.length === 0) return null;
-    const sortedGaps = gaps.slice().sort(function (a, b) { return a - b; });
-    const median = sortedGaps[Math.floor(sortedGaps.length / 2)];
-    if (!(median > 0)) return null;
-    const lastAt = sorted[sorted.length - 1];
-    const sinceLastMins = (nowMs - lastAt) / 60000;
-    return Math.max(0, Math.round(median - sinceLastMins));
+    // No pre-observation: refill happened at/before being seen, on a tick.
+    return floorTickUS(e.at);
   }
 
-  // Slim port of stock-forecast.js's estimateNextRestock — returns
-  // { timeToNextMins, typicalPostQty } so the in-flight strip can apply
-  // the same restock-during-flight override the web app does:
-  //
-  //   if depletion forecast hits 0 AND a restock is expected before
-  //   landing, replace 0 with typicalPostQty.
-  //
-  // Skips the confidence/MAD/MAE/uncertainty machinery — the strip only
-  // needs the median cadence + median post-restock qty.
-  function estimateRestockPlan(events, nowMs) {
+  // Was 120 min — which deleted the entire cadence for slow shelves
+  // (flowers run ~10.5 h cycles) back when data was user-gated. The 5-min
+  // cron poller made long gaps real; 24 h is a pure sanity bound and the
+  // adaptive trim below handles genuine observation holes.
+  const MAX_RESTOCK_GAP_MINS = 24 * 60;
+  const MISSED_CYCLE_FACTOR = 1.75;
+  const MIN_GAPS_FOR_TRIM = 4;
+
+  // Tick-attributed, deduped, sorted effective times → trimmed gap list.
+  // Dedup matters: two observers of one physical refill resolve to the
+  // same tick and must not register a phantom 0-minute gap.
+  function restockTimesAndGaps(events) {
     if (!Array.isArray(events) || events.length < 2) return null;
-    const atTimes = events.map(function (e) { return e.at; })
-      .filter(Number.isFinite)
-      .sort(function (a, b) { return a - b; });
-    if (atTimes.length < 2) return null;
-    // Same gap hygiene as estimateRefillMins: drop holes wider than the cap.
-    const gaps = [];
-    for (let i = 1; i < atTimes.length; i++) {
-      const g = (atTimes[i] - atTimes[i - 1]) / 60000;
+    const seen = {};
+    const times = [];
+    for (const e of events) {
+      if (!e || !Number.isFinite(e.at)) continue;
+      const t = effectiveRestockTimeUS(e);
+      if (!seen[t]) { seen[t] = true; times.push(t); }
+    }
+    if (times.length < 2) return null;
+    times.sort(function (a, b) { return a - b; });
+    let gaps = [];
+    for (let i = 1; i < times.length; i++) {
+      const g = (times[i] - times[i - 1]) / 60000;
       if (g > 0 && g <= MAX_RESTOCK_GAP_MINS) gaps.push(g);
     }
     if (gaps.length === 0) return null;
-    const sortedGaps = gaps.slice().sort(function (a, b) { return a - b; });
-    const medianInterval = sortedGaps[Math.floor(sortedGaps.length / 2)];
-    if (!(medianInterval > 0)) return null;
+    if (gaps.length >= MIN_GAPS_FOR_TRIM) {
+      const provisional = gaps.slice().sort(function (a, b) { return a - b; })[Math.floor(gaps.length / 2)];
+      const trimmed = gaps.filter(function (g) { return g <= provisional * MISSED_CYCLE_FACTOR; });
+      if (trimmed.length >= 2) gaps = trimmed;
+    }
+    return { times: times, gaps: gaps };
+  }
+
+  // Median cadence anchored at the last tick-attributed refill, snapped
+  // onto a tick; overdue → the next upcoming tick (soonest physically
+  // possible refill), never a frozen 0.
+  function nextRestockMinsFrom(tg, nowMs) {
+    const sorted = tg.gaps.slice().sort(function (a, b) { return a - b; });
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (!(median > 0)) return null;
+    const lastAt = tg.times[tg.times.length - 1];
+    const predictedAt = nearestTickUS(lastAt + median * 60000);
+    const targetAt = predictedAt > nowMs ? predictedAt : nextTickAfterUS(nowMs);
+    return { mins: (targetAt - nowMs) / 60000, medianIntervalMins: median };
+  }
+
+  // "Minutes until the next refill" for the landed overlay + detail bar.
+  // Needs ≥2 events (one interval sample); returns null otherwise.
+  function estimateRefillMins(events, nowMs) {
+    const tg = restockTimesAndGaps(events);
+    if (!tg) return null;
+    const next = nextRestockMinsFrom(tg, nowMs);
+    return next ? Math.round(next.mins) : null;
+  }
+
+  // { timeToNextMins, typicalPostQty, medianIntervalMins } for the
+  // in-flight strip's during-flight refill override and leave-in rows.
+  function estimateRestockPlan(events, nowMs) {
+    const tg = restockTimesAndGaps(events);
+    if (!tg) return null;
+    const next = nextRestockMinsFrom(tg, nowMs);
+    if (!next) return null;
 
     const postQtys = events.map(function (e) { return e.postQty; })
       .filter(Number.isFinite)
@@ -816,14 +861,10 @@
     if (postQtys.length === 0) return null;
     const typicalPostQty = postQtys[Math.floor(postQtys.length / 2)];
 
-    const lastRestockAt = atTimes[atTimes.length - 1];
-    const sinceLastMins = (nowMs - lastRestockAt) / 60000;
-    const timeToNextMins = Math.max(0, medianInterval - sinceLastMins);
-
     return {
-      timeToNextMins: timeToNextMins,
+      timeToNextMins: next.mins,
       typicalPostQty: typicalPostQty,
-      medianIntervalMins: medianInterval,
+      medianIntervalMins: next.medianIntervalMins,
     };
   }
 
@@ -834,6 +875,14 @@
     const h = Math.floor(mins / 60);
     const m = Math.round(mins % 60);
     return m > 0 ? 'refill ~' + h + 'h ' + m + 'm' : 'refill ~' + h + 'h';
+  }
+
+  // Bare duration for "leave in ~X" copy: "42m" under 90 min, "2h 5m" above.
+  function formatMinsShort(mins) {
+    if (mins < 90) return Math.round(mins) + 'm';
+    const h = Math.floor(mins / 60);
+    const m = Math.round(mins % 60);
+    return m > 0 ? h + 'h ' + m + 'm' : h + 'h';
   }
 
   // -- Ingest edge-function post ------------------------------------------
@@ -5028,6 +5077,9 @@
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrival { color: #4ae8a0; font-weight: 700; white-space: nowrap; text-align: right; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrival--empty { color: #e8824a; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrival--unknown { color: #5a6070; font-weight: 400; }',
+      // Gold "wait for it" advice — the shelf refills after a flight
+      // leaving right now would land.
+      '#' + INFLIGHT_BAR_ID + ' .vgl-if-arrival--leavein { color: #e8c84a; }',
       '#' + INFLIGHT_BAR_ID + ' .vgl-if-empty {',
       '  display: none;',
       '  padding: 4px 12px 10px; font-size: 11px; color: #8a8fa0;',
@@ -5110,7 +5162,17 @@
         // "may sell out" wins regardless of source when predicted hits 0.
         const arrival = document.createElement('span');
         arrival.className = 'vgl-if-arrival';
-        if (r.predictedStock != null) {
+        if (r.leaveIn != null) {
+          // Shelf is empty and the refill lands after a flight leaving
+          // now would — the advice is to WAIT so arrival coincides with
+          // the restock.
+          arrival.textContent = 'leave in ~' + formatMinsShort(r.leaveIn) +
+            ' → ' + r.predictedStock.toLocaleString('en-US');
+          arrival.classList.add('vgl-if-arrival--leavein');
+          arrival.title = 'Empty now; next restock lands after a flight leaving now. ' +
+            'Depart in ~' + formatMinsShort(r.leaveIn) + ' to land right at the refill (~' +
+            r.predictedStock.toLocaleString('en-US') + ' units).';
+        } else if (r.predictedStock != null) {
           if (r.predictedStock <= 0) {
             arrival.textContent = 'may sell out';
             arrival.classList.add('vgl-if-arrival--empty');
@@ -5261,6 +5323,7 @@
       let predicted = null;
       let predictedFromSlope = false;
       let postRefill = false;
+      let leaveInMins = null;
       if (Number.isFinite(remainingMins) && remainingMins > 0) {
         const slope = depletionRatePerMin(snapshotsMap.get(r.item_id));
         const plan = estimateRestockPlan(restockMap.get(r.item_id), nowMs);
@@ -5302,11 +5365,24 @@
           predictedFromSlope = true;
           postRefill = true;
           restockOverrides++;
+        } else if (
+          stockNow === 0 && plan &&
+          plan.timeToNextMins > remainingMins &&
+          Number.isFinite(plan.typicalPostQty) && plan.typicalPostQty > 0
+        ) {
+          // Branch D — currently empty and the refill lands AFTER this
+          // flight would. These rows used to be dropped ("nothing to
+          // buy"), but the actionable answer is to WAIT: departing in
+          // (timeToNext − flight) minutes lands exactly at the refill.
+          // Keep the row with the post-refill qty and a leave-in flag.
+          leaveInMins = Math.round(plan.timeToNextMins - remainingMins);
+          predicted = Math.round(plan.typicalPostQty);
+          postRefill = true;
         }
       }
 
       // Drop rows with no actionable arrival count: stock=0 now AND no
-      // restock predicted during flight. Nothing to buy.
+      // restock predicted during flight or worth waiting for.
       if (predicted == null || predicted <= 0) continue;
       // Run cost: unit price × min(predicted, slots). Use predicted
       // rather than current stock so a refilling shelf shows real
@@ -5320,6 +5396,7 @@
         predictedStock: predicted,
         predictedFromSlope: predictedFromSlope,
         postRefill: postRefill,
+        leaveIn: leaveInMins,
         buy_price: r.buy_price,
         runCost: runCost,
         netSell: netSell,
@@ -5578,10 +5655,30 @@
         refill.textContent = 'in stock';
         refill.classList.add('vgl-br-refill--none');
       } else {
-        const eta = formatRefillEta(estimateRefillMins(restockMap.get(r.item_id), nowMs));
+        const etaMins = estimateRefillMins(restockMap.get(r.item_id), nowMs);
+        const eta = formatRefillEta(etaMins);
         if (eta) {
-          refill.textContent = eta;
-          refill.title = 'Estimated time to next restock';
+          // The number the player actually plans with: when the refill
+          // lands AFTER a flight departing right now would, translate the
+          // ETA into "leave in ~X" — wait that long, then depart, and you
+          // land as the shelf refills. Uses this player's flight time
+          // (multiplier applied). ETA ≤ flight time means a flight leaving
+          // now already catches the refill: "refill ~Xm · leave now".
+          const flightMins = (FLIGHT_MINS[destination] || 0) * getFlightMultiplier();
+          if (etaMins != null && flightMins > 0) {
+            if (etaMins > flightMins) {
+              refill.textContent = eta + ' · leave in ~' + formatMinsShort(etaMins - flightMins);
+              refill.title = 'Next restock in ~' + formatMinsShort(etaMins) +
+                '; departing in ~' + formatMinsShort(etaMins - flightMins) +
+                ' lands you right at the refill (' + formatMinsShort(flightMins) + ' flight)';
+            } else {
+              refill.textContent = eta + ' · leave now';
+              refill.title = 'Restock lands during the flight — departing now arrives after the refill';
+            }
+          } else {
+            refill.textContent = eta;
+            refill.title = 'Estimated time to next restock';
+          }
         } else {
           refill.textContent = hasStock ? 'low' : 'no ETA';
           refill.classList.add('vgl-br-refill--none');

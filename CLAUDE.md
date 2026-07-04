@@ -466,6 +466,20 @@ The Items-page runner is a pure-read surface: it scrapes the current category's 
 
 The travel runner also paints a per-row overlay (`Market Price · $margin ·
 margin%`) with a green BEST badge on the highest-margin in-stock row.
+
+On the travel HOME screen (destination picker), two surfaces carry
+**"leave in ~Xm"** departure timing (since 0.53.0): the per-country
+detail bar (tap a country → each out-of-stock item's refill ETA now
+appends `· leave in ~Xm`, or `· leave now` when the refill lands during
+the flight), and the picker strip (empty shelves whose refill lands
+after this flight — previously dropped as "nothing to buy" — now render
+gold `leave in ~Xm → qty` rows). Flight time uses `FLIGHT_MINS ×
+getFlightMultiplier()`. The userscript's restock estimators are a
+v3-lite port of forecast-math.js: tick attribution via
+`pre_observed_at` censoring windows, 24 h gap cap + adaptive
+missed-cycle trim (the old 120-min cap deleted slow shelves' cadence),
+tick-snapped predictions, overdue → next tick. No confidence/MAE
+machinery — overlays surface the number, the web app owns the nuance.
 The Item Market and Bazaar runners additionally inject a collapsed
 **Watchlist Matches bar** at the top of the page — styled to match the
 Valigia web card (green border, triangle expand, one row per hit with
