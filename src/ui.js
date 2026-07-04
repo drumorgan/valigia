@@ -6,6 +6,7 @@ import { getItemTypeById } from './item-resolver.js';
 import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock, getStockHistory } from './stock-forecast.js';
 import { stockSparklineSvg } from './sparkline.js';
+import { addDepartureAlert, isSubscribed, LEAVE_BUFFER_MINS } from './push.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
 import { safeGetItem, safeSetItem } from './storage.js';
 import { setTravelCapacity } from './pda-prefs.js';
@@ -520,6 +521,51 @@ function renderRefillStatus(forecast, etaLineHtml, dynamicsHtml) {
   return `<div class="shelf-dynamics"><span class="stock-eta__learning" title="${title}">${label}</span></div>`;
 }
 
+// Data attributes that turn a "leave in ~Xm" hint into a tap target for
+// arming a departure push alert. The lead is the one-way arrival time
+// (multiplier applied) plus a small shopping buffer — the cron sender
+// fires when predicted restock − lead ≈ now, i.e. exactly when leaving
+// puts the player at the shop as the shelf refills.
+function departureAlertAttrs(row, arrivalMins) {
+  const lead = Math.round(arrivalMins) + LEAVE_BUFFER_MINS;
+  const name = String(row.name || '').replace(/"/g, '&quot;');
+  return ` data-alert-item-id="${row.itemId}" data-alert-item-name="${name}"`
+    + ` data-alert-destination="${row.destination}" data-alert-lead="${lead}"`;
+}
+
+// One delegated listener on the (persistent) tbody handles every armable
+// hint across re-renders — renderTable swaps innerHTML, so per-span
+// listeners would be wiped on each render.
+function wireDepartureAlertTaps(tbody) {
+  if (tbody.dataset.alertTapsWired) return;
+  tbody.dataset.alertTapsWired = '1';
+  tbody.addEventListener('click', async (e) => {
+    const target = e.target.closest('[data-alert-item-id]');
+    if (!target) return;
+    e.preventDefault();
+
+    if (!(await isSubscribed())) {
+      showToast('Enable push alerts first: Watchlist tab → Departure alerts.', 'warning');
+      return;
+    }
+    const res = await addDepartureAlert({
+      itemId: target.dataset.alertItemId,
+      itemName: target.dataset.alertItemName,
+      destination: target.dataset.alertDestination,
+      leadMins: Number(target.dataset.alertLead),
+    });
+    if (res?.success) {
+      showToast(
+        `Departure alert armed: ${target.dataset.alertItemName} → ${target.dataset.alertDestination}. ` +
+        `You'll get a push when it's time to leave.`,
+        'success'
+      );
+    } else {
+      showToast(`Could not arm alert: ${res?.error || 'unknown'}`);
+    }
+  });
+}
+
 function renderStockCell(row) {
   const now = row.quantity;
   if (now == null) return '<span class="muted">—</span>';
@@ -636,15 +682,15 @@ function renderStockCell(row) {
   } else if (now === 0 && canShowLeaveIn) {
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const uncertLabel = uncertainty > 0 ? ` ±${uncertainty}m` : '';
-    const title = `Wait ~${Math.round(leaveInMins)}m before leaving so your arrival coincides with the expected restock (${f.restockConfidence} conf, ±${uncertainty}m).${basisNote}`;
-    etaLine = `<span class="stock-eta stock-eta--leave-in ${restockConfClass}" title="${title}">leave in ~${Math.round(leaveInMins)}m${uncertLabel} → ${qty}</span>`;
+    const title = `Wait ~${Math.round(leaveInMins)}m before leaving so your arrival coincides with the expected restock (${f.restockConfidence} conf, ±${uncertainty}m).${basisNote} Tap to get a push when it's time to leave.`;
+    etaLine = `<span class="stock-eta stock-eta--leave-in stock-eta--armable ${restockConfClass}" title="${title}"${departureAlertAttrs(row, arrivalMins)}>leave in ~${Math.round(leaveInMins)}m${uncertLabel} → ${qty} <em class="stock-eta__bell">🔔</em></span>`;
   } else if (displayEta === 0 && now > 0 && canShowLeaveIn) {
     const qty = Number(f.restockQty).toLocaleString('en-US');
     const emptyClause = f.timeToEmptyMins != null
       ? `empty ~${f.timeToEmptyMins}m · `
       : '';
-    const title = `Depletion empties the shelf mid-flight; leaving ~${Math.round(leaveInMins)}m from now (±${uncertainty}m, ${f.restockConfidence} conf) lands you at the refill.${basisNote}`;
-    etaLine = `<span class="stock-eta stock-eta--leave-in ${restockConfClass}" title="${title}">${emptyClause}leave in ~${Math.round(leaveInMins)}m → ${qty}</span>`;
+    const title = `Depletion empties the shelf mid-flight; leaving ~${Math.round(leaveInMins)}m from now (±${uncertainty}m, ${f.restockConfidence} conf) lands you at the refill.${basisNote} Tap to get a push when it's time to leave.`;
+    etaLine = `<span class="stock-eta stock-eta--leave-in stock-eta--armable ${restockConfClass}" title="${title}"${departureAlertAttrs(row, arrivalMins)}>${emptyClause}leave in ~${Math.round(leaveInMins)}m → ${qty} <em class="stock-eta__bell">🔔</em></span>`;
   } else if (displayEta === 0 && now > 0) {
     const label = f.timeToEmptyMins != null
       ? `empty ~${f.timeToEmptyMins}m`
@@ -1110,6 +1156,7 @@ export function renderTable() {
   const tbody = document.getElementById('arb-tbody');
   if (!tbody) return;
 
+  wireDepartureAlertTaps(tbody);
   updateHeaderSort();
 
   const rows = buildRows();

@@ -99,6 +99,8 @@ editor; Supabase does not auto-apply them).
 | `ingest_rate_limits` | Per-`(player_id, endpoint)` gate enforcing a minimum interval between ingest writes. Service-role only (no RLS policies). The `ingest_rate_check()` RPC does an atomic check-and-set with a row-level `FOR UPDATE` lock, returning `false` if the caller's last write was too recent. Migration 027. |
 | `te_traders` | Catalog of TornExchange trader pages we scrape (handle PK, optional `torn_player_id`, `submitted_by`, `last_scraped_at`, `last_scrape_ok`, `consecutive_fails`, `item_count`). Writes via the `ingest-te-trader` edge fn only; reads public. Migration 028. |
 | `te_buy_prices` | Per-trader standing buy-offers (`handle + item_id` composite key). `buy_price` is what the trader advertises they'll pay per unit. The Sell tab's inventory matcher picks the highest across all traders per item_id. Migration 028. |
+| `push_subscriptions` | Web Push endpoints + encryption keys, one row per subscribed device. Endpoints are bearer credentials for messaging the device, so the table is service-role ONLY (RLS with no anon policies); all writes via the `push-alerts` edge function (session-token gated). `fail_count`/pruning keep dead endpoints from burning sends. Migration 043. |
+| `departure_alerts` | Per-player per-shelf "leave in X" push configs (`player_id + item_id + destination` PK). `lead_mins` = one-way flight time (player's multiplier applied) + shopping buffer, computed client-side at creation so the sender needs no flight tables. `last_notified_restock_at` dedupes so one physical restock fires one push. Public read; writes via `push-alerts`. Migration 043. |
 | `pda_prefs` | Per-player PDA userscript preferences (`player_id` PK). Two fields: (1) `show_indicators` — false puts the userscript in silent mode (no bars/overlays/toasts/badges) while every scrape keeps contributing to the pool; (2) `travel_capacity` (migration 040) — the player's true current carry max, the shared source of truth for the slot count on both surfaces. The userscript auto-detects it off the travel shop's "purchased X / **Y** items" line (reads **Y**, the denominator/capacity, never X the quantity bought — so buying fewer never lowers it, but a real change like the Phase 2 29→28 is captured) and writes it here; the web app reads it on load and applies it exactly (overriding the rough perks estimate, in both directions), and a manual web Slots edit writes back so the in-game overlays converge. Both fields are set from either the website (session-token auth) or the userscript (raw Torn `api_key` auth), through the `pda-prefs` edge function; reads are public (the userscript polls with an anon SELECT, 60 s localStorage cache). Range-checked 10–86. Migration 034, 040. |
 
 **RPC functions** (granted to anon + authenticated):
@@ -381,7 +383,9 @@ valigia.girovagabondo.com/
 │   │   ├── ingest-te-trader/     — session-gated TornExchange page scraper → te_traders + te_buy_prices
 │   │   ├── cron-refresh-traders/ — daily pg_cron-triggered bulk refresh of every te_traders row
 │   │   ├── cron-snapshot-yata/   — 5-min pg_cron-triggered YATA poller → yata_snapshots + restock_events (activity-independent forecast data)
-│   │   └── _shared/              — cors + crypto helpers
+│   │   ├── push-alerts/          — session-gated CRUD for push_subscriptions + departure_alerts
+│   │   ├── cron-send-alerts/     — 5-min pg_cron-triggered departure-alert sender (server-side v3 forecast + Web Push via npm:web-push)
+│   │   └── _shared/              — cors + crypto helpers + forecast-math.js MIRROR (re-copy from src/ when it changes)
 │   └── migrations/
 │       ├── 001_initial_schema.sql
 │       ├── 002_sell_prices.sql
@@ -424,7 +428,9 @@ valigia.girovagabondo.com/
 │       ├── 039_cron_snapshot_yata.sql
 │       ├── 040_pda_prefs_travel_capacity.sql
 │       ├── 041_get_latest_yata_snapshots.sql
-│       └── 042_grant_latest_snapshots_to_service_role.sql
+│       ├── 042_grant_latest_snapshots_to_service_role.sql
+│       ├── 043_push_alerts.sql
+│       └── 044_cron_send_alerts.sql
 ├── .env
 ├── vite.config.js
 └── .github/
@@ -710,8 +716,23 @@ the script to see drip activity in the on-page panel.
   (add-alert form + full match list); the tab nav badge surfaces the
   current match count so users know to look without cluttering the
   Travel view. Writes flow through the session-gated `watchlist` edge
-  function; reads are public. No push or email alerts yet — matches
-  only appear on page load.
+  function; reads are public. Price-drop matches still only appear on
+  page load (no push for those yet).
+- **Departure push alerts** — "Leave in X" as a real notification on the
+  device, tab closed. Valigia is an installable PWA (manifest + icons +
+  push-only service worker with deliberately NO caching, so deploys can
+  never be half-served). iOS Web Push requires Add-to-Home-Screen
+  (16.4+); the Watchlist tab's "Departure alerts" card walks the user
+  through it and holds the enable/disable + alert list. Arming an alert
+  is one tap on any "leave in ~Xm 🔔" hint in the Travel table; the
+  stored `lead_mins` bakes in the player's flight time + a 2-min buffer.
+  Every 5 min the `cron-send-alerts` edge function recomputes each
+  watched shelf's restock prediction server-side (same v3 estimators,
+  imported from the `_shared/forecast-math.js` mirror), applies the same
+  ±45 m honesty gate as the UI, and Web-Pushes "Leave for Japan now —
+  Xanax restock ~14:15 TCT" to every subscribed device of that player.
+  VAPID keys: public baked into `src/push.js`, private lives only in
+  Edge Function secrets.
 - **Sell tab (TornExchange)** — Submit any TornExchange trader page
   (full URL or bare handle) and the `ingest-te-trader` edge function
   scrapes their standing buy-offers with a desktop UA. Prices land in
