@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.51.0
+// @version      0.52.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -1476,10 +1476,19 @@
     } catch (_) { return false; }
   }
 
+  // Every accepted tile from the most recent scrape, WITH its live DOM row
+  // reference: { item_id, price, row }. The ingest path only wants the
+  // cheapest listing per item (byItem below), but the per-tile price
+  // verdicts need to paint EVERY tile — including duplicates of the same
+  // item at different prices. Kept module-level (not returned) so the
+  // ingest rows stay plain JSON-safe objects.
+  let lastBazaarTiles = [];
+
   function scrapeBazaarItems() {
     const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
     const byItem = new Map(); // item_id -> {price, qty} (cheapest only)
     const seenRows = new Set();
+    lastBazaarTiles = [];
 
     for (const img of imgs) {
       const src = img.getAttribute('src') || '';
@@ -1510,6 +1519,8 @@
         const n = parseInt10(tok);
         if (Number.isFinite(n) && n > 0) { qty = n; break; }
       }
+
+      lastBazaarTiles.push({ item_id: item_id, price: price, row: row });
 
       const existing = byItem.get(item_id);
       if (!existing || price < existing.price) {
@@ -3191,6 +3202,91 @@
     return bar;
   }
 
+  // -- Per-tile price verdicts ----------------------------------------------
+  //
+  // Colors each bazaar tile's price by flip verdict: GREEN when buying here
+  // and reselling on the Item Market clears a profit after the 5% fee,
+  // RED when it doesn't, plus a compact annotation with the market price
+  // so the player sees WHY at a glance. Tiles ≥ the live-fetch floor with
+  // no market data get a dim "mkt n/a" so silence is distinguishable from
+  // "not profitable".
+  //
+  // History note: versions 0.6.2–0.6.9 tried per-tile overlays and were
+  // killed by Torn's shifting bazaar DOM. This approach dodges that trap:
+  // it paints ONLY elements the scraper itself already located (each
+  // tile's row ref from lastBazaarTiles), so there is no second,
+  // independent DOM heuristic to drift out of sync — if the scrape works,
+  // the paint works on exactly the same nodes.
+
+  const BAZAAR_VERDICT_CLASS = 'vgl-bz-verdict';
+  const VERDICT_GREEN = '#7bd88f';
+  const VERDICT_RED = '#e06c6c';
+  const VERDICT_MUTED = '#8a8f98';
+
+  /**
+   * Deepest element inside `row` whose own text carries the tile's price.
+   * Coloring the exact price node (rather than the whole tile) keeps the
+   * paint surgical; when Torn's markup makes it unfindable we fall back
+   * to appending the badge to the row and leave text colors alone.
+   */
+  function findTilePriceElement(row, price) {
+    const target = '$' + Number(price).toLocaleString('en-US');
+    const nodes = row.querySelectorAll('*');
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (el.children.length > 0) continue; // leaves only
+      const txt = (el.textContent || '');
+      if (txt.indexOf(target) !== -1) return el;
+    }
+    return null;
+  }
+
+  function paintBazaarPriceVerdicts(marketByItem) {
+    if (indicatorsHidden) return;
+    // Clear any prior pass (SPA nav / re-dispatch) so badges don't stack.
+    document.querySelectorAll('.' + BAZAAR_VERDICT_CLASS).forEach(function (n) { n.remove(); });
+
+    for (const t of lastBazaarTiles) {
+      if (!t.row || !t.row.isConnected) continue;
+
+      const market = marketByItem.get(Number(t.item_id));
+      const badge = document.createElement('span');
+      badge.className = BAZAAR_VERDICT_CLASS;
+      badge.style.cssText =
+        'margin-left:6px;font-size:0.85em;font-weight:600;white-space:nowrap;';
+
+      const priceEl = findTilePriceElement(t.row, t.price);
+
+      if (Number.isFinite(market)) {
+        const netSell = market * (1 - MARKET_FEE_RATE);
+        const profit = netSell - t.price;
+        const good = profit > 0;
+        const color = good ? VERDICT_GREEN : VERDICT_RED;
+        if (priceEl) priceEl.style.color = color;
+        badge.style.color = color;
+        badge.textContent = good
+          ? '▲ +' + formatMoneyCompact(profit) + ' flip'
+          : 'mkt ' + formatMoneyCompact(market);
+        badge.title = good
+          ? 'Item Market ' + formatMoney(market) + ' → nets ' + formatMoney(netSell) +
+            ' after the 5% fee. Buy here and flip for +' + formatMoney(profit) + '/unit.'
+          : 'Item Market ' + formatMoney(market) + ' → nets only ' + formatMoney(netSell) +
+            ' after the 5% fee — no profit at this bazaar price.';
+      } else if (t.price >= MIN_LIVE_FLIP_PRICE) {
+        // We tried (or would have tried) to price this one and couldn't —
+        // say so dimly rather than leaving ambiguous silence.
+        badge.style.color = VERDICT_MUTED;
+        badge.textContent = 'mkt n/a';
+        badge.title = 'No Item Market price available for this item (no listings, or the lookup failed / hit the per-visit cap).';
+      } else {
+        continue; // sub-floor junk: not worth annotating
+      }
+
+      if (priceEl) priceEl.insertAdjacentElement('afterend', badge);
+      else t.row.appendChild(badge);
+    }
+  }
+
   /**
    * Top-level entry. Reads sell_prices for the scraped bazaar items,
    * filters for flippable ones (bazaar < net-sell), and injects the
@@ -3273,6 +3369,13 @@
         marketByItem.set(entry[0], entry[1].price);
       }
     }
+
+    // Per-tile green/red price verdicts. Deliberately BEFORE the deals
+    // computation and its zero-deals early return — a bazaar with nothing
+    // flippable still gets every price colored red with the market
+    // comparison, which is the honest answer rather than silence.
+    try { paintBazaarPriceVerdicts(marketByItem); }
+    catch (e) { log('verdict paint error', e); }
 
     // Points-arb prework: if the bazaar contains any item thats a
     // member of a museum set AND we have a fresh Points Market rate,
