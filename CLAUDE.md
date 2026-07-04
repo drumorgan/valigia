@@ -732,21 +732,19 @@ the script to see drip activity in the on-page panel.
   Travel view. Writes flow through the session-gated `watchlist` edge
   function; reads are public. Price-drop matches still only appear on
   page load (no push for those yet).
-- **Departure push alerts** — "Leave in X" as a real notification on the
-  device, tab closed. Valigia is an installable PWA (manifest + icons +
-  push-only service worker with deliberately NO caching, so deploys can
-  never be half-served). iOS Web Push requires Add-to-Home-Screen
-  (16.4+); the Watchlist tab's "Departure alerts" card walks the user
-  through it and holds the enable/disable + alert list. Arming an alert
-  is one tap on any "leave in ~Xm 🔔" hint in the Travel table; the
-  stored `lead_mins` bakes in the player's flight time + a 2-min buffer.
-  Every 5 min the `cron-send-alerts` edge function recomputes each
-  watched shelf's restock prediction server-side (same v3 estimators,
-  imported from the `_shared/forecast-math.js` mirror), applies the same
-  ±45 m honesty gate as the UI, and Web-Pushes "Leave for Japan now —
-  Xanax restock ~14:15 TCT" to every subscribed device of that player.
-  VAPID keys: public baked into `src/push.js`, private lives only in
-  Edge Function secrets.
+- **Departure push alerts — BUILT BUT DORMANT (user opted out).** The
+  owner wants departure timing in-page only (see the PDA travel-picker
+  "leave in ~Xm" surfaces above), not device notifications. The full
+  Web Push stack exists in the repo but is NOT surfaced or deployed:
+  `src/push.js` (unreferenced → not bundled), `public/sw.js` +
+  `manifest.webmanifest` + icons (inert unless the user installs the
+  PWA), the `push-alerts` + `cron-send-alerts` edge functions (never
+  deployed), and migrations 043 (tables exist, empty) / 044 (cron —
+  never run). The Watchlist tab card and the 🔔 tap-to-arm hints were
+  removed after shipping. To resurrect: re-add the UI surfaces (git
+  history, PR #575), then follow PR #575's four deploy steps (VAPID
+  secrets, deploy both functions, Vault URL, migration 044). Do NOT
+  re-surface this without the owner asking.
 - **Sell tab (TornExchange)** — Submit any TornExchange trader page
   (full URL or bare handle) and the `ingest-te-trader` edge function
   scrapes their standing buy-offers with a desktop UA. Prices land in
