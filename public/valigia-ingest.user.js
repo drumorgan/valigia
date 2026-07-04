@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.53.0
+// @version      0.54.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -1533,6 +1533,33 @@
   // ingest rows stay plain JSON-safe objects.
   let lastBazaarTiles = [];
 
+  // Smallest ancestor of a tile image containing exactly ONE "$N" price
+  // token. Torn's bazaar grid packs three tiles into each DOM "row"
+  // (class*="row"), so the generic rowContainer() resolves to the 3-tile
+  // GROUP there — which made the scraper keep only the LEFTMOST tile per
+  // row (seenRows dedupe) and the verdict painter decorate the wrong
+  // spot. Widening from the image until a second price enters the
+  // subtree finds the true per-tile wrapper on every layout Torn has
+  // used; falls back to rowContainer() when the walk fails (price
+  // rendered outside the image's ancestor chain).
+  function bazaarTileContainer(img) {
+    const priceRe = /\$\s*[\d,\.]+/g;
+    let node = img.parentElement;
+    let best = null;
+    let hops = 0;
+    while (node && node !== document.body && hops < 8) {
+      const matches = (node.innerText || '').match(priceRe);
+      if (matches && matches.length === 1) {
+        best = node; // exactly one price — keep widening for fuller text
+      } else if (matches && matches.length > 1) {
+        break;       // swallowed a sibling tile — the previous best is it
+      }
+      node = node.parentElement;
+      hops++;
+    }
+    return best || rowContainer(img);
+  }
+
   function scrapeBazaarItems() {
     const imgs = Array.from(document.querySelectorAll('img[src*="/images/items/"]'));
     const byItem = new Map(); // item_id -> {price, qty} (cheapest only)
@@ -1545,7 +1572,7 @@
       if (!idMatch) continue;
       const item_id = Number(idMatch[1]);
 
-      const row = rowContainer(img);
+      const row = bazaarTileContainer(img);
       if (!row || seenRows.has(row)) continue;
       seenRows.add(row);
 
@@ -3298,29 +3325,41 @@
     for (const t of lastBazaarTiles) {
       if (!t.row || !t.row.isConnected) continue;
 
+      // No price element found → skip the tile entirely. The old fallback
+      // (append the badge to the row) is what produced orphaned "mkt $X"
+      // labels floating at the row edge with no owner — worse than
+      // nothing, since a mis-attributed verdict reads as belonging to a
+      // neighboring item.
+      const priceEl = findTilePriceElement(t.row, t.price);
+      if (!priceEl) continue;
+      // Sanity: the leaf must be a compact price node, not some sprawling
+      // text container that merely mentions the price.
+      if ((priceEl.textContent || '').trim().length > 40) continue;
+
       const market = marketByItem.get(Number(t.item_id));
       const badge = document.createElement('span');
       badge.className = BAZAAR_VERDICT_CLASS;
+      // Appended INSIDE the price element so it flows with the price text
+      // and can never shove Torn's grid cells around (a sibling insertion
+      // was wrapping outside the tile on the grid layout).
       badge.style.cssText =
-        'margin-left:6px;font-size:0.85em;font-weight:600;white-space:nowrap;';
-
-      const priceEl = findTilePriceElement(t.row, t.price);
+        'margin-left:5px;font-size:0.8em;font-weight:600;white-space:nowrap;';
 
       if (Number.isFinite(market)) {
         const netSell = market * (1 - MARKET_FEE_RATE);
         const profit = netSell - t.price;
         const good = profit > 0;
         const color = good ? VERDICT_GREEN : VERDICT_RED;
-        if (priceEl) priceEl.style.color = color;
+        priceEl.style.color = color;
         badge.style.color = color;
         badge.textContent = good
-          ? '▲ +' + formatMoneyCompact(profit) + ' flip'
+          ? '\u25B2 +' + formatMoneyCompact(profit)
           : 'mkt ' + formatMoneyCompact(market);
         badge.title = good
-          ? 'Item Market ' + formatMoney(market) + ' → nets ' + formatMoney(netSell) +
+          ? 'Item Market ' + formatMoney(market) + ' \u2192 nets ' + formatMoney(netSell) +
             ' after the 5% fee. Buy here and flip for +' + formatMoney(profit) + '/unit.'
-          : 'Item Market ' + formatMoney(market) + ' → nets only ' + formatMoney(netSell) +
-            ' after the 5% fee — no profit at this bazaar price.';
+          : 'Item Market ' + formatMoney(market) + ' \u2192 nets only ' + formatMoney(netSell) +
+            ' after the 5% fee \u2014 no profit at this bazaar price.';
       } else if (t.price >= MIN_LIVE_FLIP_PRICE) {
         // We tried (or would have tried) to price this one and couldn't —
         // say so dimly rather than leaving ambiguous silence.
@@ -3331,8 +3370,7 @@
         continue; // sub-floor junk: not worth annotating
       }
 
-      if (priceEl) priceEl.insertAdjacentElement('afterend', badge);
-      else t.row.appendChild(badge);
+      priceEl.appendChild(badge);
     }
   }
 
@@ -5167,7 +5205,7 @@
           // now would — the advice is to WAIT so arrival coincides with
           // the restock.
           arrival.textContent = 'leave in ~' + formatMinsShort(r.leaveIn) +
-            ' → ' + r.predictedStock.toLocaleString('en-US');
+            ' \u2192 ' + r.predictedStock.toLocaleString('en-US');
           arrival.classList.add('vgl-if-arrival--leavein');
           arrival.title = 'Empty now; next restock lands after a flight leaving now. ' +
             'Depart in ~' + formatMinsShort(r.leaveIn) + ' to land right at the refill (~' +
@@ -5600,7 +5638,7 @@
     if (usingSnapshotFallback) {
       const note = document.createElement('div');
       note.className = 'vgl-br-detail-msg';
-      note.textContent = 'YATA unavailable — showing our latest recorded data';
+      note.textContent = 'YATA unavailable \u2014 showing our latest recorded data';
       body.appendChild(note);
     }
     for (const r of merged) {
@@ -5667,13 +5705,13 @@
           const flightMins = (FLIGHT_MINS[destination] || 0) * getFlightMultiplier();
           if (etaMins != null && flightMins > 0) {
             if (etaMins > flightMins) {
-              refill.textContent = eta + ' · leave in ~' + formatMinsShort(etaMins - flightMins);
+              refill.textContent = eta + ' \u00B7 leave in ~' + formatMinsShort(etaMins - flightMins);
               refill.title = 'Next restock in ~' + formatMinsShort(etaMins) +
                 '; departing in ~' + formatMinsShort(etaMins - flightMins) +
                 ' lands you right at the refill (' + formatMinsShort(flightMins) + ' flight)';
             } else {
-              refill.textContent = eta + ' · leave now';
-              refill.title = 'Restock lands during the flight — departing now arrives after the refill';
+              refill.textContent = eta + ' \u00B7 leave now';
+              refill.title = 'Restock lands during the flight \u2014 departing now arrives after the refill';
             }
           } else {
             refill.textContent = eta;
@@ -7946,8 +7984,8 @@
   function paintOverlayToggle(btn) {
     const showing = !indicatorsHidden;
     btn.title = showing
-      ? 'Valigia overlays ON — tap to hide'
-      : 'Valigia overlays OFF — tap to show';
+      ? 'Valigia overlays ON \u2014 tap to hide'
+      : 'Valigia overlays OFF \u2014 tap to show';
     Object.assign(btn.style, {
       position: 'fixed',
       right: '0',

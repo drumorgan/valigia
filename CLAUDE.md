@@ -568,6 +568,17 @@ does NOT repeat the 0.6.x per-tile-overlay mistake: it paints only row
 elements the scraper itself located (`lastBazaarTiles`), so there's no
 second DOM heuristic to drift out of sync with Torn's markup.
 
+Tile resolution: the bazaar scraper uses `bazaarTileContainer()` (0.54.0)
+— the smallest ancestor of the item image containing exactly ONE `$N`
+token — NOT the shared `rowContainer()` heuristic. Torn's bazaar grid
+packs three tiles per DOM "row" (class*="row"), and rowContainer
+resolved to that 3-tile group: the scraper deduped to the LEFTMOST tile
+per row (⅓ ingest coverage) and verdicts floated at row edges. Badges
+are appended INSIDE the price element (never as grid siblings, which
+wrapped outside tiles), and skipped entirely when no compact price node
+is found. All display glyphs in userscript strings use \u escapes —
+literal UTF-8 has been observed mojibaking through the delivery path.
+
 All three runners use a single shared `rowContainer()` heuristic that
 tolerates Torn's migration from `<table>` to div-based layouts.
 
