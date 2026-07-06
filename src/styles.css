@@ -1,23 +1,29 @@
 :root {
-  --bg:       #0d0f14;
-  --surface:  #161a22;
-  --border:   #252a35;
-  --accent:   #e8c84a;
-  --positive: #4ae8a0;
+  /* Palazzo del Pompino palette — matched to girovagabondo.com */
+  --bg:       #0b0d14;
+  --surface:  #161926;
+  --border:   #2e2b26;
+  --border-gold: rgba(201, 168, 76, 0.4);
+  --accent:   #c9a84c;
+  --accent-light: #e8cc82;
+  --positive: #4db88e;
   --warning:  #e8824a;
-  --negative: #e84a4a;
-  --text:     #c8cdd8;
-  /* #5a6070 was below WCAG AA on the dark bg; #8a8fa0 clears 4.5:1 while
-     still reading as a clearly subdued secondary color. Many badges also
-     layered opacity < 1 on top, which compounded the legibility hit. */
-  --muted:    #8a8fa0;
+  --negative: #e05545;
+  --text:     #e4ddcc;
+  /* Muted secondary must clear WCAG AA on the dark bg (the old #5a6070
+     didn't); this warm gray reads subdued while staying legible. Many
+     badges also layer opacity < 1 on top, which compounds the hit. */
+  --muted:    #98917e;
 
-  /* Font tokens. The whole app renders in the device's native UI fonts —
+  /* Font tokens. The data UI renders in the device's native fonts —
      on iPad that's San Francisco / SF Mono, which reads far cleaner than
-     the old Syne / Syne Mono pairing. The PDA userscript renders in Arial
-     to match Torn's in-game UI; the web app stays on system fonts. */
+     webfonts for dense tables. The PDA userscript renders in Arial
+     to match Torn's in-game UI. Cinzel / Cormorant are BRAND fonts only:
+     logo, tabs, section labels — never table data. */
   --font-display: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
   --font-mono:    ui-monospace, Menlo, Consolas, 'SF Mono', monospace;
+  --font-brand:   'Cinzel', 'Times New Roman', serif;
+  --font-serif:   'Cormorant Garamond', Georgia, serif;
 }
 
 *, *::before, *::after {
@@ -40,6 +46,19 @@ body {
   overflow-x: clip;
 }
 
+/* Subtle film-grain overlay — part of the Palazzo look. pointer-events
+   none and fixed so it never affects layout or the sticky table header. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 500;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+}
+
 #app {
   width: 100%;
   max-width: 1100px;
@@ -55,25 +74,41 @@ body {
   margin-bottom: 1.5rem;
 }
 
-.logo {
-  font-family: var(--font-mono);
-  font-size: 2.4rem;
-  color: var(--accent);
-  letter-spacing: 0.08em;
+.logo-eyebrow {
+  font-family: var(--font-brand);
+  font-size: 0.62rem;
+  letter-spacing: 0.4em;
   text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.8;
+  margin-bottom: 0.5rem;
+}
+
+.logo {
+  font-family: var(--font-brand);
+  font-weight: 900;
+  font-size: 2.4rem;
+  color: var(--accent-light);
+  letter-spacing: 0.02em;
+  text-shadow: 0 3px 24px rgba(0, 0, 0, 0.55), 0 0 60px rgba(201, 168, 76, 0.15);
 }
 
 .logo-subtitle {
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 1.1rem;
   color: var(--muted);
   margin-top: 0.15rem;
 }
 
 .logo-credit {
-  font-size: 0.75rem;
+  font-family: var(--font-brand);
+  font-size: 0.58rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
   color: var(--muted);
-  margin-top: 0.25rem;
+  opacity: 0.8;
+  margin-top: 0.4rem;
 }
 
 .giro-link {
@@ -96,7 +131,7 @@ body {
   padding: 0.35rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(74, 232, 160, 0.06);
+  background: rgba(77, 184, 142, 0.06);
   font-family: var(--font-mono);
 }
 
@@ -859,7 +894,7 @@ tr.row--negative td {
   color: var(--positive);
   font-weight: 700;
   letter-spacing: 0.03em;
-  text-shadow: 0 0 6px rgba(74, 232, 160, 0.5);
+  text-shadow: 0 0 6px rgba(77, 184, 142, 0.5);
 }
 
 .freshness--medium {
@@ -1076,7 +1111,7 @@ tr.row--negative td {
 /* ── Best Run Right Now summary card ───────────────────────────── */
 
 .best-run-card {
-  background: linear-gradient(135deg, var(--surface) 0%, rgba(232, 200, 74, 0.08) 100%);
+  background: linear-gradient(135deg, var(--surface) 0%, rgba(201, 168, 76, 0.08) 100%);
   border: 1px solid var(--accent);
   border-radius: 8px;
   padding: 1rem 1.25rem;
@@ -1276,11 +1311,12 @@ tr.row--negative td {
 }
 
 .crosslink-label {
-  font-family: var(--font-display);
-  font-size: 0.7rem;
+  font-family: var(--font-brand);
+  font-size: 0.62rem;
   text-transform: uppercase;
-  letter-spacing: 0.18em;
-  color: var(--muted);
+  letter-spacing: 0.32em;
+  color: var(--accent);
+  opacity: 0.75;
   margin-bottom: 0.85rem;
 }
 
@@ -1303,11 +1339,11 @@ tr.row--negative td {
 }
 
 .crosslink-valigia   { color: #e8c84a; }
-.crosslink-happyjump { color: #e94560; }
+.crosslink-happyjump { color: #e05545; }
 .crosslink-tornder   { color: #3de8c8; }
-.crosslink-factionevent { color: #e6e6fa; }
-.crosslink-yoink     { color: #c0c4cc; }
-.crosslink-giro      { color: #d4c8a0; }
+.crosslink-factionevent { color: #b07cff; }
+.crosslink-yoink     { color: #4db88e; }
+.crosslink-giro      { color: #c9a84c; }
 
 /* Footer avatar block — links out to the Torn City profile. Mirrors the
    element on girovagabondo.com (the parent project hub) so visitors who
@@ -1345,7 +1381,7 @@ tr.row--negative td {
   background: linear-gradient(
     to right,
     #009246 0 33.33%,
-    #ffffff 33.33% 66.66%,
+    #f4f1e8 33.33% 66.66%,
     #ce2b37 66.66% 100%
   );
 }
@@ -1395,8 +1431,8 @@ tr.row--negative td {
 }
 
 @keyframes scanPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(232, 200, 74, 0); }
-  50%      { box-shadow: 0 0 12px 2px rgba(232, 200, 74, 0.25); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 168, 76, 0); }
+  50%      { box-shadow: 0 0 12px 2px rgba(201, 168, 76, 0.25); }
 }
 
 /* Cooldown state — muted while fuse burns */
@@ -1444,7 +1480,7 @@ tr.row--negative td {
   box-shadow:
     0 0 6px 2px var(--accent),
     0 0 14px 4px rgba(232, 130, 74, 0.6),
-    0 0 24px 6px rgba(232, 200, 74, 0.3);
+    0 0 24px 6px rgba(201, 168, 76, 0.3);
   animation: sparkFlicker 0.3s ease-in-out infinite alternate;
   pointer-events: none;
 }
@@ -1460,14 +1496,14 @@ tr.row--negative td {
     box-shadow:
       0 0 4px 1px var(--accent),
       0 0 10px 3px rgba(232, 130, 74, 0.5),
-      0 0 18px 4px rgba(232, 200, 74, 0.2);
+      0 0 18px 4px rgba(201, 168, 76, 0.2);
   }
   100% {
     opacity: 1;
     box-shadow:
       0 0 8px 3px var(--accent),
       0 0 18px 6px rgba(232, 130, 74, 0.7),
-      0 0 30px 8px rgba(232, 200, 74, 0.4);
+      0 0 30px 8px rgba(201, 168, 76, 0.4);
   }
 }
 
@@ -1480,7 +1516,7 @@ tr.row--negative td {
   color: var(--accent);
   margin-top: 0.5rem;
   letter-spacing: 0.08em;
-  text-shadow: 0 0 8px rgba(232, 200, 74, 0.4);
+  text-shadow: 0 0 8px rgba(201, 168, 76, 0.4);
 }
 
 /* ── Community Stats ──────────────────────────────────────── */
@@ -1524,7 +1560,7 @@ tr.row--negative td {
   font-weight: 700;
   color: var(--accent);
   line-height: 1;
-  text-shadow: 0 0 8px rgba(232, 200, 74, 0.3);
+  text-shadow: 0 0 8px rgba(201, 168, 76, 0.3);
 }
 
 .cs-label {
@@ -1869,7 +1905,7 @@ tr.row--negative td {
 
 .wof-deal-liquidity--fast {
   color: var(--positive);
-  border-color: rgba(74, 232, 160, 0.35);
+  border-color: rgba(77, 184, 142, 0.35);
 }
 
 .wof-deal-liquidity--medium {
@@ -2445,10 +2481,10 @@ tr.row--negative td {
 
 @keyframes pda-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(232, 200, 74, 0.55);
+    box-shadow: 0 0 0 0 rgba(201, 168, 76, 0.55);
   }
   50% {
-    box-shadow: 0 0 0 6px rgba(232, 200, 74, 0);
+    box-shadow: 0 0 0 6px rgba(201, 168, 76, 0);
   }
 }
 
@@ -2551,7 +2587,7 @@ tr.row--negative td {
   border: 1px solid var(--border);
   border-left: 2px solid var(--positive);
   border-radius: 3px;
-  background: rgba(74, 232, 160, 0.05);
+  background: rgba(77, 184, 142, 0.05);
   padding: 0.2rem 0.85rem 0.65rem;
   margin: 0.75rem 0 0.25rem;
 }
@@ -2585,7 +2621,7 @@ tr.row--negative td {
 
 .pda-pref-option--active {
   border-color: var(--positive);
-  background: rgba(74, 232, 160, 0.1);
+  background: rgba(77, 184, 142, 0.1);
 }
 
 .pda-pref-option-title {
@@ -2664,7 +2700,7 @@ tr.row--negative td {
   font-size: 0.8rem;
   margin-top: 0.5rem;
   padding: 0.55rem 0.65rem 0.65rem;
-  background: rgba(232, 200, 74, 0.07);
+  background: rgba(201, 168, 76, 0.07);
   border-left: 2px solid var(--accent);
   border-radius: 3px;
   line-height: 1.45;
@@ -2699,7 +2735,7 @@ tr.row--negative td {
 
 .pda-key-link:hover {
   border-color: var(--accent);
-  background: rgba(232, 200, 74, 0.06);
+  background: rgba(201, 168, 76, 0.06);
 }
 
 .pda-key-link-hint {
@@ -2818,11 +2854,11 @@ tr.row--negative td {
   background: none;
   border: none;
   color: var(--muted);
-  font-family: var(--font-display);
-  font-size: 0.9rem;
-  font-weight: 700;
+  font-family: var(--font-brand);
+  font-size: 0.78rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.18em;
   padding: 0.6rem 1rem;
   cursor: pointer;
   position: relative;
@@ -2837,13 +2873,13 @@ tr.row--negative td {
 .tab-btn:hover { color: var(--text); }
 
 .tab-btn--active {
-  color: var(--accent);
+  color: var(--accent-light);
   border-bottom-color: var(--accent);
 }
 
 .tab-badge {
   background: var(--positive);
-  color: #0d0f14;
+  color: #0b0d14;
   font-family: var(--font-mono);
   font-size: 0.72rem;
   font-weight: 700;
@@ -2865,7 +2901,7 @@ tr.row--negative td {
   padding: 0.45rem 0.55rem;
   border: 1px solid var(--border);
   border-radius: 3px;
-  background: rgba(74, 232, 160, 0.04);
+  background: rgba(77, 184, 142, 0.04);
   color: var(--text);
   text-decoration: none;
   font-family: var(--font-mono);
@@ -2874,8 +2910,8 @@ tr.row--negative td {
 }
 
 .wl-match-row:hover {
-  background: rgba(74, 232, 160, 0.1);
-  border-color: rgba(74, 232, 160, 0.4);
+  background: rgba(77, 184, 142, 0.1);
+  border-color: rgba(77, 184, 142, 0.4);
 }
 
 .wl-match-item {
@@ -2897,8 +2933,8 @@ tr.row--negative td {
   white-space: nowrap;
 }
 
-.wl-venue--market { background: rgba(232, 200, 74, 0.15); color: var(--accent); }
-.wl-venue--bazaar { background: rgba(74, 232, 160, 0.15); color: var(--positive); }
+.wl-venue--market { background: rgba(201, 168, 76, 0.15); color: var(--accent); }
+.wl-venue--bazaar { background: rgba(77, 184, 142, 0.15); color: var(--positive); }
 .wl-venue--abroad { background: rgba(232, 130, 74, 0.15); color: var(--warning); }
 
 .wl-match-price {
@@ -3073,7 +3109,7 @@ tr.row--negative td {
 
 .wl-typeahead-row:hover,
 .wl-typeahead-row--active {
-  background: rgba(232, 200, 74, 0.12);
+  background: rgba(201, 168, 76, 0.12);
   color: var(--accent);
 }
 
@@ -3087,7 +3123,7 @@ tr.row--negative td {
 
 .wl-add-btn {
   background: var(--accent);
-  color: #0d0f14;
+  color: #0b0d14;
   border: none;
   font-family: var(--font-display);
   font-weight: 700;
@@ -3285,7 +3321,7 @@ tr.row--negative td {
 .sell-cta-btn {
   flex: 0 0 auto;
   background: var(--positive);
-  color: #0d0f14;
+  color: #0b0d14;
   border: none;
   font-family: var(--font-display);
   font-weight: 700;
@@ -3349,7 +3385,7 @@ tr.row--negative td {
 
 .sell-submit {
   background: var(--accent);
-  color: #0d0f14;
+  color: #0b0d14;
   border: none;
   font-family: var(--font-display);
   font-weight: 700;
@@ -3456,7 +3492,7 @@ tr.row--negative td {
 }
 
 .sell-match-row:hover {
-  background: rgba(74, 232, 160, 0.05);
+  background: rgba(77, 184, 142, 0.05);
   border-color: var(--positive);
 }
 
