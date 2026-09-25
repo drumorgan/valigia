@@ -2,7 +2,8 @@
 
 import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
-import { getItemTypeById } from './item-resolver.js';
+import { getItemTypeById, getStoreSellPrice } from './item-resolver.js';
+import { pickSellVenue, getMuseumEntry } from './data/sell-venues.js';
 import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock, getStockHistory } from './stock-forecast.js';
 import { stockSparklineSvg } from './sparkline.js';
@@ -65,6 +66,10 @@ const checkedItems = new Set();  // itemIds where sell price has been looked up
 // updated_at when served from cache, Date.now() when fetched fresh.
 // Drives the category-filter "refresh anything >5min old" hook.
 const sellPriceFetchedAt = new Map(); // itemId → ms since epoch
+// Cash per Points Market point (crowd-shared, see points_market_rate).
+// null until loaded or when the stored rate is too old to trust — the
+// museum venue is simply skipped then.
+let pointsRate = null;
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at, quantity }
 
 // ── Column definitions for sortable headers ───────────────────
@@ -193,6 +198,8 @@ export function renderControls(container, onChange, onCategoryChange) {
         <button class="filter-chip ${filterCategory === 'plushie' ? 'filter-chip--active' : ''}" data-cat="plushie">Plushies</button>
         <button class="filter-chip ${filterCategory === 'flower' ? 'filter-chip--active' : ''}" data-cat="flower">Flowers</button>
         <button class="filter-chip ${filterCategory === 'artifact' ? 'filter-chip--active' : ''}" data-cat="artifact">Artifacts</button>
+        <button class="filter-chip ${filterCategory === 'contraband' ? 'filter-chip--active' : ''}" data-cat="contraband">Contraband</button>
+        <button class="filter-chip ${filterCategory === 'arms' ? 'filter-chip--active' : ''}" data-cat="arms">Arms</button>
       </div>
       <div class="control-group filter-chips control-group--right" title="Realistic: clamp slots to arrival-stock forecast and add sell-time to profit/hr. Ideal: assume full slots and instant liquidation.">
         <span class="control-label">Mode</span>
@@ -334,6 +341,15 @@ export function getItemIdsForPriceFetch() {
 }
 
 /**
+ * Set the Points Market cash-per-point rate used to value museum
+ * contraband. Pass null to disable the museum venue.
+ */
+export function setPointsRate(rate) {
+  pointsRate = Number.isFinite(rate) && rate > 0 ? rate : null;
+  renderTable();
+}
+
+/**
  * Called as each sell price resolves from the market fetcher.
  * @param {number} itemId
  * @param {number|null} price - Cheapest listing price, or null when no listings.
@@ -363,7 +379,7 @@ export function getStaleItemIdsForCategory(category, maxAgeMs) {
   const ids = new Set();
   for (const item of knownItems) {
     if (!item.item_id) continue;
-    if (getItemTypeById(item.item_id) !== category) continue;
+    if (getItemTypeById(item.item_id, item.item_name) !== category) continue;
     const fetchedAt = sellPriceFetchedAt.get(item.item_id);
     if (fetchedAt == null || now - fetchedAt > maxAgeMs) {
       ids.add(item.item_id);
@@ -393,6 +409,27 @@ function formatDaysAgo(ms) {
 function formatQuantity(qty) {
   if (qty == null) return '<span class="muted">—</span>';
   return Number(qty).toLocaleString('en-US');
+}
+
+/**
+ * Small tag after the sell price naming a non-market venue, so a row priced
+ * off a city store or the Museum is never mistaken for an Item Market flip.
+ * Empty for market sales (the default, untagged case).
+ */
+function renderVenueTag(r) {
+  if (r.sellVenue === 'store') {
+    return ` <span class="venue-tag" title="Sold to a Torn city store for its fixed cash price (no 5% fee) — beats the Item Market for this item">store</span>`;
+  }
+  if (r.sellVenue === 'museum') {
+    const set = r.sellSetSize > 1
+      ? ` · set of ${r.sellSetSize}`
+      : '';
+    const setNote = r.sellSetSize > 1
+      ? ` Only pays out as a complete set of ${r.sellSetSize} different pieces — per-unit value shown.`
+      : '';
+    return ` <span class="venue-tag" title="Exchanged at the Museum for points, valued at the current Points Market rate ($${Math.round(pointsRate || 0).toLocaleString()}/pt).${setNote}">museum${set}</span>`;
+  }
+  return '';
 }
 
 /**
@@ -762,7 +799,7 @@ function getSortValue(row, col) {
     case 'destination':   return row.destination || '';
     case 'quantity':      return row.forecast?.etaQty ?? row.quantity ?? -1;
     case 'buyPrice':      return row.buyPrice || 0;
-    case 'sellPrice':     return (row.sellPrice || 0) * 0.95;
+    case 'sellPrice':     return row.sellNet || 0;
     case 'marginPerItem': return row.metrics?.marginPerItem || 0;
     case 'runCost':       return row.metrics?.runCost || 0;
     case 'profitPerRun':  return row.metrics?.profitPerRun || 0;
@@ -820,13 +857,22 @@ function buildRows() {
     if (filterDestination !== 'all' && item.destination !== filterDestination) continue;
 
     // Apply category filter using Torn API item types
-    const category = getItemTypeById(item.item_id);
+    const category = getItemTypeById(item.item_id, item.item_name);
     if (filterCategory !== 'all' && category !== filterCategory) continue;
 
     const flightMins = getFlightMins(item.destination);
     const { price: buyPrice, freshness, reportedAgo } = getBuyPriceInfo(item);
     const sellPrice = sellPrices.get(item.item_id);
-    const hasSellPrice = sellPrice != null;
+    // Best venue across Item Market (−5% fee), city store (fixed cash) and
+    // Museum (points × Points Market rate). Contraband that can't list on
+    // the Item Market is priced here instead of showing "no listings".
+    const sale = pickSellVenue({
+      marketPrice: sellPrice,
+      storePrice: getStoreSellPrice(item.item_id),
+      museum: getMuseumEntry(item.item_name),
+      pointsRate,
+    });
+    const hasSellPrice = sale != null;
     const isChecked = checkedItems.has(item.item_id);
 
     // Suppress outlier rows: confirmed no market listings AND a buy price
@@ -852,11 +898,14 @@ function buildRows() {
     // peak return". In 'realistic' (default) both are applied.
     const isIdeal = realismMode === 'ideal';
 
+    const sellTimeMins = isIdeal ? 0 : getSellTimeMins(category, sale?.venue);
+
     let metrics = null;
     if (hasSellPrice && flightMins > 0) {
       metrics = calculateMargins({
         buyPrice,
-        sellPrice,
+        sellPrice: sale.gross,
+        sellFee: sale.fee,
         slotCount,
         flightMins,
         flightMultiplier: getFlightMultiplier(),
@@ -865,7 +914,7 @@ function buildRows() {
         stockQty: isIdeal ? null : forecast.etaQty,
         // Realistic: add per-category sell-time tail to cycle length.
         // Ideal:     0 => instant liquidation on landing.
-        sellTimeMins: isIdeal ? 0 : getSellTimeMins(category),
+        sellTimeMins,
       });
     }
 
@@ -884,6 +933,10 @@ function buildRows() {
       // the freshness badge for a distinct "LIVE" indicator.
       priceSource: item.source || 'yata',
       sellPrice,
+      sellNet: sale ? sale.net : null,
+      sellVenue: sale ? sale.venue : null,
+      sellSetSize: sale ? sale.setSize : 1,
+      sellTimeMins,
       hasSellPrice,
       isChecked,
       metrics,
@@ -1040,7 +1093,7 @@ function renderBestRunCard(rows) {
         // Same availability the row math uses: arrival-time forecast in
         // realistic mode, unconstrained in ideal mode.
         availableQty: isIdeal ? null : (r.forecast?.etaQty ?? r.quantity ?? null),
-        sellTimeMins: isIdeal ? 0 : getSellTimeMins(r.category),
+        sellTimeMins: r.sellTimeMins,
       })),
       slotCount,
       flightMins: destRows[0].flightMins,
@@ -1153,10 +1206,11 @@ export function renderTable() {
     // have it, so players can sanity-check whether the floor price is fragile
     // (1 unit listed) or well-supported (dozens of listings at this price).
     const noListings = r.isChecked && !r.hasSellPrice;
-    const netSell = r.hasSellPrice ? r.sellPrice * 0.95 : null;
-    const depthTitle = formatDepthTooltip(r.depth);
+    const netSell = r.hasSellPrice ? r.sellNet : null;
+    const isMarketSale = r.sellVenue === 'market';
+    const depthTitle = isMarketSale ? formatDepthTooltip(r.depth) : null;
     const sellInner = netSell != null
-      ? formatMoney(netSell)
+      ? `${formatMoney(netSell)}${renderVenueTag(r)}`
       : noListings
         ? '<span class="muted">no listings</span>'
         : '<span class="shimmer-cell"></span>';
@@ -1166,7 +1220,7 @@ export function renderTable() {
     // Dot-only freshness indicator for the sell price — keeps the column
     // narrow. Only rendered when we actually have a price (not for "no
     // listings" or shimmering rows).
-    const sellFreshClass = r.hasSellPrice ? getSellPriceFreshnessClass(r.itemId) : null;
+    const sellFreshClass = isMarketSale ? getSellPriceFreshnessClass(r.itemId) : null;
     const sellFreshDot = sellFreshClass
       ? ` <span class="freshness freshness--${sellFreshClass} freshness--dot" title="${formatSellAgeTooltip(r.itemId)}">&#9679;</span>`
       : '';
@@ -1203,7 +1257,7 @@ export function renderTable() {
       if (realismMode === 'ideal') {
         mainLine = hrStr;
       } else {
-        const badge = getLiquidityBadge(r.category);
+        const badge = getLiquidityBadge(r.category, r.sellVenue);
         mainLine = `${hrStr} <span class="liquidity liquidity--${badge.level}" title="${badge.title}">${badge.label}</span>`;
       }
       hrCell = `${mainLine}<div class="hr-sub" title="Round-trip flight time">${flightStr} RT</div>`;

@@ -4,7 +4,8 @@
  * Calculate profit metrics for an item.
  * @param {object} params
  * @param {number} params.buyPrice - Abroad buy price per unit
- * @param {number} params.sellPrice - Item market sell price per unit
+ * @param {number} params.sellPrice - Gross sell price per unit at the chosen venue
+ * @param {number} [params.sellFee] - Fraction lost to fees. 0.05 for the Item Market (default); 0 for a city store or the Museum.
  * @param {number} params.slotCount - Number of items per trip
  * @param {number} params.flightMins - One-way flight time in minutes
  * @param {number} params.flightMultiplier - Flight time multiplier (1.0 = standard, 0.7 = airstrip/WLT, 0.49 = both)
@@ -12,8 +13,8 @@
  * @param {number} [params.sellTimeMins] - Estimated minutes to liquidate the run after landing. Defaults to 0 (instant sell). Gets added to the profit/hr denominator so illiquid items (armor, artifacts) stop looking artificially better than drugs.
  * @returns {object} Calculated metrics
  */
-export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, flightMultiplier = 1.0, stockQty = null, sellTimeMins = 0 }) {
-  const netSell = sellPrice * 0.95; // 5% item market fee
+export function calculateMargins({ buyPrice, sellPrice, slotCount, flightMins, flightMultiplier = 1.0, stockQty = null, sellTimeMins = 0, sellFee = 0.05 }) {
+  const netSell = sellPrice * (1 - sellFee); // 5% item market fee by default
   const marginPerItem = netSell - buyPrice;
   const marginPct = buyPrice > 0 ? (marginPerItem / buyPrice) * 100 : 0;
 

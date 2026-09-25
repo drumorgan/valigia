@@ -17,6 +17,14 @@ describe('calculateMargins', () => {
     expect(m.profitPerHour).toBeCloseTo(26_100 / 3, 6);
   });
 
+  it('applies a zero fee for store / museum sales', () => {
+    const m = calculateMargins({
+      buyPrice: 1000, sellPrice: 2000, slotCount: 10, flightMins: 60, sellFee: 0,
+    });
+    expect(m.netSell).toBe(2000);
+    expect(m.marginPerItem).toBe(1000);
+  });
+
   it('clamps effective slots to stock and flags it', () => {
     const m = calculateMargins({
       buyPrice: 1000, sellPrice: 2000, slotCount: 29, flightMins: 90, stockQty: 12,

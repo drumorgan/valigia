@@ -953,6 +953,22 @@ tr.row--negative td {
   color: var(--warning);
 }
 
+/* Non-market sell venue ("store" / "museum") after the Sell price, so a
+   row priced off a city store or the Museum never reads as a market flip. */
+.venue-tag {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 0.7em;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 /* ── Stock Now / ETA forecast ─────────────────────────────────── */
 /* The Stock cell shows the YATA-live quantity ("Now N") on top and a
    projected arrival-time quantity ("ETA ~M" or "likely empty") below.

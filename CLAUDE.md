@@ -255,8 +255,23 @@ offline tooling); `stock-forecast.js` owns the Supabase I/O and caching.
 
 ### Margin Calculations
 
+Sell venue is chosen per row by `pickSellVenue()` (`src/data/sell-venues.js`)
+— whichever pays most per unit after fees:
+
+- **market** — Item Market floor × 0.95
+- **store** — the catalog's fixed NPC `sell_price`, cash, no fee (Pharmacy
+  contraband, Uncut Diamonds, Pearls, Manga…). Cached in localStorage
+  under `valigia_item_store_sell_v1`, re-pulled weekly.
+- **museum** — museum points × `points_market_rate` (Fossil 20, Meteorite
+  15, each Arrowhead 25/6 — Arrowheads only pay as a set of 6 different
+  points, flagged in the UI). Skipped when the rate is >3 days old.
+  Points table mirrors the userscript's `MUSEUM_SETS` — keep in step.
+
+Non-market venues get a STORE / MUSEUM tag in the Sell column and a
+2 / 5 min sell-time instead of the category's.
+
 ```
-net_sell         = sell_price * 0.95           // 5% item market fee
+net_sell         = sell_price * (1 - fee)      // fee 0.05 market, 0 store/museum
 margin_per_item  = net_sell - buy_price
 margin_pct       = (margin_per_item / buy_price) * 100
 effective_slots  = min(slot_count, yata_stock) // stock-limited flag if clamped
@@ -286,9 +301,13 @@ All persisted in `localStorage`:
 - **Flight type** — dropdown: Standard (default) | Airstrip. Auto-detected
   from perks, manually overridable.
 - **Destination filter** — dropdown: All | one specific country.
-- **Category filter** — chip buttons: All | Drugs | Plushies | Flowers.
-  Uses the static `type` field from `abroad-items.js`. Items not in the
-  list are hidden by category filters.
+- **Category filter** — chip buttons: All | Drugs | Plushies | Flowers |
+  Artifacts | Contraband | Arms. Category comes from the Torn item
+  catalog's `type` (`getItemTypeById` in `item-resolver.js`), cached in
+  localStorage. Contraband also matches by name (`CONTRABAND_NAMES` in
+  `data/sell-venues.js`) since the catalog label isn't confirmed; Arms =
+  Melee/Primary/Secondary/Defensive/Temporary. Anything else is `other`
+  and only shows under All.
 - **Sort** — click any column header. Default: Profit/hr desc. Negative
   margins always sink to bottom, "no listings" separated beneath.
 
@@ -369,6 +388,8 @@ valigia.girovagabondo.com/
 │   └── data/
 │       ├── abroad-items.js      — static destination/type metadata
 │       ├── bazaar-watchlist.js  — curated high-value item IDs
+│       ├── sell-venues.js       — market/store/museum venue picker + contraband names
+│       ├── liquidity.js         — per-category / per-venue sell-time
 │       └── destinations.js      — destination list + flight times
 ├── public/
 │   └── valigia-ingest.user.js  — Torn PDA userscript (see "PDA Userscript" below)
