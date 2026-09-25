@@ -4,7 +4,7 @@ import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { tryAutoLogin, renderLoginScreen, logout, getSession } from './auth.js';
 import { fetchAbroadPrices } from './log-sync.js';
-import { fetchAllSellPrices, refreshSellPrices } from './market.js';
+import { fetchAllSellPrices, refreshSellPrices, fetchPointsRate } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
 import { prescanBazaarPool } from './bazaar-scanner.js';
@@ -21,7 +21,8 @@ import { initStatsPanel } from './stats-panel.js';
 import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
-  setDetectedCapacity, getStaleItemIdsForCategory, getTopTravelCandidateIds
+  setDetectedCapacity, getStaleItemIdsForCategory, getTopTravelCandidateIds,
+  setPointsRate,
 } from './ui.js';
 import { getTravelCapacity } from './pda-prefs.js';
 
@@ -383,6 +384,11 @@ async function startDashboard(playerId, playerName) {
     getTravelCapacity().catch(() => null),
   ]);
   if (syncedCapacity != null) setDetectedCapacity(syncedCapacity);
+
+  // Points Market rate values museum contraband (Fossils, Meteorites,
+  // Arrowheads). Background — the table renders without it and re-renders
+  // when it lands; failure just leaves the museum venue off.
+  fetchPointsRate().then(setPointsRate).catch(() => {});
 
   if (!priceResult || priceResult.items.length === 0) {
     showToast('Could not fetch abroad prices from YATA. Try refreshing.', 'warning');

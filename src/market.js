@@ -232,3 +232,26 @@ export async function refreshSellPrices(playerId, itemIds, onPrice) {
     }
   }
 }
+
+// Points Market rate older than this is ignored — museum contraband then
+// just isn't priced via the Museum, rather than off a months-old rate (the
+// table is seeded with a 1970 timestamp for exactly this reason).
+const POINTS_RATE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * Read the crowd-shared Points Market cash-per-point rate (written by the
+ * PDA userscript whenever a player opens pmarket.php). Returns null when
+ * missing or stale.
+ */
+export async function fetchPointsRate() {
+  const { data, error } = await supabase
+    .from('points_market_rate')
+    .select('rate, updated_at')
+    .eq('id', 1)
+    .maybeSingle();
+  if (error || !data) return null;
+  const age = Date.now() - new Date(data.updated_at).getTime();
+  if (!(age >= 0 && age < POINTS_RATE_MAX_AGE_MS)) return null;
+  const rate = Number(data.rate);
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
