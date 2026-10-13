@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.55.0
+// @version      0.55.1
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.50.0';
+  const SCRIPT_VERSION = '0.55.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2320,9 +2320,10 @@
       if (res.status >= 200 && res.status < 300 && data && data.success) {
         return { ok: true };
       }
-      return { ok: false, error: (data && data.error) || ('http_' + res.status) };
+      const reason = (data && data.error) || 'bad_response';
+      return { ok: false, error: reason + ' (HTTP ' + res.status + ')' };
     } catch (e) {
-      return { ok: false, error: 'network' };
+      return { ok: false, error: 'network: ' + ((e && e.message) || String(e)) };
     }
   }
 
@@ -8022,11 +8023,39 @@
 
   // Brief red flash so a failed write is visible even in silent mode, where
   // toast() suppresses itself. Repaints from current state afterward.
-  function flashOverlayToggleError(btn) {
+  // Also pins a small bubble beside the pill with the failure reason (edge
+  // function error + HTTP status) for ~8 s, since there's no console on iPad
+  // and toast() is gated by indicatorsHidden. Tap the bubble to dismiss.
+  const OVERLAY_TOGGLE_ERR_ID = 'valigia-overlay-toggle-err';
+  function flashOverlayToggleError(btn, reason) {
     if (!btn) return;
     btn.style.background = '#b33';
     btn.style.color = '#fff';
     setTimeout(function () { paintOverlayToggle(btn); }, 900);
+
+    document.querySelectorAll('#' + OVERLAY_TOGGLE_ERR_ID)
+      .forEach(function (n) { n.remove(); });
+    const bubble = document.createElement('div');
+    bubble.id = OVERLAY_TOGGLE_ERR_ID;
+    bubble.textContent = 'Valigia toggle save failed: ' + (reason || 'unknown');
+    Object.assign(bubble.style, {
+      position: 'fixed',
+      right: '36px',
+      top: '58%',
+      zIndex: '999999',
+      maxWidth: '260px',
+      padding: '6px 10px',
+      borderRadius: '6px',
+      background: '#161a22',
+      color: '#ffb4b4',
+      border: '1px solid #b33',
+      font: '12px/1.35 ui-monospace, monospace',
+      boxShadow: '0 2px 8px rgba(0,0,0,.45)',
+      wordBreak: 'break-word',
+    });
+    bubble.addEventListener('click', function () { bubble.remove(); });
+    (document.body || document.documentElement).appendChild(bubble);
+    setTimeout(function () { bubble.remove(); }, 8000);
   }
 
   async function onOverlayToggleClick() {
@@ -8047,7 +8076,7 @@
       // Roll the optimistic flip back and signal the failure.
       indicatorsHidden = !indicatorsHidden;
       writeIndicatorCache(!nextShow);
-      if (btn) { btn.disabled = false; flashOverlayToggleError(btn); }
+      if (btn) { btn.disabled = false; flashOverlayToggleError(btn, res.error); }
       overlayToggleBusy = false;
       log('overlay toggle write failed:', res.error);
       return;
