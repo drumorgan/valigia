@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.55.1
+// @version      0.55.2
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.55.1';
+  const SCRIPT_VERSION = '0.55.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -6102,16 +6102,54 @@
   // ("Please choose a destination" shows no "Flight Time -").
   function detectSelectedDestination() {
     const body = document.body ? document.body.innerText : '';
-    if (!body || !/Flight Time\s*-/i.test(body)) return null;
+    if (!body) return null;
+    return detectSelectedLegacy(body) || detectSelectedAgency(body);
+  }
+
+  // Legacy footer: "{Country} - {City}  Flight Time - HH:MM".
+  function detectSelectedLegacy(body) {
+    if (!/Flight Time\s*-/i.test(body)) return null;
     // "{Country} - {City}" sits just before "Flight Time - HH:MM". The
     // country/city groups stay on one line (no newline in the class); the
     // [\s\S]{0,20}? gap tolerates the airplane glyph / column separators
     // Torn renders between "{City}" and "Flight Time".
     const m = body.match(/([A-Za-z][A-Za-z .'-]*?)\s*-\s*[A-Za-z][A-Za-z .'-]*?[\s\S]{0,20}?Flight Time\s*-\s*(\d{1,2}):(\d{2})/);
     if (!m) return null;
-    const dest = resolveCityToDestination(m[1].trim());
+    return selectedResult(m[1].trim(), Number(m[2]) * 60 + Number(m[3]));
+  }
+
+  // "Travel Agency" layout (Oct 2026): a "From: Torn | {method} {Xh Ym} |
+  // To: {Country}" selector row over the map, plus a confirm line "Are you
+  // sure you want to travel to {Country} on a personal flight? You will
+  // reach your destination in around 1 hour and 29 minutes." The confirm
+  // line is the strongest signal; the "To:" selector is the fallback.
+  function detectSelectedAgency(body) {
+    let name = null;
+    const conf = body.match(/travel to ([A-Z][A-Za-z .'À-ſ-]*?) on an? [a-z ]*?flight/i);
+    if (conf) name = conf[1].trim();
+    if (!name) {
+      const to = body.match(/\bTo:\s*([A-Z][A-Za-z .'À-ſ-]*?)\s*(?:\n|$)/m);
+      if (to) name = to[1].trim();
+    }
+    if (!name) return null;
+
+    let mins = NaN;
+    const around = body.match(/destination in (?:around |about )?((?:\d+\s*hours?)?(?:\s*and\s*)?(?:\d+\s*minutes?)?)/i);
+    if (around && around[1]) {
+      const h = around[1].match(/(\d+)\s*hour/i);
+      const mi = around[1].match(/(\d+)\s*minute/i);
+      if (h || mi) mins = (h ? Number(h[1]) * 60 : 0) + (mi ? Number(mi[1]) : 0);
+    }
+    if (!Number.isFinite(mins) || mins <= 0) {
+      const hm = body.match(/\b(\d{1,2})h\s*(\d{1,2})m\b/);
+      if (hm) mins = Number(hm[1]) * 60 + Number(hm[2]);
+    }
+    return selectedResult(name, mins);
+  }
+
+  function selectedResult(name, mins) {
+    const dest = resolveCityToDestination(name);
     if (!dest || !FLIGHT_MINS[dest]) return null;
-    const mins = Number(m[2]) * 60 + Number(m[3]);
     return {
       destination: dest,
       flightMins: Number.isFinite(mins) && mins > 0 ? mins : FLIGHT_MINS[dest],
