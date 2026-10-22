@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.55.2
+// @version      0.55.3
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.55.2';
+  const SCRIPT_VERSION = '0.55.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5954,8 +5954,8 @@
       fetchAbroadScrapesAll(),
       ensureItemCatalog(),
     ]);
-    if (myGeneration !== bestRunGeneration) return;
-    if (!Array.isArray(yataRows) || yataRows.length === 0) return;
+    if (myGeneration !== bestRunGeneration) return 'superseded';
+    if (!Array.isArray(yataRows) || yataRows.length === 0) return 'YATA returned no rows';
 
     // One Supabase GET for every item the export mentions.
     const itemIds = [];
@@ -6014,7 +6014,10 @@
       });
     }
 
-    if (runs.length === 0) return;
+    if (runs.length === 0) {
+      return 'no in-stock profitable runs (yata rows ' + yataRows.length
+        + ', sell prices ' + sellMap.size + ')';
+    }
 
     // Collapse to each destination's single strongest run before ranking:
     // the player can only be at one destination, so "where should I fly"
@@ -6063,7 +6066,7 @@
       ]);
     }
 
-    if (myGeneration !== bestRunGeneration) return;
+    if (myGeneration !== bestRunGeneration) return 'superseded';
     injectBestRunStyles();
     const bar = buildBestRunBar(ranked);
     const host =
@@ -6075,6 +6078,40 @@
     // its own board between our start-of-function removal and now.
     document.querySelectorAll('#' + BESTRUN_BAR_ID).forEach(function (n) { n.remove(); });
     host.insertBefore(bar, host.firstChild);
+    return 'ok';
+  }
+
+  // Collapsed status box for the home picker, shown only when the Best Run
+  // board couldn't render. iPad has no console, so this is the one place a
+  // blank picker explains itself (URL, selected country, board outcome).
+  const TRAVEL_DIAG_ID = 'valigia-travel-diag';
+  function showTravelDiag(lines) {
+    document.querySelectorAll('#' + TRAVEL_DIAG_ID).forEach(function (n) { n.remove(); });
+    if (indicatorsHidden) return;
+    const d = document.createElement('details');
+    d.id = TRAVEL_DIAG_ID;
+    Object.assign(d.style, {
+      margin: '6px 8px', padding: '6px 10px', border: '1px solid #252a35',
+      borderRadius: '5px', background: '#161a22', color: '#8a8fa0',
+      font: '11px/1.4 ui-monospace, monospace',
+    });
+    const sum = document.createElement('summary');
+    sum.textContent = 'Valigia status (v' + SCRIPT_VERSION + ')';
+    sum.style.cursor = 'pointer';
+    sum.style.color = '#e8c84a';
+    d.appendChild(sum);
+    lines.forEach(function (t) {
+      const row = document.createElement('div');
+      row.textContent = t;
+      row.style.wordBreak = 'break-all';
+      d.appendChild(row);
+    });
+    const host =
+      document.querySelector('#mainContainer .content-wrapper') ||
+      document.querySelector('.content-wrapper') ||
+      document.querySelector('#mainContainer') ||
+      document.body;
+    host.insertBefore(d, host.firstChild);
   }
 
   // Clears every Valigia travel overlay (Best Run board + In-Flight strip).
@@ -6086,6 +6123,7 @@
     document.querySelectorAll('#' + BESTRUN_BAR_ID).forEach(function (n) { n.remove(); });
     document.querySelectorAll('#' + INFLIGHT_BAR_ID).forEach(function (n) { n.remove(); });
     document.querySelectorAll('#' + COUNTRY_DETAIL_BAR_ID).forEach(function (n) { n.remove(); });
+    document.querySelectorAll('#' + TRAVEL_DIAG_ID).forEach(function (n) { n.remove(); });
   }
 
   // -- Picker: selected-country detail ------------------------------------
@@ -6258,7 +6296,17 @@
       // YATA/Supabase hiccup never disrupts the page.
       log('No flight banner or "You are in X" marker - home travel screen, showing best-run board.');
       removeTravelBars();
-      try { await injectBestRunBar(); } catch (e) { log('bestrun error', e); }
+      let boardStatus;
+      try { boardStatus = await injectBestRunBar(); }
+      catch (e) { boardStatus = 'error: ' + (e && e.message || e); log('bestrun error', e); }
+      if (!silent && boardStatus !== 'ok' && boardStatus !== 'superseded') {
+        const sel = detectSelectedDestination();
+        showTravelDiag([
+          'url: ' + location.href,
+          'best-run board: ' + boardStatus,
+          'selected: ' + (sel ? sel.destination + ' (' + Math.round(sel.flightMins) + 'm)' : 'none detected'),
+        ]);
+      }
       // Tapping a country populates Torn's footer with the selected
       // destination + flight time. Watch for that and show the chosen
       // country's per-item strip (current stock + arrival projection +
@@ -7892,7 +7940,10 @@
   // from an environment we didn't design around.
   function detectPage() {
     const url = location.href;
-    if (/\/page\.php\?.*sid=travel\b/i.test(url)) return 'travel';
+    // Prefix match (no \b): the Oct 2026 "Travel Agency" redesign may carry
+    // a longer sid (e.g. sid=travelAgency) or its own travelagency.php path.
+    if (/\/page\.php\?.*sid=travel/i.test(url)) return 'travel';
+    if (/\/travelagency\.php/i.test(url)) return 'travel';
     if (/\/page\.php\?.*sid=ItemMarket\b/i.test(url)) return 'itemmarket';
     if (/\/bazaar\.php/i.test(url)) return 'bazaar';
     if (/\/item\.php/i.test(url)) return 'itempage';
@@ -8148,7 +8199,10 @@
     // Mount the in-game show/hide toggle on every page. NOT gated by
     // indicatorsHidden — it must stay reachable in silent mode.
     try { mountOverlayToggle(); } catch (e) { log('overlay toggle mount error', e); }
-    const page = detectPage();
+    let page = detectPage();
+    // URL didn't route: recognise the travel picker by its content instead,
+    // in case Torn moved the Travel Agency to an address we don't know yet.
+    if (!page && await waitForTravelPickerText()) page = 'travel';
     // Stakeout badge + auto-rescrape interval are travel-page-only. Tear
     // them down on every dispatch and let runTravel() re-mount if
     // applicable. Skips the teardown during a stakeout-driven re-run
@@ -8173,6 +8227,19 @@
       default:
         log('Unmatched page - skipping. url=' + location.href);
     }
+  }
+
+  // Poll briefly for the travel picker's heading text. Used only when the URL
+  // matched no runner, so ordinary non-travel pages pay at most ~2.5 s of
+  // cheap innerText checks once per dispatch.
+  async function waitForTravelPickerText() {
+    const re = /Select Destination and Traveling Method/i;
+    const start = Date.now();
+    while (Date.now() - start < 2500) {
+      if (document.body && re.test(document.body.innerText || '')) return true;
+      await new Promise(function (r) { setTimeout(r, 300); });
+    }
+    return false;
   }
 
   // Dispatch scheduler. Two entry points fire it: the initial DOM-ready
