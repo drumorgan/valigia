@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.55.3
+// @version      0.55.4
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.55.3';
+  const SCRIPT_VERSION = '0.55.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -6134,6 +6134,8 @@
   // before committing. Best-effort and silent on any miss.
   let pickerSelectionObserver = null;
   let pickerLastSelectedDest = null;
+  let pickerRemounts = 0;
+  const PICKER_MAX_REMOUNTS = 5;
 
   // Parse the selected destination + flight time from the footer. Returns
   // { destination, flightMins } or null when nothing is selected yet
@@ -6200,19 +6202,31 @@
   // DOM) a no-op, so there's no feedback loop.
   function watchPickerSelection() {
     if (pickerSelectionObserver) return;
-    const host =
-      document.querySelector('#mainContainer .content-wrapper') ||
-      document.querySelector('.content-wrapper') ||
-      document.querySelector('#mainContainer') ||
-      document.body;
+    // Observe <body>, not the content wrapper: the Travel Agency redesign can
+    // swap the wrapper element out on a country change, which would leave an
+    // observer on the old detached node firing never again.
+    const host = document.body;
     if (!host) return;
     let timer = null;
     function evaluate() {
       timer = null;
       const sel = detectSelectedDestination();
       const dest = sel ? sel.destination : null;
-      if (dest === pickerLastSelectedDest) return; // unchanged → no churn
+      if (dest === pickerLastSelectedDest) {
+        // Unchanged selection → normally no churn. But the Travel Agency
+        // redesign re-renders its content on a country change, which can
+        // wipe our injected bar after we mounted it; with the selection
+        // unchanged it would then never come back. Re-mount when it has
+        // gone missing, capped per selection so a page that keeps wiping
+        // us can't turn into an endless fetch loop.
+        if (!dest || document.getElementById(COUNTRY_DETAIL_BAR_ID)) return;
+        if (pickerRemounts >= PICKER_MAX_REMOUNTS) return;
+        pickerRemounts++;
+        injectCountryDetailBar(dest);
+        return;
+      }
       pickerLastSelectedDest = dest;
+      pickerRemounts = 0;
       if (dest) {
         // Tapped a country: show that destination's full item list and hide
         // the all-countries board so the chosen country is the only thing on
