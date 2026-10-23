@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.55.5
+// @version      0.55.6
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.55.5';
+  const SCRIPT_VERSION = '0.55.6';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -6347,7 +6347,7 @@
       let boardStatus;
       try { boardStatus = await injectBestRunBar(); }
       catch (e) { boardStatus = 'error: ' + (e && e.message || e); log('bestrun error', e); }
-      if (!silent && boardStatus !== 'superseded') {
+      if (!silent && boardStatus !== 'ok' && boardStatus !== 'superseded') {
         const sel = detectSelectedDestination();
         showTravelDiag([
           'url: ' + location.href,
@@ -8138,14 +8138,15 @@
       : 'Valigia overlays OFF \u2014 tap to show';
     Object.assign(btn.style, {
       position: 'fixed',
-      right: '0',
-      top: '58%',
       zIndex: '999999',
       width: '30px',
       height: '36px',
       padding: '0',
-      borderRadius: '8px 0 0 8px',
       cursor: 'pointer',
+      // Let the finger drag the pill instead of scrolling the page.
+      touchAction: 'none',
+      userSelect: 'none',
+      webkitUserSelect: 'none',
       font: '700 17px/1 "Syne Mono", ui-monospace, monospace',
       boxShadow: '0 2px 8px rgba(0,0,0,.45)',
       // Lit (showing): cargo-gold fill, dark glyph. Inverse (hidden): dark
@@ -8153,9 +8154,83 @@
       background: showing ? '#e8c84a' : '#161a22',
       color: showing ? '#0d0f14' : '#e8c84a',
       border: '1px solid #e8c84a',
-      borderRight: 'none',
       opacity: showing ? '1' : '0.9',
     });
+    applyOverlayTogglePos(btn, readOverlayTogglePos());
+  }
+
+  // Draggable pill position: which screen edge it hugs + vertical offset as a
+  // fraction of viewport height (survives rotation / different devices).
+  // Per-device convenience only, so plain localStorage with safe fallbacks.
+  const OVERLAY_TOGGLE_POS_KEY = 'valigia_vpill_pos_v1';
+  const OVERLAY_TOGGLE_DRAG_PX = 8; // movement past this = drag, not tap
+  function readOverlayTogglePos() {
+    try {
+      const p = JSON.parse(localStorage.getItem(OVERLAY_TOGGLE_POS_KEY) || 'null');
+      if (p && (p.side === 'left' || p.side === 'right') && Number.isFinite(p.top)) return p;
+    } catch (_) {}
+    return { side: 'right', top: 0.58 };
+  }
+  function writeOverlayTogglePos(pos) {
+    try { localStorage.setItem(OVERLAY_TOGGLE_POS_KEY, JSON.stringify(pos)); } catch (_) {}
+  }
+  function applyOverlayTogglePos(btn, pos) {
+    const top = Math.min(Math.max(pos.top, 0.02), 0.95);
+    btn.style.top = (top * 100) + '%';
+    btn.style.left = pos.side === 'left' ? '0' : '';
+    btn.style.right = pos.side === 'right' ? '0' : '';
+    btn.style.borderRadius = pos.side === 'left' ? '0 8px 8px 0' : '8px 0 0 8px';
+    btn.style.borderLeft = pos.side === 'left' ? 'none' : '1px solid #e8c84a';
+    btn.style.borderRight = pos.side === 'right' ? 'none' : '1px solid #e8c84a';
+  }
+
+  // Pointer-driven drag. While dragging the pill follows the finger freely;
+  // on release it snaps to the nearer edge and the spot is saved. A gesture
+  // that moved past the threshold swallows the following click so a drag
+  // never toggles the overlays.
+  function enableOverlayToggleDrag(btn) {
+    let startX = 0, startY = 0, dragging = false, pointerId = null;
+    let suppressClick = false;
+    btn.addEventListener('pointerdown', function (e) {
+      pointerId = e.pointerId;
+      startX = e.clientX; startY = e.clientY;
+      dragging = false;
+      try { btn.setPointerCapture(e.pointerId); } catch (_) {}
+    });
+    btn.addEventListener('pointermove', function (e) {
+      if (pointerId !== e.pointerId) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      if (!dragging && Math.hypot(dx, dy) < OVERLAY_TOGGLE_DRAG_PX) return;
+      dragging = true;
+      const w = btn.offsetWidth, h = btn.offsetHeight;
+      const x = Math.min(Math.max(e.clientX - w / 2, 0), window.innerWidth - w);
+      const y = Math.min(Math.max(e.clientY - h / 2, 0), window.innerHeight - h);
+      btn.style.right = '';
+      btn.style.left = x + 'px';
+      btn.style.top = y + 'px';
+      btn.style.borderRadius = '8px';
+      btn.style.border = '1px solid #e8c84a';
+    });
+    function end(e) {
+      if (pointerId !== e.pointerId) return;
+      pointerId = null;
+      if (!dragging) return;
+      dragging = false;
+      suppressClick = true;
+      setTimeout(function () { suppressClick = false; }, 400);
+      const pos = {
+        side: e.clientX < window.innerWidth / 2 ? 'left' : 'right',
+        top: (parseFloat(btn.style.top) || 0) / Math.max(window.innerHeight, 1),
+      };
+      writeOverlayTogglePos(pos);
+      applyOverlayTogglePos(btn, pos);
+    }
+    btn.addEventListener('pointerup', end);
+    btn.addEventListener('pointercancel', end);
+    // Capture phase so the toggle handler never sees a post-drag click.
+    btn.addEventListener('click', function (e) {
+      if (suppressClick) { e.stopImmediatePropagation(); e.preventDefault(); }
+    }, true);
   }
 
   // Brief red flash so a failed write is visible even in silent mode, where
@@ -8175,10 +8250,12 @@
     const bubble = document.createElement('div');
     bubble.id = OVERLAY_TOGGLE_ERR_ID;
     bubble.textContent = 'Valigia toggle save failed: ' + (reason || 'unknown');
+    const pillPos = readOverlayTogglePos();
     Object.assign(bubble.style, {
       position: 'fixed',
-      right: '36px',
-      top: '58%',
+      left: pillPos.side === 'left' ? '36px' : '',
+      right: pillPos.side === 'right' ? '36px' : '',
+      top: (Math.min(Math.max(pillPos.top, 0.02), 0.95) * 100) + '%',
       zIndex: '999999',
       maxWidth: '260px',
       padding: '6px 10px',
@@ -8230,6 +8307,7 @@
     btn.type = 'button';
     btn.textContent = 'V';
     paintOverlayToggle(btn);
+    enableOverlayToggleDrag(btn);
     btn.addEventListener('click', onOverlayToggleClick);
     (document.body || document.documentElement).appendChild(btn);
   }
