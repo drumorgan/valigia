@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.55.4
+// @version      0.55.5
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.55.4';
+  const SCRIPT_VERSION = '0.55.5';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5484,15 +5484,64 @@
     if (myGeneration !== inFlightGeneration) return;
     injectInFlightStyles();
     const bar = buildInFlightStrip(destination, top);
-    const host =
-      document.querySelector('#mainContainer .content-wrapper') ||
-      document.querySelector('.content-wrapper') ||
-      document.querySelector('#mainContainer') ||
-      document.body;
     // Final sweep right before insert: a parallel call could have inserted
     // its own strip between our start-of-function removal and now.
     document.querySelectorAll('#' + INFLIGHT_BAR_ID).forEach(function (n) { n.remove(); });
-    host.insertBefore(bar, host.firstChild);
+    insertTravelOverlay(bar);
+  }
+
+  // Where travel overlays mount. On the Oct 2026 "Travel Agency" redesign
+  // the legacy .content-wrapper can exist but render hidden, so a bar put
+  // there was invisible (blank picker, no status box). Prefer anchoring just
+  // above the visible "Select Destination and Traveling Method" section; else
+  // the first VISIBLE legacy container; else <body>. Returns a short label of
+  // the mount point for the status box.
+  function isVisibleEl(el) {
+    return !!el && el.getClientRects().length > 0 && el.offsetHeight > 0;
+  }
+  function findAgencyAnchor() {
+    if (!document.body) return null;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        return /Select Destination and Traveling Method/i.test(n.nodeValue)
+          ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+      },
+    });
+    const textNode = walker.nextNode();
+    if (!textNode || !textNode.parentElement) return null;
+    // Climb to the section's outermost box: stop once the parent also holds
+    // the item-inventory panel above it, so we sit between the two panels.
+    let el = textNode.parentElement;
+    for (let i = 0; i < 8; i++) {
+      const parent = el.parentElement;
+      if (!parent || parent === document.body) break;
+      if (/Search your item inventory|Bring Weapons/i.test(parent.innerText || '')) break;
+      el = parent;
+    }
+    return isVisibleEl(el) ? el : null;
+  }
+  let lastTravelMount = 'none';
+  function insertTravelOverlay(node) {
+    const anchor = findAgencyAnchor();
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(node, anchor);
+      lastTravelMount = 'agency-anchor';
+      return;
+    }
+    const candidates = [
+      document.querySelector('#mainContainer .content-wrapper'),
+      document.querySelector('.content-wrapper'),
+      document.querySelector('#mainContainer'),
+    ];
+    for (const c of candidates) {
+      if (isVisibleEl(c)) {
+        c.insertBefore(node, c.firstChild);
+        lastTravelMount = c.id ? '#' + c.id : '.' + String(c.className).split(' ')[0];
+        return;
+      }
+    }
+    document.body.insertBefore(node, document.body.firstChild);
+    lastTravelMount = 'body';
   }
 
   // -- Home Best Run board -------------------------------------------------
@@ -5827,13 +5876,8 @@
 
     head.addEventListener('click', function () { bar.classList.toggle('vgl-cd-open'); });
 
-    const host =
-      document.querySelector('#mainContainer .content-wrapper') ||
-      document.querySelector('.content-wrapper') ||
-      document.querySelector('#mainContainer') ||
-      document.body;
     if (myGen !== countryDetailGeneration) return;
-    host.insertBefore(bar, host.firstChild);
+    insertTravelOverlay(bar);
 
     try {
       await renderCountryDetail(destination, body, myGen);
@@ -6069,15 +6113,10 @@
     if (myGeneration !== bestRunGeneration) return 'superseded';
     injectBestRunStyles();
     const bar = buildBestRunBar(ranked);
-    const host =
-      document.querySelector('#mainContainer .content-wrapper') ||
-      document.querySelector('.content-wrapper') ||
-      document.querySelector('#mainContainer') ||
-      document.body;
     // Final sweep right before insert: a parallel call could have inserted
     // its own board between our start-of-function removal and now.
     document.querySelectorAll('#' + BESTRUN_BAR_ID).forEach(function (n) { n.remove(); });
-    host.insertBefore(bar, host.firstChild);
+    insertTravelOverlay(bar);
     return 'ok';
   }
 
@@ -6106,12 +6145,7 @@
       row.style.wordBreak = 'break-all';
       d.appendChild(row);
     });
-    const host =
-      document.querySelector('#mainContainer .content-wrapper') ||
-      document.querySelector('.content-wrapper') ||
-      document.querySelector('#mainContainer') ||
-      document.body;
-    host.insertBefore(d, host.firstChild);
+    insertTravelOverlay(d);
   }
 
   // Clears every Valigia travel overlay (Best Run board + In-Flight strip).
@@ -6313,11 +6347,11 @@
       let boardStatus;
       try { boardStatus = await injectBestRunBar(); }
       catch (e) { boardStatus = 'error: ' + (e && e.message || e); log('bestrun error', e); }
-      if (!silent && boardStatus !== 'ok' && boardStatus !== 'superseded') {
+      if (!silent && boardStatus !== 'superseded') {
         const sel = detectSelectedDestination();
         showTravelDiag([
           'url: ' + location.href,
-          'best-run board: ' + boardStatus,
+          'best-run board: ' + boardStatus + ' (mount: ' + lastTravelMount + ')',
           'selected: ' + (sel ? sel.destination + ' (' + Math.round(sel.flightMins) + 'm)' : 'none detected'),
         ]);
       }
