@@ -1253,6 +1253,111 @@ tr.row--negative td {
   filter: brightness(1.1);
 }
 
+.best-run-export {
+  color: var(--positive);
+}
+
+/* ── Sell Abroad card (outbound exports) ─────────────────────── */
+
+.export-card {
+  margin: 0 0 1rem;
+  border: 1px solid var(--positive);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.export-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+  list-style: none;
+}
+.export-summary::-webkit-details-marker { display: none; }
+
+.export-label {
+  font-family: var(--font-display, inherit);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--positive);
+}
+
+.export-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.export-count {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.export-rows {
+  display: flex;
+  flex-direction: column;
+  padding: 0 1rem;
+}
+
+.export-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 1rem;
+  align-items: baseline;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.export-item, .export-pays, .export-profit {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.export-pays, .export-profit { text-align: right; }
+
+.export-name {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.export-dest, .export-sub {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.export-profit > span:first-child {
+  color: var(--positive);
+  font-weight: 600;
+}
+
+.export-bm {
+  margin-left: 0.3rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  font-size: 0.65rem;
+}
+
+.export-note {
+  padding: 0.6rem 1rem 0.8rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
 /* ── Shimmer ─────────────────────────────────────────────────── */
 
 .shimmer-cell {

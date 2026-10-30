@@ -4,7 +4,7 @@ import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById, getStoreSellPrice } from './item-resolver.js';
 import { pickSellVenue, getMuseumEntry } from './data/sell-venues.js';
-import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
+import { calculateMargins, planDestinationRun, planExportRun, foreignShopPays, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock, getStockHistory } from './stock-forecast.js';
 import { stockSparklineSvg } from './sparkline.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
@@ -71,6 +71,9 @@ const sellPriceFetchedAt = new Map(); // itemId → ms since epoch
 // museum venue is simply skipped then.
 let pointsRate = null;
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at, quantity }
+// `${item_id}|${destination}` shelves stocked by a Black Market (they buy
+// back at 100% instead of 75%). Fed from abroad_prices.shop_category.
+let blackMarketKeys = new Set();
 
 // ── Column definitions for sortable headers ───────────────────
 // Trimmed from 11 to 8: Margin $ / Run Cost / Flight folded into adjacent
@@ -338,6 +341,14 @@ export function getItemIdsForPriceFetch() {
     if (row.item_id) ids.add(row.item_id);
   }
   return [...ids];
+}
+
+/**
+ * Set which shelves belong to a Black Market (full-price sell-back).
+ */
+export function setBlackMarketKeys(keys) {
+  blackMarketKeys = keys instanceof Set ? keys : new Set();
+  renderTable();
 }
 
 /**
@@ -1038,7 +1049,107 @@ export function getTopTravelCandidateIds(limit = 3) {
   return ids;
 }
 
-function renderBestRunCard(rows) {
+/**
+ * Outbound "export" candidates: buy in Torn at the Item Market floor (no
+ * buyer fee), carry out, sell to the foreign shop that stocks the item.
+ * Shop stock doesn't matter — selling adds to the shelf. Same destination
+ * and category filters as the import table.
+ */
+function buildExportRows() {
+  const rows = [];
+  for (const item of knownItems) {
+    if (!item.item_id) continue;
+    if (filterDestination !== 'all' && item.destination !== filterDestination) continue;
+    const category = getItemTypeById(item.item_id, item.item_name);
+    if (filterCategory !== 'all' && category !== filterCategory) continue;
+
+    const tornPrice = sellPrices.get(item.item_id);
+    const { price: shopPrice } = getBuyPriceInfo(item);
+    if (!(tornPrice > 0) || !(shopPrice > 0)) continue;
+    const isBlackMarket = blackMarketKeys.has(`${item.item_id}|${item.destination}`);
+    const shopPays = foreignShopPays(shopPrice, isBlackMarket);
+    const profitPerItem = shopPays - tornPrice;
+    if (profitPerItem <= 0) continue;
+    rows.push({
+      name: item.item_name,
+      itemId: item.item_id,
+      destination: item.destination,
+      quantity: item.quantity ?? null,
+      shopPrice,
+      shopPays,
+      tornPrice,
+      isBlackMarket,
+      profitPerItem,
+    });
+  }
+  rows.sort((a, b) => b.profitPerItem - a.profitPerItem);
+  return rows;
+}
+
+const EXPORT_CARD_MAX_ROWS = 10;
+
+function renderExportCard(exportRows) {
+  const container = document.getElementById('export-container');
+  if (!container) return;
+  if (exportRows.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  const units = Math.min(slotCount, 100);
+  const top = exportRows.slice(0, EXPORT_CARD_MAX_ROWS);
+  // Preserve the open/closed state across the frequent re-renders.
+  const prev = container.querySelector('details');
+  const open = prev ? prev.open : true;
+  container.innerHTML = `
+    <details class="export-card"${open ? ' open' : ''}>
+      <summary class="export-summary">
+        <span class="export-label">Sell Abroad</span>
+        <span class="export-hint">buy in Torn, sell to the shop abroad</span>
+        <span class="export-count">${exportRows.length}</span>
+      </summary>
+      <div class="export-rows">
+        ${top.map(r => `
+          <div class="export-row">
+            <div class="export-item">
+              <span class="export-name">${r.name}</span>
+              <span class="export-dest">${r.destination}${r.isBlackMarket ? ' <span class="export-bm" title="Black Market — buys back at its full current price">BM</span>' : ''}</span>
+            </div>
+            <div class="export-pays">
+              <span>${formatMoney(r.shopPays)}</span>
+              <span class="export-sub">Torn ${formatMoney(r.tornPrice)}</span>
+            </div>
+            <div class="export-profit">
+              <span>+${formatMoney(r.profitPerItem)}</span>
+              <span class="export-sub">${formatMoney(r.profitPerItem * units)} for ${units}</span>
+            </div>
+          </div>`).join('')}
+      </div>
+      <div class="export-note">A Black Market pays its current price; other shops pay 75%. Max 100 sales per item per trip. Torn price is the Item Market floor, so a full load may cost slightly more.</div>
+    </details>
+  `;
+}
+
+/**
+ * Best export per destination, for the Best Run card's outbound leg.
+ */
+function bestExportsByDestination(exportRows) {
+  const byDest = new Map();
+  for (const r of exportRows) {
+    if (!byDest.has(r.destination)) byDest.set(r.destination, []);
+    byDest.get(r.destination).push(r);
+  }
+  const out = new Map();
+  for (const [dest, list] of byDest) {
+    const plan = planExportRun({
+      candidates: list.map(r => ({ row: r, shopPays: r.shopPays, tornPrice: r.tornPrice })),
+      slotCount,
+    });
+    if (plan) out.set(dest, plan);
+  }
+  return out;
+}
+
+function renderBestRunCard(rows, exportRows = []) {
   const container = document.getElementById('best-run-container');
   if (!container) return;
 
@@ -1065,7 +1176,8 @@ function renderBestRunCard(rows) {
     r.metrics.effectiveSlots > 0 &&
     (r.quantity == null || r.quantity > 0)
   );
-  if (travelCandidates.length === 0) {
+  const exportsByDest = bestExportsByDestination(exportRows);
+  if (travelCandidates.length === 0 && exportsByDest.size === 0) {
     container.innerHTML = '';
     return;
   }
@@ -1083,7 +1195,26 @@ function renderBestRunCard(rows) {
     if (!byDest.has(r.destination)) byDest.set(r.destination, []);
     byDest.get(r.destination).push(r);
   }
+  // Each destination's round trip = outbound export (sell to the foreign
+  // shop) + return import (the shelf plan below), over the same flight.
+  // A destination can win on exports alone.
   let bestPlan = null;
+  const consider = (importPlan, exportPlan, flightMins) => {
+    const roundTripMins = flightMins * getFlightMultiplier() * 2;
+    const cycleMins = importPlan ? importPlan.cycleMins : roundTripMins;
+    const total = (importPlan ? importPlan.profitPerRun : 0) + (exportPlan ? exportPlan.profitPerRun : 0);
+    if (!(cycleMins > 0) || !(total > 0)) return;
+    const profitPerHour = (total / cycleMins) * 60;
+    if (!bestPlan || profitPerHour > bestPlan.profitPerHour) {
+      bestPlan = {
+        importPlan,
+        exportPlan,
+        profitPerRun: total,
+        profitPerHour,
+        roundTripMins: importPlan ? importPlan.roundTripMins : roundTripMins,
+      };
+    }
+  };
   for (const destRows of byDest.values()) {
     const plan = planDestinationRun({
       candidates: destRows.map(r => ({
@@ -1099,9 +1230,13 @@ function renderBestRunCard(rows) {
       flightMins: destRows[0].flightMins,
       flightMultiplier: getFlightMultiplier(),
     });
-    if (plan && (!bestPlan || plan.profitPerHour > bestPlan.profitPerHour)) {
-      bestPlan = plan;
-    }
+    const dest = destRows[0].destination;
+    consider(plan, exportsByDest.get(dest) || null, destRows[0].flightMins);
+  }
+  // Export-only destinations (nothing worth buying there right now).
+  for (const [dest, exportPlan] of exportsByDest) {
+    if (byDest.has(dest)) continue;
+    consider(null, exportPlan, getFlightMins(dest));
   }
 
   if (!bestPlan) {
@@ -1112,7 +1247,45 @@ function renderBestRunCard(rows) {
   renderTravelBestRun(container, bestPlan);
 }
 
-function renderTravelBestRun(container, plan) {
+function renderTravelBestRun(container, combo) {
+  const plan = combo.importPlan;
+  const exp = combo.exportPlan;
+  const exportLine = exp
+    ? `<div class="best-run-plan best-run-export" title="Buy in Torn at the Item Market floor, sell to the ${exp.row.destination} shop on arrival">
+         Outbound: carry ${exp.units}&times; ${exp.row.name} &rarr; shop pays ${formatMoney(exp.shopPays)} (+${formatMoney(exp.profitPerRun)})
+       </div>`
+    : '';
+
+  if (!plan) {
+    // Export-only run: the outbound sale is the whole trip.
+    container.innerHTML = `
+      <div class="best-run-card best-run-card--travel">
+        <div class="best-run-label">Best Run Right Now</div>
+        <div class="best-run-body">
+          <div class="best-run-item">
+            <span class="best-run-name">Sell ${exp.row.name}</span>
+            <span class="best-run-dest">&rarr; ${exp.row.destination}</span>
+          </div>
+          <div class="best-run-rate">
+            <span class="best-run-rate-value">${formatMoney(combo.profitPerHour)}</span>
+            <span class="best-run-rate-unit">/hr</span>
+          </div>
+        </div>
+        ${exportLine}
+        <div class="best-run-meta">
+          <span>${formatMoney(combo.profitPerRun)} per run</span>
+          <span class="best-run-sep">&middot;</span>
+          <span>${formatFlightTime(combo.roundTripMins)}</span>
+          <span class="best-run-sep">&middot;</span>
+          <span>nothing worth buying there</span>
+        </div>
+        <a href="https://www.torn.com/page.php?sid=travel" target="_blank" rel="noopener"
+           class="best-run-cta">Travel &rarr;</a>
+      </div>
+    `;
+    return;
+  }
+
   const head = plan.allocations[0].row;
   const multi = plan.allocations.length > 1;
 
@@ -1137,13 +1310,14 @@ function renderTravelBestRun(container, plan) {
           <span class="best-run-dest">&rarr; ${head.destination}</span>
         </div>
         <div class="best-run-rate">
-          <span class="best-run-rate-value">${formatMoney(plan.profitPerHour)}</span>
+          <span class="best-run-rate-value">${formatMoney(combo.profitPerHour)}</span>
           <span class="best-run-rate-unit">/hr</span>
         </div>
       </div>
       ${planLine}
+      ${exportLine}
       <div class="best-run-meta">
-        <span>${formatMoney(plan.profitPerRun)} per run</span>
+        <span>${formatMoney(combo.profitPerRun)} per run</span>
         <span class="best-run-sep">&middot;</span>
         <span>${formatFlightTime(plan.roundTripMins)}</span>
         <span class="best-run-sep">&middot;</span>
@@ -1166,7 +1340,9 @@ export function renderTable() {
   updateHeaderSort();
 
   const rows = buildRows();
-  renderBestRunCard(rows);
+  const exportRows = buildExportRows();
+  renderBestRunCard(rows, exportRows);
+  renderExportCard(exportRows);
 
   if (rows.length === 0) {
     const hasFilters = filterDestination !== 'all' || filterCategory !== 'all';

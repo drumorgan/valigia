@@ -281,6 +281,20 @@ round_trip_mins  = flightMins * 2              // halve flightMins if airstrip
 profit_per_hour  = (profit_per_run / round_trip_mins) * 60
 ```
 
+**Selling abroad (exports, Oct 2026 travel update).** Foreign shops buy
+back what they stock: a Black Market pays its current price, every other
+shop 75% (`FOREIGN_SELLBACK_RATE`), max 100 sales per item per trip, and
+each sale adds to the shelf (no stock limit). `foreignShopPays()` /
+`planExportRun()` in calculator.js; the userscript mirrors them
+(`foreignShopPays` / `exportCandidates`) — keep the rate in step. Torn
+cost = `sell_prices.price` (Item Market floor, no buyer fee). Black Market
+membership comes from `abroad_prices.shop_category` (any age — an item's
+shop never changes); unscraped shelves assume 75%. Surfaces: the web
+**Sell Abroad** card + Best Run card's "Outbound" leg (round trip = export
++ import over the same flight; export-only destinations can win), and in
+the PDA picker the Best Run board ("Xanax + sell Flail") and the
+"Before you fly" bar's **Sell here** section.
+
 Bazaar profit/hr uses a nominal 5-minute transaction time, letting
 time-limited bazaar deals correctly dominate multi-hour travel runs
 when the savings warrant it.

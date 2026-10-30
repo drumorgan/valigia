@@ -289,3 +289,25 @@ export async function fetchAbroadPrices() {
     cachedAt: backboneCachedAt,
   };
 }
+
+/**
+ * Which (item_id, destination) shelves belong to a Black Market. Matters for
+ * selling back to foreign shops: a Black Market pays its full current price,
+ * every other shop 75%. YATA doesn't report the shop, but every PDA scrape
+ * records it in abroad_prices.shop_category, and an item's shop never
+ * changes — so ALL rows count, not just fresh ones. Unscraped shelves are
+ * simply absent (callers assume the conservative 75%).
+ * Returns a Set of `${item_id}|${destination}` keys; empty on any failure.
+ */
+export async function fetchBlackMarketKeys() {
+  try {
+    const { data, error } = await supabase
+      .from('abroad_prices')
+      .select('item_id, destination, shop_category')
+      .eq('shop_category', 'Black Market');
+    if (error || !Array.isArray(data)) return new Set();
+    return new Set(data.map((r) => `${r.item_id}|${normalizeDestination(r.destination)}`));
+  } catch {
+    return new Set();
+  }
+}
