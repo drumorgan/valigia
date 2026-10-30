@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact } from '../src/calculator.js';
+import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact, foreignShopPays, planExportRun } from '../src/calculator.js';
 
 describe('calculateMargins', () => {
   it('computes the documented margin math', () => {
@@ -149,5 +149,34 @@ describe('formatters', () => {
     expect(formatMarginPctCompact(340)).toBe('340%');
     expect(formatMarginPctCompact(3400)).toBe('34.0×');
     expect(formatMarginPctCompact(14000)).toBe('140×');
+  });
+});
+
+describe('foreign shop sell-back', () => {
+  it('pays 75% at normal shops, 100% at the Black Market', () => {
+    expect(foreignShopPays(8_000_000, false)).toBe(6_000_000);
+    expect(foreignShopPays(100_000, false)).toBe(75_000);
+    expect(foreignShopPays(58_505, true)).toBe(58_505);
+    expect(foreignShopPays(0, false)).toBe(0);
+  });
+
+  it('picks the best single export and fills every slot', () => {
+    const plan = planExportRun({
+      slotCount: 28,
+      candidates: [
+        { name: 'Flail', shopPays: 6_000_000, tornPrice: 5_000_000 },
+        { name: 'Ecstasy', shopPays: 41_641, tornPrice: 35_116 },
+        { name: 'Loss', shopPays: 10, tornPrice: 20 },
+      ],
+    });
+    expect(plan.name).toBe('Flail');
+    expect(plan.units).toBe(28);
+    expect(plan.profitPerItem).toBe(1_000_000);
+    expect(plan.profitPerRun).toBe(28_000_000);
+  });
+
+  it('returns null when nothing clears Torn price or a price is missing', () => {
+    expect(planExportRun({ slotCount: 28, candidates: [{ shopPays: 10, tornPrice: 20 }] })).toBeNull();
+    expect(planExportRun({ slotCount: 28, candidates: [{ shopPays: 10, tornPrice: null }] })).toBeNull();
   });
 });

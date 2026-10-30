@@ -126,6 +126,57 @@ export function planDestinationRun({ candidates, slotCount, flightMins, flightMu
   };
 }
 
+// ── Selling to foreign shops (Oct 2026 travel update) ─────────
+// Abroad shops now buy back what they stock. A Black Market pays its
+// current shop price; every other shop pays 75% of its current price.
+// Sales are capped at 100 per item per trip. Torn's own wiki confirms the
+// Black Market 1:1 rule; the 75% figure is the community-observed rate
+// (Torn Oracle) and matches observed payouts exactly (UK Flail: $8M shop →
+// $6M paid). Keep FOREIGN_SELLBACK_RATE in step with the userscript.
+export const FOREIGN_SELLBACK_RATE = 0.75;
+export const FOREIGN_SELL_CAP_PER_ITEM = 100;
+
+/**
+ * What a foreign shop pays per unit when you sell an item back to it.
+ * @param {number} shopPrice - The shop's current price for the item
+ * @param {boolean} isBlackMarket - True when the item is stocked by that country's Black Market
+ * @returns {number}
+ */
+export function foreignShopPays(shopPrice, isBlackMarket) {
+  if (!(shopPrice > 0)) return 0;
+  return isBlackMarket ? shopPrice : Math.floor(shopPrice * FOREIGN_SELLBACK_RATE);
+}
+
+/**
+ * Best outbound "export" at one destination: buy in Torn (Item Market,
+ * no buyer fee), carry out, sell to the foreign shop. Selling never runs
+ * out of stock (each sale adds to the shelf) and the per-item cap (100)
+ * exceeds max capacity (86), so the best single item fills every slot.
+ * @param {object} params
+ * @param {Array<{shopPays:number, tornPrice:number}>} params.candidates - extra fields pass through
+ * @param {number} params.slotCount
+ * @returns {{units:number, profitPerItem:number, profitPerRun:number, runCost:number}|null}
+ *   null when nothing at this destination sells abroad for more than it costs in Torn
+ */
+export function planExportRun({ candidates, slotCount }) {
+  if (!(slotCount > 0)) return null;
+  let best = null;
+  for (const c of candidates || []) {
+    if (!c || !(c.tornPrice > 0) || !(c.shopPays > 0)) continue;
+    const profitPerItem = c.shopPays - c.tornPrice;
+    if (profitPerItem <= 0) continue;
+    if (!best || profitPerItem > best.profitPerItem) best = { ...c, profitPerItem };
+  }
+  if (!best) return null;
+  const units = Math.min(slotCount, FOREIGN_SELL_CAP_PER_ITEM);
+  return {
+    ...best,
+    units,
+    profitPerRun: best.profitPerItem * units,
+    runCost: best.tornPrice * units,
+  };
+}
+
 /**
  * Format minutes as "Xh Ym" string. Round-trip is implied by the Flight
  * column header — spelling out "RT" on every row was wasted width.
