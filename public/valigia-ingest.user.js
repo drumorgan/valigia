@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.0
+// @version      0.56.1
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.0';
+  const SCRIPT_VERSION = '0.56.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -989,27 +989,6 @@
     return lower.indexOf('rate_limited') !== -1 || lower.indexOf('rate limit') !== -1;
   }
 
-  // -- Per-item profit math ------------------------------------------------
-  // The overlay only displays per-item values, so we only compute them.
-  // Net sell is after Torn's 5% item-market fee. Returns null when inputs
-  // are missing or non-positive so the renderer can show "no sell data".
-  function computeProfit(opts) {
-    const buyPrice = opts.buyPrice;
-    const sellPrice = opts.sellPrice;
-
-    if (!(sellPrice > 0) || !(buyPrice > 0)) return null;
-
-    const netSell = sellPrice * 0.95;              // 5% item-market fee
-    const marginPerItem = netSell - buyPrice;
-    const marginPct = (marginPerItem / buyPrice) * 100;
-
-    return {
-      netSell: netSell,
-      marginPerItem: marginPerItem,
-      marginPct: marginPct,
-    };
-  }
-
   // -- Formatters ----------------------------------------------------------
   function formatMoney(n) {
     if (n == null || !Number.isFinite(n)) return '-';
@@ -1194,11 +1173,15 @@
 
       const sp = sellPriceMap.get(item_id);
       const sellPrice = sp ? sp.price : null;
-      const metrics = sellPrice != null
-        ? computeProfit({
-            buyPrice: buyPrice,
-            sellPrice: sellPrice,
-          })
+      // Market net vs a Torn city shop's fixed price — whichever pays more.
+      const sale = bestTornSale(sellPrice, storeSellFor(item_id));
+      const metrics = sale && buyPrice > 0
+        ? {
+            netSell: sale.net,
+            venue: sale.venue,
+            marginPerItem: sale.net - buyPrice,
+            marginPct: ((sale.net - buyPrice) / buyPrice) * 100,
+          }
         : null;
 
       allRows.push({
@@ -1262,7 +1245,7 @@
         if (r.metrics) {
           const marginClass = r.metrics.marginPerItem >= 0 ? 'v-margin-pos' : 'v-margin-neg';
           html += '<span class="v-sep">&middot;</span>';
-          html += '<span class="v-label">Mkt</span> ';
+          html += '<span class="v-label">' + (r.metrics.venue === 'store' ? 'Store' : 'Mkt') + '</span> ';
           html += '<span class="v-sell">' + formatMoney(r.metrics.netSell) + '</span>';
           html += '<span class="v-sep">&middot;</span>';
           html += '<span class="' + marginClass + '">' + formatPct(r.metrics.marginPct) + '</span>';
@@ -1276,7 +1259,9 @@
         const m = r.metrics;
         const marginClass = m.marginPerItem >= 0 ? 'v-margin-pos' : 'v-margin-neg';
         let html = '';
-        html += '<span class="v-label">Market Price</span> ';
+        html += m.venue === 'store'
+          ? '<span class="v-label" title="A Torn city shop (e.g. Nikeh Performance, Bits \u2018n\u2019 Bobs) pays this fixed price \u2014 no market fee">Store</span> '
+          : '<span class="v-label">Market Price</span> ';
         html += '<span class="v-sell">' + formatMoney(m.netSell) + '</span>';
         html += '<span class="v-sep">&middot;</span>';
         html += '<span class="' + marginClass + '">' + formatMoney(m.marginPerItem) + '</span>';
@@ -1712,8 +1697,10 @@
   // torn.com — we can't share. Cost is one Torn /torn/?selections=items
   // call per player per catalog-TTL, answered by a static dataset.
   // Bumped to v2 when we extended the cache shape from name-only to
-  // { name, type }. v1 readers got a one-time refetch on first load.
-  const ITEM_CATALOG_CACHE_KEY = 'valigia_item_catalog_v2';
+  // { name, type }, and to v3 for { name, type, sell } (the fixed price a
+  // Torn city shop like Nikeh Performance pays). Each bump costs one
+  // refetch per player.
+  const ITEM_CATALOG_CACHE_KEY = 'valigia_item_catalog_v3';
   // Torn rarely changes item names. A 30-day TTL keeps the cache small in
   // terms of refresh pressure; any unknown id at lookup time still falls
   // back to "Item #N" so a stale cache doesn't break the banner.
@@ -2136,7 +2123,12 @@
         for (const idStr in data.items) {
           const entry = data.items[idStr];
           if (entry && entry.name) {
-            const meta = { name: entry.name, type: entry.type || null };
+            const sell = Number(entry.sell_price);
+            const meta = {
+              name: entry.name,
+              type: entry.type || null,
+              sell: Number.isFinite(sell) && sell > 0 ? sell : null,
+            };
             byId[idStr] = meta;
             map.set(Number(idStr), meta);
           }
@@ -2168,6 +2160,27 @@
   // 'Artifact' / 'Energy Drink' / etc.) or null when the catalog hasn't
   // been warmed yet for this id. Callers must treat null as "unknown" —
   // the in-flight strip drops unknown rows when filtering by type.
+  // Fixed cash price a Torn city shop (Nikeh Performance, Bits 'n' Bobs, …)
+  // pays for this item, or null. From the items catalog's sell_price.
+  function storeSellFor(itemId) {
+    const meta = itemMetaCache && itemMetaCache.get(Number(itemId));
+    return meta && meta.sell > 0 ? meta.sell : null;
+  }
+
+  // Best way to cash an item out back in Torn: the Item Market (5% fee) or
+  // a city shop (fixed price, no fee), whichever nets more per unit. Mirrors
+  // the web app's pickSellVenue market/store branches. Returns
+  // { venue: 'market'|'store', net } or null when neither is known.
+  function bestTornSale(marketPrice, storePrice) {
+    const marketNet = marketPrice > 0 ? marketPrice * 0.95 : null;
+    const storeNet = storePrice > 0 ? storePrice : null;
+    if (marketNet == null && storeNet == null) return null;
+    if (storeNet != null && (marketNet == null || storeNet > marketNet)) {
+      return { venue: 'store', net: storeNet };
+    }
+    return { venue: 'market', net: marketNet };
+  }
+
   function itemTypeFor(itemId) {
     const meta = itemMetaCache && itemMetaCache.get(Number(itemId));
     return meta && meta.type ? meta.type : null;
@@ -5433,8 +5446,9 @@
         continue;
       }
       const sell = sellMap.get(r.item_id);
-      if (!sell || !Number.isFinite(sell.price)) continue;
-      const netSell = sell.price * 0.95;
+      const sale = bestTornSale(sell && Number.isFinite(sell.price) ? sell.price : null, storeSellFor(r.item_id));
+      if (!sale) continue;
+      const netSell = sale.net;
       const margin = netSell - r.buy_price;
       if (margin <= 0) continue;
       // Don't early-drop stock=0 rows: they're exactly the case where
@@ -6171,7 +6185,8 @@
       if (!flightMins) continue;
 
       const sell = sellMap.get(y.item_id);
-      if (!sell || !Number.isFinite(sell.price)) continue;
+      const sale = bestTornSale(sell && Number.isFinite(sell.price) ? sell.price : null, storeSellFor(y.item_id));
+      if (!sale) continue;
 
       // Fresh first-party scrape (<= 10 min) overrides YATA's buy_price and
       // stock, exactly as the in-flight strip and web app's log-sync merge do.
@@ -6180,7 +6195,7 @@
       const stock = scrape && scrape.stock != null ? scrape.stock : y.stock;
 
       if (!Number.isFinite(buyPrice) || buyPrice <= 0) continue;
-      const netSell = sell.price * 0.95;
+      const netSell = sale.net;
       const margin = netSell - buyPrice;
       if (margin <= 0) continue;
 
@@ -6675,6 +6690,7 @@
         const [sellPriceMap, restockEventsMap] = await Promise.all([
           fetchSellPrices(itemIds),
           fetchRestockEvents(itemIds, destination),
+          ensureItemCatalog(), // city-shop prices for the Store venue
         ]);
         const refillEtaMap = new Map();
         const nowMs = Date.now();

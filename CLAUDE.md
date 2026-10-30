@@ -501,6 +501,12 @@ The Items-page runner is a pure-read surface: it scrapes the current category's 
 
 The travel runner also paints a per-row overlay (`Market Price · $margin ·
 margin%`) with a green BEST badge on the highest-margin in-stock row.
+Since 0.56.1 the overlay, picker Best Run board and in-flight strip all
+price the return leg via `bestTornSale()`: Item Market × 0.95 vs the
+catalog's fixed city-shop `sell_price` (Nikeh Performance, Bits 'n'
+Bobs…, cached in the item catalog as `meta.sell`, catalog key v3),
+whichever nets more — labelled **Store** when the city shop wins. Mirrors
+the web app's market/store branches of `pickSellVenue()`.
 
 On the travel HOME screen (destination picker), two surfaces carry
 **"leave in ~Xm"** departure timing (since 0.53.0): the per-country
