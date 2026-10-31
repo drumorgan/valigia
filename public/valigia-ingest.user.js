@@ -5017,8 +5017,9 @@
 
   // -- Selling to foreign shops (Oct 2026 travel update) -----------------
   // Abroad shops buy back what they stock: a Black Market pays its current
-  // price, every other shop 75% of its current price, capped at 100 sales
-  // per item per trip. Mirrors foreignShopPays / planExportRun in
+  // price, every other shop 75% of its current price (Torn's Traveling 2.0
+  // Phase 3 announcement); weapon/armor sales are capped at 100 per item per
+  // trip. Mirrors foreignShopPays / planExportRun in
   // src/calculator.js — keep the rate in step.
   const FOREIGN_SELLBACK_RATE = 0.75;
   const FOREIGN_SELL_CAP_PER_ITEM = 100;
