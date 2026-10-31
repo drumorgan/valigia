@@ -508,6 +508,15 @@ Bobs…, cached in the item catalog as `meta.sell`, catalog key v3),
 whichever nets more — labelled **Store** when the city shop wins. Mirrors
 the web app's market/store branches of `pickSellVenue()`.
 
+Shop rows for the picker surfaces come from `fetchYataAll()` (0.56.2),
+layered for speed: a ≤2 min cached YATA payload shared by the board and
+every country tap → live YATA with a 6 s timeout (5 min backoff after a
+failure, recorded in localStorage) → last good YATA payload ≤3 h old →
+our server mirror via the `get_latest_yata_snapshots()` RPC. Concurrent
+callers share one in-flight request. The home-picker phase poll exits as
+soon as "Select Destination and Traveling Method" is on screen instead of
+waiting out `TRAVEL_PHASE_TIMEOUT_MS`.
+
 On the travel HOME screen (destination picker), two surfaces carry
 **"leave in ~Xm"** departure timing (since 0.53.0): the per-country
 detail bar (tap a country → each out-of-stock item's refill ETA now
