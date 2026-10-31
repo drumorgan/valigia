@@ -283,8 +283,12 @@ profit_per_hour  = (profit_per_run / round_trip_mins) * 60
 
 **Selling abroad (exports, Oct 2026 travel update).** Foreign shops buy
 back what they stock: a Black Market pays its current price, every other
-shop 75% (`FOREIGN_SELLBACK_RATE`), max 100 sales per item per trip, and
-each sale adds to the shelf (no stock limit). `foreignShopPays()` /
+shop 75% (`FOREIGN_SELLBACK_RATE`) — official, per Torn's "Traveling 2.0 -
+Phase 3" announcement (21/10/26) — max 100 weapon/armor sales per item per
+trip (never binds below 86 slots), and
+each sale adds to the shelf (no stock limit). Can't be taken abroad: Cars, Halloween Baskets, Parcels,
+Presents, Suitcases — none are shop-stocked, so they never become export
+candidates. `foreignShopPays()` /
 `planExportRun()` in calculator.js; the userscript mirrors them
 (`foreignShopPays` / `exportCandidates`) — keep the rate in step. Torn
 cost = `sell_prices.price` (Item Market floor, no buyer fee). Black Market

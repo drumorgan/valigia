@@ -1124,7 +1124,7 @@ function renderExportCard(exportRows) {
             </div>
           </div>`).join('')}
       </div>
-      <div class="export-note">A Black Market pays its current price; other shops pay 75%. Max 100 sales per item per trip. Torn price is the Item Market floor, so a full load may cost slightly more.</div>
+      <div class="export-note">A Black Market pays its current price; other shops pay 75%. Weapons and armor: max 100 sales per item per trip. Torn price is the Item Market floor, so a full load may cost slightly more.</div>
     </details>
   `;
 }

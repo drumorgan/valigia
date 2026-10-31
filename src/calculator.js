@@ -129,10 +129,11 @@ export function planDestinationRun({ candidates, slotCount, flightMins, flightMu
 // ── Selling to foreign shops (Oct 2026 travel update) ─────────
 // Abroad shops now buy back what they stock. A Black Market pays its
 // current shop price; every other shop pays 75% of its current price.
-// Sales are capped at 100 per item per trip. Torn's own wiki confirms the
-// Black Market 1:1 rule; the 75% figure is the community-observed rate
-// (Torn Oracle) and matches observed payouts exactly (UK Flail: $8M shop →
-// $6M paid). Keep FOREIGN_SELLBACK_RATE in step with the userscript.
+// Weapon and armor sales are capped at 100 per item per trip (the cap never
+// binds: max capacity is 86). Rule confirmed by Torn's "Traveling 2.0 -
+// Phase 3" announcement (21/10/26) and in game (Japan Bonded Latex: $220,000
+// shop → $165,000; Cherry Blossom $500 → $375). Keep FOREIGN_SELLBACK_RATE in
+// step with the userscript.
 export const FOREIGN_SELLBACK_RATE = 0.75;
 export const FOREIGN_SELL_CAP_PER_ITEM = 100;
 
