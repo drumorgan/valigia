@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.1
+// @version      0.56.2
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.1';
+  const SCRIPT_VERSION = '0.56.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -495,7 +495,7 @@
         url: opts.url,
         headers: opts.headers || {},
         data: opts.data,
-        timeout: 15000,
+        timeout: opts.timeout || 15000,
         onload: function (res) { resolve(res); },
         onerror: function (err) { reject(err); },
         ontimeout: function () { reject(new Error('timeout')); },
@@ -526,7 +526,7 @@
       if (pdaCall && typeof pdaCall.then === 'function') {
         const timer = setTimeout(function () {
           reject(new Error('timeout'));
-        }, 15000);
+        }, opts.timeout || 15000);
         pdaCall.then(function (res) {
           clearTimeout(timer);
           // PDA_httpGet/Post resolve with { status, responseText } on
@@ -4754,36 +4754,156 @@
   // their canonical destination. The home-screen Best Run board ranks
   // across every destination, so it needs all of them; the single-
   // destination in-flight strip filters this down via the wrapper below.
-  async function fetchYataAll() {
+  // Abroad shop rows for every destination, layered for speed on the picker:
+  //   1. a good YATA payload from the last 2 min (memory / localStorage) —
+  //      the board and every country tap share it instead of re-fetching;
+  //   2. live YATA with a short 6 s timeout, skipped for 5 min after a
+  //      failure (it was hanging the picker for the full 15 s per surface);
+  //   3. the last good YATA payload if it's under 3 h old;
+  //   4. our own server-side mirror (get_latest_yata_snapshots, refreshed
+  //      every 5 min by cron-snapshot-yata) so the Best Run board never
+  //      vanishes just because YATA is down.
+  // Concurrent callers share one in-flight promise.
+  const YATA_CACHE_KEY = 'valigia_yata_rows_v1';
+  const YATA_FRESH_MS = 2 * 60 * 1000;
+  const YATA_STALE_OK_MS = 3 * 60 * 60 * 1000;
+  const YATA_FETCH_TIMEOUT_MS = 6000;
+  const YATA_DOWN_KEY = 'valigia_yata_down_until_v1';
+  const YATA_DOWN_BACKOFF_MS = 5 * 60 * 1000;
+  let yataMemo = null;       // { at, rows }
+  let yataInFlight = null;   // Promise<rows>
+  let mirrorMemo = null;     // { at, rows } — in-memory only, never "good YATA"
+  let lastYataSource = 'none';
+
+  function readYataCache() {
+    if (yataMemo) return yataMemo;
     try {
-      const res = await gmRequest({
-        method: 'GET',
-        url: YATA_EXPORT_URL,
-        headers: { 'Accept': 'application/json' },
-      });
+      const c = JSON.parse(localStorage.getItem(YATA_CACHE_KEY) || 'null');
+      if (c && Array.isArray(c.rows) && c.rows.length && Number.isFinite(c.at)) {
+        yataMemo = c;
+        return c;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function writeYataCache(rows) {
+    yataMemo = { at: Date.now(), rows: rows };
+    try { localStorage.setItem(YATA_CACHE_KEY, JSON.stringify(yataMemo)); } catch (_) {}
+  }
+
+  function yataMarkedDown() {
+    try { return Number(localStorage.getItem(YATA_DOWN_KEY) || 0) > Date.now(); }
+    catch (_) { return false; }
+  }
+
+  async function fetchYataLive() {
+    const res = await gmRequest({
+      method: 'GET',
+      url: YATA_EXPORT_URL,
+      headers: { 'Accept': 'application/json' },
+      timeout: YATA_FETCH_TIMEOUT_MS,
+    });
+    if (res.status < 200 || res.status >= 300) throw new Error('YATA HTTP ' + res.status);
+    const data = JSON.parse(res.responseText || '{}');
+    const countries = data.stocks || data;
+    const out = [];
+    for (const code of Object.keys(countries)) {
+      const dest = YATA_COUNTRY_MAP[code];
+      if (!dest) continue;
+      const stocks = (countries[code] && countries[code].stocks) || [];
+      for (const s of stocks) {
+        if (!s || !s.id || !s.cost) continue;
+        out.push({
+          item_id: Number(s.id),
+          name: s.name || ('Item ' + s.id),
+          buy_price: Number(s.cost),
+          stock: Number.isFinite(Number(s.quantity)) ? Number(s.quantity) : null,
+          destination: dest,
+        });
+      }
+    }
+    if (out.length === 0) throw new Error('YATA empty');
+    return out;
+  }
+
+  async function fetchYataMirror() {
+    try {
+      const [res] = await Promise.all([
+        gmRequest({
+          method: 'POST',
+          url: SUPABASE_REST_URL + '/rpc/get_latest_yata_snapshots',
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          data: '{}',
+        }),
+        ensureItemCatalog(), // names — snapshots don't store them
+      ]);
       if (res.status < 200 || res.status >= 300) return [];
-      const data = JSON.parse(res.responseText || '{}');
-      const countries = data.stocks || data;
+      const rows = JSON.parse(res.responseText || '[]');
       const out = [];
-      for (const code of Object.keys(countries)) {
-        const dest = YATA_COUNTRY_MAP[code];
-        if (!dest) continue;
-        const stocks = (countries[code] && countries[code].stocks) || [];
-        for (const s of stocks) {
-          if (!s || !s.id || !s.cost) continue;
-          out.push({
-            item_id: Number(s.id),
-            name: s.name || ('Item ' + s.id),
-            buy_price: Number(s.cost),
-            stock: Number.isFinite(Number(s.quantity)) ? Number(s.quantity) : null,
-            destination: dest,
-          });
-        }
+      for (const r of rows) {
+        const itemId = Number(r && r.item_id);
+        const buy = Number(r && r.buy_price);
+        if (!Number.isFinite(itemId) || !(buy > 0) || !r.destination) continue;
+        const dest = resolveCityToDestination(String(r.destination));
+        if (!FLIGHT_MINS[dest]) continue;
+        const qty = Number(r.quantity);
+        out.push({
+          item_id: itemId,
+          name: itemNameFor(itemId),
+          buy_price: buy,
+          stock: Number.isFinite(qty) ? qty : null,
+          destination: dest,
+        });
       }
       return out;
     } catch (e) {
-      log('yata fetch failed', e);
       return [];
+    }
+  }
+
+  async function fetchYataAll() {
+    const cached = readYataCache();
+    if (cached && Date.now() - cached.at < YATA_FRESH_MS) {
+      lastYataSource = 'yata (cached)';
+      return cached.rows;
+    }
+    if (yataInFlight) return yataInFlight;
+    yataInFlight = (async function () {
+      if (!yataMarkedDown()) {
+        try {
+          const rows = await fetchYataLive();
+          writeYataCache(rows);
+          lastYataSource = 'yata';
+          return rows;
+        } catch (e) {
+          log('yata fetch failed', e);
+          try { localStorage.setItem(YATA_DOWN_KEY, String(Date.now() + YATA_DOWN_BACKOFF_MS)); } catch (_) {}
+        }
+      }
+      const stale = readYataCache();
+      if (stale && Date.now() - stale.at < YATA_STALE_OK_MS) {
+        lastYataSource = 'yata (last good, ' + Math.round((Date.now() - stale.at) / 60000) + 'm old)';
+        return stale.rows;
+      }
+      if (mirrorMemo && Date.now() - mirrorMemo.at < YATA_FRESH_MS) {
+        lastYataSource = 'valigia mirror';
+        return mirrorMemo.rows;
+      }
+      const mirror = await fetchYataMirror();
+      if (mirror.length) mirrorMemo = { at: Date.now(), rows: mirror };
+      lastYataSource = mirror.length ? 'valigia mirror' : 'none';
+      return mirror;
+    })();
+    try {
+      return await yataInFlight;
+    } finally {
+      yataInFlight = null;
     }
   }
 
@@ -5748,7 +5868,9 @@
       merged.push({ item_id: itemId, name: s.name, buy_price: s.buy_price, stock: s.stock });
     }
 
-    let usingSnapshotFallback = false;
+    // Rows from our server mirror rather than YATA get the same "latest
+    // recorded data" note as the snapshot fallback below.
+    let usingSnapshotFallback = merged.length > 0 && lastYataSource === 'valigia mirror';
     if (merged.length === 0) {
       // YATA's live export was empty/unreachable and we have no fresh scrape.
       // Fall back to our own cron-fed snapshot history rather than showing
@@ -6526,7 +6648,13 @@
     const phaseStart = Date.now();
     let flight = detectInFlight();
     let destination = flight ? null : detectDestination();
+    // The Travel Agency picker announces itself ("Select Destination and
+    // Traveling Method"), so there's no need to sit out the whole timeout
+    // waiting for markers that will never appear — that was a fixed 4 s
+    // delay on every picker visit.
+    const pickerHeading = /Select Destination and Traveling Method/i;
     while (!flight && !destination && Date.now() - phaseStart < TRAVEL_PHASE_TIMEOUT_MS) {
+      if (document.body && pickerHeading.test(document.body.innerText || '')) break;
       await new Promise(function (r) { setTimeout(r, TRAVEL_PHASE_POLL_MS); });
       flight = detectInFlight();
       destination = flight ? null : detectDestination();
@@ -6564,6 +6692,7 @@
         showTravelDiag([
           'url: ' + location.href,
           'best-run board: ' + boardStatus + ' (mount: ' + lastTravelMount + ')',
+          'shop prices: ' + lastYataSource,
           'selected: ' + (sel ? sel.destination + ' (' + Math.round(sel.flightMins) + 'm)' : 'none detected'),
         ]);
       }
