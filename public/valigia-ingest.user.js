@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.2
+// @version      0.56.3
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.2';
+  const SCRIPT_VERSION = '0.56.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -6452,6 +6452,12 @@
     // its own board between our start-of-function removal and now.
     document.querySelectorAll('#' + BESTRUN_BAR_ID).forEach(function (n) { n.remove(); });
     insertTravelOverlay(bar);
+    // The board usually lands after the country bar (it waits on more data);
+    // keep it on top so the order is always Best Run → Before you fly.
+    const detail = document.getElementById(COUNTRY_DETAIL_BAR_ID);
+    if (detail && detail.parentNode === bar.parentNode) {
+      detail.parentNode.insertBefore(bar, detail);
+    }
     return 'ok';
   }
 
@@ -6597,11 +6603,10 @@
       pickerLastSelectedDest = dest;
       pickerRemounts = 0;
       if (dest) {
-        // Tapped a country: show that destination's full item list and hide
-        // the all-countries board so the chosen country is the only thing on
-        // screen.
-        const board = document.getElementById(BESTRUN_BAR_ID);
-        if (board) board.style.display = 'none';
+        // A country is selected: show its full item list. The Best Run board
+        // stays visible above it — the Travel Agency redesign remembers the
+        // last destination, so a selection exists from page load and hiding
+        // the board here meant it never appeared at all.
         injectCountryDetailBar(dest);
       }
       // Deliberately do nothing when the selection clears: tapping Travel to
