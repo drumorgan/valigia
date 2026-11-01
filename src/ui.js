@@ -72,8 +72,17 @@ const sellPriceFetchedAt = new Map(); // itemId → ms since epoch
 let pointsRate = null;
 let knownItems = [];            // Array of { item_id, item_name, destination, buy_price, reported_at, quantity }
 // `${item_id}|${destination}` shelves stocked by a Black Market (they buy
-// back at 100% instead of 75%). Fed from abroad_prices.shop_category.
+// back at 100% instead of 75%), and destination → Set(item_id) catalogs of
+// what each shop currently sells. Fed from abroad_prices (PDA scrapes).
 let blackMarketKeys = new Set();
+let shopCatalogs = new Map();
+
+// False when a recent scrape of this destination shows the shop no longer
+// sells the item (delisted — YATA can lag Torn's listing changes).
+function isListed(itemId, destination) {
+  const catalog = shopCatalogs.get(destination);
+  return !catalog || catalog.has(itemId);
+}
 
 // ── Column definitions for sortable headers ───────────────────
 // Trimmed from 11 to 8: Margin $ / Run Cost / Flight folded into adjacent
@@ -344,10 +353,11 @@ export function getItemIdsForPriceFetch() {
 }
 
 /**
- * Set which shelves belong to a Black Market (full-price sell-back).
+ * Set shop intel from PDA scrapes: Black Market shelves + current catalogs.
  */
-export function setBlackMarketKeys(keys) {
-  blackMarketKeys = keys instanceof Set ? keys : new Set();
+export function setShopIntel(intel) {
+  blackMarketKeys = intel?.bmKeys instanceof Set ? intel.bmKeys : new Set();
+  shopCatalogs = intel?.catalogs instanceof Map ? intel.catalogs : new Map();
   renderTable();
 }
 
@@ -863,6 +873,7 @@ function buildRows() {
 
   for (const item of knownItems) {
     if (!item.item_id) continue;
+    if (!isListed(item.item_id, item.destination)) continue;
 
     // Apply destination filter
     if (filterDestination !== 'all' && item.destination !== filterDestination) continue;
@@ -1059,6 +1070,7 @@ function buildExportRows() {
   const rows = [];
   for (const item of knownItems) {
     if (!item.item_id) continue;
+    if (!isListed(item.item_id, item.destination)) continue;
     if (filterDestination !== 'all' && item.destination !== filterDestination) continue;
     const category = getItemTypeById(item.item_id, item.item_name);
     if (filterCategory !== 'all' && category !== filterCategory) continue;

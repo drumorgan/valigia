@@ -3,7 +3,7 @@
 import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { tryAutoLogin, renderLoginScreen, logout, getSession } from './auth.js';
-import { fetchAbroadPrices, fetchBlackMarketKeys } from './log-sync.js';
+import { fetchAbroadPrices, fetchShopIntel } from './log-sync.js';
 import { fetchAllSellPrices, refreshSellPrices, fetchPointsRate } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
@@ -22,7 +22,7 @@ import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
   setDetectedCapacity, getStaleItemIdsForCategory, getTopTravelCandidateIds,
-  setPointsRate, setBlackMarketKeys,
+  setPointsRate, setShopIntel,
 } from './ui.js';
 import { getTravelCapacity } from './pda-prefs.js';
 
@@ -391,10 +391,10 @@ async function startDashboard(playerId, playerName) {
   // when it lands; failure just leaves the museum venue off.
   fetchPointsRate().then(setPointsRate).catch(() => {});
 
-  // Black Market shelves buy back at full price (others 75%) — drives the
-  // Sell Abroad card and the Best Run outbound leg. Background; until it
-  // lands every shelf uses the conservative 75%.
-  fetchBlackMarketKeys().then(setBlackMarketKeys).catch(() => {});
+  // Shop intel from PDA scrapes: Black Market shelves (full-price sell-back,
+  // others 75%) and each country's current catalog (drops delisted shelves).
+  // Background; until it lands every shelf uses 75% and YATA's listings.
+  fetchShopIntel().then(setShopIntel).catch(() => {});
 
   if (!priceResult || priceResult.items.length === 0) {
     showToast('Could not fetch abroad prices from YATA. Try refreshing.', 'warning');

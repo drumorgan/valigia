@@ -21,6 +21,7 @@ import { getItemNameById } from './item-resolver.js';
 
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 const CACHE_KEY = 'valigia_yata_cache_v1';
+const SNAPSHOT_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 // Hard ceiling on the YATA live fetch. Without it, a YATA outage where the
 // host accepts the connection but never responds (a hung socket, not a clean
@@ -202,6 +203,10 @@ async function fetchSnapshotAbroadPrices() {
     const out = [];
     for (const row of data) {
       if (row.buy_price == null) continue;
+      // Latest-ever reading per shelf has no age limit — a delisted shelf
+      // would linger forever. Only trust recent readings.
+      const snappedMs = new Date(row.snapped_at).getTime();
+      if (!Number.isFinite(snappedMs) || Date.now() - snappedMs > SNAPSHOT_FALLBACK_MAX_AGE_MS) continue;
       out.push({
         item_id: row.item_id,
         item_name: getItemNameById(row.item_id) || `Item ${row.item_id}`,
@@ -290,24 +295,50 @@ export async function fetchAbroadPrices() {
   };
 }
 
+// A destination's current catalog = items seen within this window of its
+// newest PDA scrape (one scrape stamps every row with the same observed_at),
+// trusted only while that scrape is recent. Mirrors the userscript.
+const SHOP_CATALOG_WINDOW_MS = 6 * 60 * 60 * 1000;
+const SHOP_CATALOG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
 /**
- * Which (item_id, destination) shelves belong to a Black Market. Matters for
- * selling back to foreign shops: a Black Market pays its full current price,
- * every other shop 75%. YATA doesn't report the shop, but every PDA scrape
- * records it in abroad_prices.shop_category, and an item's shop never
- * changes — so ALL rows count, not just fresh ones. Unscraped shelves are
- * simply absent (callers assume the conservative 75%).
- * Returns a Set of `${item_id}|${destination}` keys; empty on any failure.
+ * Shop intel from first-party PDA scrapes (abroad_prices):
+ *   - bmKeys: Set of `${item_id}|${destination}` shelves stocked by a Black
+ *     Market (full-price sell-back; others 75%). An item's shop never
+ *     changes, so rows of any age count. Unscraped shelves assume 75%.
+ *   - catalogs: Map destination → Set(item_id) the shop currently sells.
+ *     Torn's Phase 3 moved drug listings between countries and YATA / our
+ *     snapshot mirror can keep delisted shelves (a player was sent to
+ *     Canada with Vicodin no shop there buys), so exports and imports are
+ *     filtered against this when it exists.
+ * Never throws; empty intel on failure.
  */
-export async function fetchBlackMarketKeys() {
+export async function fetchShopIntel() {
+  const empty = { bmKeys: new Set(), catalogs: new Map() };
   try {
     const { data, error } = await supabase
       .from('abroad_prices')
-      .select('item_id, destination, shop_category')
-      .eq('shop_category', 'Black Market');
-    if (error || !Array.isArray(data)) return new Set();
-    return new Set(data.map((r) => `${r.item_id}|${normalizeDestination(r.destination)}`));
+      .select('item_id, destination, shop_category, observed_at');
+    if (error || !Array.isArray(data)) return empty;
+    const rows = [];
+    const newest = new Map();
+    for (const r of data) {
+      const t = new Date(r.observed_at).getTime();
+      if (!Number.isFinite(t)) continue;
+      const dest = normalizeDestination(r.destination);
+      rows.push({ dest, itemId: r.item_id, bm: r.shop_category === 'Black Market', t });
+      if (!newest.has(dest) || t > newest.get(dest)) newest.set(dest, t);
+    }
+    const now = Date.now();
+    for (const r of rows) {
+      if (r.bm) empty.bmKeys.add(`${r.itemId}|${r.dest}`);
+      const top = newest.get(r.dest);
+      if (now - top > SHOP_CATALOG_MAX_AGE_MS || top - r.t > SHOP_CATALOG_WINDOW_MS) continue;
+      if (!empty.catalogs.has(r.dest)) empty.catalogs.set(r.dest, new Set());
+      empty.catalogs.get(r.dest).add(r.itemId);
+    }
+    return empty;
   } catch {
-    return new Set();
+    return empty;
   }
 }

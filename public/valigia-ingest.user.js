@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.3
+// @version      0.56.4
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.3';
+  const SCRIPT_VERSION = '0.56.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4770,6 +4770,7 @@
   const YATA_FETCH_TIMEOUT_MS = 6000;
   const YATA_DOWN_KEY = 'valigia_yata_down_until_v1';
   const YATA_DOWN_BACKOFF_MS = 5 * 60 * 1000;
+  const YATA_MIRROR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
   let yataMemo = null;       // { at, rows }
   let yataInFlight = null;   // Promise<rows>
   let mirrorMemo = null;     // { at, rows } — in-memory only, never "good YATA"
@@ -4850,6 +4851,10 @@
         const itemId = Number(r && r.item_id);
         const buy = Number(r && r.buy_price);
         if (!Number.isFinite(itemId) || !(buy > 0) || !r.destination) continue;
+        // Latest-ever reading per shelf has no age limit; a shelf Torn
+        // delisted would linger forever. Only trust recent readings.
+        const snappedMs = new Date(r.snapped_at).getTime();
+        if (!Number.isFinite(snappedMs) || Date.now() - snappedMs > YATA_MIRROR_MAX_AGE_MS) continue;
         const dest = resolveCityToDestination(String(r.destination));
         if (!FLIGHT_MINS[dest]) continue;
         const qty = Number(r.quantity);
@@ -5023,58 +5028,97 @@
   // src/calculator.js — keep the rate in step.
   const FOREIGN_SELLBACK_RATE = 0.75;
   const FOREIGN_SELL_CAP_PER_ITEM = 100;
-  const BLACK_MARKET_CACHE_KEY = 'valigia_black_market_keys_v1';
-  const BLACK_MARKET_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+  // v2: caches the raw scrape rows (shop + observed_at), not just BM keys.
+  const BLACK_MARKET_CACHE_KEY = 'valigia_shop_intel_v2';
+  const BLACK_MARKET_CACHE_TTL_MS = 30 * 60 * 1000;
 
   function foreignShopPays(shopPrice, isBlackMarket) {
     if (!(shopPrice > 0)) return 0;
     return isBlackMarket ? shopPrice : Math.floor(shopPrice * FOREIGN_SELLBACK_RATE);
   }
 
-  // Set of 'Destination|itemId' shelves stocked by a Black Market. YATA
-  // doesn't report the shop; every PDA scrape records it in
-  // abroad_prices.shop_category, and an item's shop never changes, so all
-  // rows count regardless of age. Cached 6 h. Unscraped shelves are absent
-  // and fall back to the conservative 75%.
-  async function fetchBlackMarketKeys() {
+  // Shop intel from our own PDA scrapes (abroad_prices), one cached read:
+  //   bmKeys   — 'Destination|itemId' shelves stocked by a Black Market (buy
+  //              back at full price; unscraped shelves assume 75%). An item's
+  //              shop never changes, so rows of any age count.
+  //   catalogs — Destination -> Set(itemId) the shop CURRENTLY sells: items
+  //              seen within SHOP_CATALOG_WINDOW_MS of that destination's
+  //              newest scrape (one scrape stamps every row with the same
+  //              observed_at). Torn's Phase 3 moved drug listings between
+  //              countries and YATA / our mirror can keep delisted shelves —
+  //              that sent a player to Canada with Vicodin no shop there
+  //              buys. Only trusted when the newest scrape is recent.
+  const SHOP_CATALOG_WINDOW_MS = 6 * 60 * 60 * 1000;
+  const SHOP_CATALOG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+  let shopIntelMemo = null;
+
+  async function fetchShopIntel() {
     try {
-      const cached = JSON.parse(localStorage.getItem(BLACK_MARKET_CACHE_KEY) || 'null');
-      if (cached && Array.isArray(cached.keys) && Date.now() - cached.at < BLACK_MARKET_CACHE_TTL_MS) {
-        return new Set(cached.keys);
+      const cached = shopIntelMemo || JSON.parse(localStorage.getItem(BLACK_MARKET_CACHE_KEY) || 'null');
+      if (cached && Array.isArray(cached.rows) && Date.now() - cached.at < BLACK_MARKET_CACHE_TTL_MS) {
+        shopIntelMemo = cached;
+        return buildShopIntel(cached.rows);
       }
     } catch (_) {}
     try {
       const res = await gmRequest({
         method: 'GET',
-        url: ABROAD_PRICES_URL + '?select=item_id,destination&shop_category=eq.' + encodeURIComponent('Black Market'),
+        url: ABROAD_PRICES_URL + '?select=item_id,destination,shop_category,observed_at',
         headers: {
           'apikey': SUPABASE_ANON_KEY,
           'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
           'Accept': 'application/json',
         },
       });
-      if (res.status < 200 || res.status >= 300) return new Set();
-      const rows = JSON.parse(res.responseText || '[]');
-      const keys = [];
-      for (const r of rows) {
-        if (r && r.destination && Number.isFinite(Number(r.item_id))) {
-          keys.push(r.destination + '|' + Number(r.item_id));
-        }
+      if (res.status < 200 || res.status >= 300) return buildShopIntel([]);
+      const raw = JSON.parse(res.responseText || '[]');
+      const rows = [];
+      for (const r of raw) {
+        const t = new Date(r && r.observed_at).getTime();
+        if (!r || !r.destination || !Number.isFinite(Number(r.item_id)) || !Number.isFinite(t)) continue;
+        // Normalize "United Kingdom" etc. to the canonical keys YATA rows use.
+        rows.push([resolveCityToDestination(String(r.destination)), Number(r.item_id),
+          r.shop_category === 'Black Market' ? 1 : 0, t]);
       }
-      try { localStorage.setItem(BLACK_MARKET_CACHE_KEY, JSON.stringify({ at: Date.now(), keys: keys })); } catch (_) {}
-      return new Set(keys);
+      shopIntelMemo = { at: Date.now(), rows: rows };
+      try { localStorage.setItem(BLACK_MARKET_CACHE_KEY, JSON.stringify(shopIntelMemo)); } catch (_) {}
+      return buildShopIntel(rows);
     } catch (e) {
-      return new Set();
+      return buildShopIntel([]);
     }
+  }
+
+  function buildShopIntel(rows) {
+    const bmKeys = new Set();
+    const newest = new Map();
+    for (const r of rows) {
+      if (r[2]) bmKeys.add(r[0] + '|' + r[1]);
+      if (!newest.has(r[0]) || r[3] > newest.get(r[0])) newest.set(r[0], r[3]);
+    }
+    const catalogs = new Map();
+    const now = Date.now();
+    for (const r of rows) {
+      const top = newest.get(r[0]);
+      if (now - top > SHOP_CATALOG_MAX_AGE_MS) continue;
+      if (top - r[3] > SHOP_CATALOG_WINDOW_MS) continue;
+      if (!catalogs.has(r[0])) catalogs.set(r[0], new Set());
+      catalogs.get(r[0]).add(r[1]);
+    }
+    return { bmKeys: bmKeys, catalogs: catalogs };
   }
 
   // Every profitable export (buy in Torn at the Item Market floor, no buyer
   // fee; sell to the foreign shop) among `rows` ({item_id, name, buy_price,
   // destination}), best profit per unit first. Shop stock is irrelevant —
   // selling adds to the shelf.
-  function exportCandidates(rows, sellMap, bmKeys) {
+  function exportCandidates(rows, sellMap, intel) {
     const out = [];
+    const bmKeys = intel.bmKeys;
     for (const r of rows) {
+      // A shop only buys what it sells: when a recent scrape tells us this
+      // destination's real catalog, skip anything not on it (delisted).
+      const catalog = intel.catalogs.get(r.destination);
+      if (catalog && !catalog.has(r.item_id)) continue;
       const sell = sellMap.get(r.item_id);
       const tornPrice = sell && Number.isFinite(sell.price) ? sell.price : null;
       if (!(tornPrice > 0) || !(r.buy_price > 0)) continue;
@@ -5903,13 +5947,22 @@
     }
 
     const itemIds = merged.map(function (r) { return r.item_id; });
-    const [snapshotsMap, restockMap, sellMap, bmKeys] = await Promise.all([
+    const [snapshotsMap, restockMap, sellMap, shopIntel] = await Promise.all([
       fetchYataSnapshots(itemIds, destination),
       fetchRestockEvents(itemIds, destination),
       fetchSellPrices(itemIds),
-      fetchBlackMarketKeys(),
+      fetchShopIntel(),
     ]);
     if (generation !== countryDetailGeneration) return;
+
+    // Drop shelves this country no longer sells (not in its latest scraped
+    // catalog) from both lists below.
+    const shopCatalog = shopIntel.catalogs.get(destination);
+    if (shopCatalog) {
+      for (let k = merged.length - 1; k >= 0; k--) {
+        if (!shopCatalog.has(merged[k].item_id)) merged.splice(k, 1);
+      }
+    }
 
     const slots = getSlotCount();
     const nowMs = Date.now();
@@ -5929,7 +5982,7 @@
     // shop on arrival. Only shown when at least one clears Torn's price.
     const exports = exportCandidates(merged.map(function (r) {
       return { item_id: r.item_id, name: r.name, buy_price: r.buy_price, destination: destination };
-    }), sellMap, bmKeys).slice(0, COUNTRY_SELL_MAX_ROWS);
+    }), sellMap, shopIntel).slice(0, COUNTRY_SELL_MAX_ROWS);
     if (exports.length > 0) {
       const units = Math.min(slots, FOREIGN_SELL_CAP_PER_ITEM);
       const sellHead = document.createElement('div');
@@ -6280,11 +6333,11 @@
     if (existing) existing.remove();
     if (indicatorsHidden) return;
 
-    const [yataRows, scrapeMap, , bmKeys] = await Promise.all([
+    const [yataRows, scrapeMap, , shopIntel] = await Promise.all([
       fetchYataAll(),
       fetchAbroadScrapesAll(),
       ensureItemCatalog(),
-      fetchBlackMarketKeys(),
+      fetchShopIntel(),
     ]);
     if (myGeneration !== bestRunGeneration) return 'superseded';
     if (!Array.isArray(yataRows) || yataRows.length === 0) return 'YATA returned no rows';
@@ -6303,6 +6356,9 @@
     for (const y of yataRows) {
       const itype = itemTypeFor(y.item_id);
       if (!itype || !INFLIGHT_ALLOWED_TYPES.has(itype)) continue;
+      // Delisted shelf (not in this destination's latest scraped catalog).
+      const shopCatalog = shopIntel.catalogs.get(y.destination);
+      if (shopCatalog && !shopCatalog.has(y.item_id)) continue;
 
       const flightMins = FLIGHT_MINS[y.destination];
       if (!flightMins) continue;
@@ -6359,7 +6415,7 @@
       };
     });
     const bestExport = new Map();
-    for (const e of exportCandidates(shopRows, sellMap, bmKeys)) {
+    for (const e of exportCandidates(shopRows, sellMap, shopIntel)) {
       if (!bestExport.has(e.destination)) bestExport.set(e.destination, e);
     }
 

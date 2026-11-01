@@ -293,7 +293,14 @@ candidates. `foreignShopPays()` /
 (`foreignShopPays` / `exportCandidates`) — keep the rate in step. Torn
 cost = `sell_prices.price` (Item Market floor, no buyer fee). Black Market
 membership comes from `abroad_prices.shop_category` (any age — an item's
-shop never changes); unscraped shelves assume 75%. Surfaces: the web
+shop never changes); unscraped shelves assume 75%. **Delisted shelves:**
+Phase 3 moved drug listings between countries and YATA / the snapshot
+mirror can keep delisted shelves (a player was sent to Canada with Vicodin
+no shop there buys). Each destination's current catalog = items seen
+within 6 h of its newest PDA scrape (trusted while that scrape is ≤14
+days old); anything not on it is dropped from exports AND imports
+(`fetchShopIntel()` in log-sync.js / the userscript). The snapshot-mirror
+fallbacks also ignore readings older than 6 h. Surfaces: the web
 **Sell Abroad** card + Best Run card's "Outbound" leg (round trip = export
 + import over the same flight; export-only destinations can win), and in
 the PDA picker the Best Run board ("Xanax + sell Flail") and the
