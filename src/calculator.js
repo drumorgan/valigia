@@ -137,6 +137,25 @@ export function planDestinationRun({ candidates, slotCount, flightMins, flightMu
 export const FOREIGN_SELLBACK_RATE = 0.75;
 export const FOREIGN_SELL_CAP_PER_ITEM = 100;
 
+// Items Torn won't let you take abroad (Traveling 2.0 Phase 3): Cars,
+// Halloween Baskets, Parcels, Presents and Suitcases. Some ARE stocked by
+// foreign shops (Hawaii sells Small Suitcases), so they must be excluded
+// explicitly or they surface as impossible exports. Keep in step with the
+// userscript's canTakeAbroad().
+const NO_EXPORT_NAME_RE = /suitcase|halloween basket|parcel|present/i;
+
+/**
+ * Whether Torn allows carrying this item out of Torn.
+ * @param {string|null} name - Item name
+ * @param {string|null} [rawType] - Torn catalog type ('Car' blocks)
+ * @returns {boolean}
+ */
+export function canTakeAbroad(name, rawType = null) {
+  if (name && NO_EXPORT_NAME_RE.test(name)) return false;
+  if (rawType && String(rawType).toLowerCase() === 'car') return false;
+  return true;
+}
+
 /**
  * What a foreign shop pays per unit when you sell an item back to it.
  * @param {number} shopPrice - The shop's current price for the item

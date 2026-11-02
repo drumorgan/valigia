@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.4
+// @version      0.56.5
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.4';
+  const SCRIPT_VERSION = '0.56.5';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5111,6 +5111,18 @@
   // fee; sell to the foreign shop) among `rows` ({item_id, name, buy_price,
   // destination}), best profit per unit first. Shop stock is irrelevant —
   // selling adds to the shelf.
+  // Items Torn won't let you take abroad (Phase 3): Cars, Halloween Baskets,
+  // Parcels, Presents, Suitcases. Hawaii sells Small Suitcases, so without
+  // this they surfaced as impossible exports. Mirrors canTakeAbroad() in
+  // src/calculator.js.
+  const NO_EXPORT_NAME_RE = /suitcase|halloween basket|parcel|present/i;
+  function canTakeAbroad(itemId, name) {
+    const label = name || itemNameFor(itemId);
+    if (label && NO_EXPORT_NAME_RE.test(label)) return false;
+    const type = itemTypeFor(itemId);
+    return !(type && String(type).toLowerCase() === 'car');
+  }
+
   function exportCandidates(rows, sellMap, intel) {
     const out = [];
     const bmKeys = intel.bmKeys;
@@ -5119,6 +5131,7 @@
       // destination's real catalog, skip anything not on it (delisted).
       const catalog = intel.catalogs.get(r.destination);
       if (catalog && !catalog.has(r.item_id)) continue;
+      if (!canTakeAbroad(r.item_id, r.name)) continue;
       const sell = sellMap.get(r.item_id);
       const tornPrice = sell && Number.isFinite(sell.price) ? sell.price : null;
       if (!(tornPrice > 0) || !(r.buy_price > 0)) continue;
