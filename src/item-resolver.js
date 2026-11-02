@@ -57,6 +57,11 @@ function nameForId(id) {
  * Torn's catalog labels the category. Name wins over type so a contraband
  * item Torn files under e.g. "Other" still lands in the Contraband chip.
  */
+/** Torn catalog's raw `type` string for an item ('Car', 'Drug', …), or null. */
+export function getRawItemType(id) {
+  return idToType[id] || null;
+}
+
 export function getItemTypeById(id, name = null) {
   if (isContrabandName(name || nameForId(id))) return 'contraband';
   const raw = idToType[id];

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact, foreignShopPays, planExportRun } from '../src/calculator.js';
+import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact, foreignShopPays, planExportRun, canTakeAbroad } from '../src/calculator.js';
 
 describe('calculateMargins', () => {
   it('computes the documented margin math', () => {
@@ -178,5 +178,22 @@ describe('foreign shop sell-back', () => {
   it('returns null when nothing clears Torn price or a price is missing', () => {
     expect(planExportRun({ slotCount: 28, candidates: [{ shopPays: 10, tornPrice: 20 }] })).toBeNull();
     expect(planExportRun({ slotCount: 28, candidates: [{ shopPays: 10, tornPrice: null }] })).toBeNull();
+  });
+});
+
+describe('canTakeAbroad', () => {
+  it('blocks the Phase 3 no-fly items', () => {
+    expect(canTakeAbroad('Small Suitcase')).toBe(false);
+    expect(canTakeAbroad('Large Suitcase')).toBe(false);
+    expect(canTakeAbroad('Halloween Basket : Spooky')).toBe(false);
+    expect(canTakeAbroad('Parcel')).toBe(false);
+    expect(canTakeAbroad('Birthday Present')).toBe(false);
+    expect(canTakeAbroad('Lambrini Torobravo', 'Car')).toBe(false);
+  });
+
+  it('allows normal exports', () => {
+    expect(canTakeAbroad('Minigun', 'Primary')).toBe(true);
+    expect(canTakeAbroad('Proda Sunglasses', 'Clothing')).toBe(true);
+    expect(canTakeAbroad('Ecstasy', 'Drug')).toBe(true);
   });
 });

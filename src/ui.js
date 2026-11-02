@@ -2,9 +2,9 @@
 
 import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
-import { getItemTypeById, getStoreSellPrice } from './item-resolver.js';
+import { getItemTypeById, getRawItemType, getStoreSellPrice } from './item-resolver.js';
 import { pickSellVenue, getMuseumEntry } from './data/sell-venues.js';
-import { calculateMargins, planDestinationRun, planExportRun, foreignShopPays, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
+import { calculateMargins, planDestinationRun, planExportRun, foreignShopPays, canTakeAbroad, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock, getStockHistory } from './stock-forecast.js';
 import { stockSparklineSvg } from './sparkline.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
@@ -1071,6 +1071,7 @@ function buildExportRows() {
   for (const item of knownItems) {
     if (!item.item_id) continue;
     if (!isListed(item.item_id, item.destination)) continue;
+    if (!canTakeAbroad(item.item_name, getRawItemType(item.item_id))) continue;
     if (filterDestination !== 'all' && item.destination !== filterDestination) continue;
     const category = getItemTypeById(item.item_id, item.item_name);
     if (filterCategory !== 'all' && category !== filterCategory) continue;
