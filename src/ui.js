@@ -1309,7 +1309,7 @@ function renderTravelBestRun(container, combo) {
   const exp = combo.exportPlan;
   const exportLine = exp
     ? `<div class="best-run-plan best-run-export" title="Buy in Torn at the Item Market floor, sell to the ${exp.row.destination} shop on arrival">
-         Outbound: carry ${exp.units}&times; ${exp.row.name} &rarr; shop pays ${formatMoney(exp.shopPays)} (+${formatMoney(exp.profitPerRun)})
+         Outbound: carry ${exp.units}&times; ${exp.row.name} &mdash; Torn avg ${formatMoney(exp.tornPrice)} &rarr; ${exp.row.destination} pays ${formatMoney(exp.shopPays)} (+${formatMoney(exp.profitPerRun)})
        </div>`
     : '';
 
