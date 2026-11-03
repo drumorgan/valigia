@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact, foreignShopPays, planExportRun, canTakeAbroad } from '../src/calculator.js';
+import { calculateMargins, planDestinationRun, formatFlightTime, formatMoney, formatMarginPctCompact, foreignShopPays, planExportRun, canTakeAbroad, fillCost } from '../src/calculator.js';
 
 describe('calculateMargins', () => {
   it('computes the documented margin math', () => {
@@ -195,5 +195,40 @@ describe('canTakeAbroad', () => {
     expect(canTakeAbroad('Minigun', 'Primary')).toBe(true);
     expect(canTakeAbroad('Proda Sunglasses', 'Clothing')).toBe(true);
     expect(canTakeAbroad('Ecstasy', 'Drug')).toBe(true);
+  });
+});
+
+describe('fillCost', () => {
+  it('walks the ladder cheapest-first (the Liquid Body Armor case)', () => {
+    const f = fillCost([{ price: 6_000_000, qty: 1 }, { price: 5_950_000, qty: 1 }, { price: 6_500_000, qty: 5 }], 2);
+    expect(f.filled).toBe(2);
+    expect(f.avgCost).toBe(5_975_000);
+    expect(f.maxPrice).toBe(6_000_000);
+  });
+
+  it('reports a partial fill when not enough is listed', () => {
+    const f = fillCost([{ price: 100, qty: 3 }], 28);
+    expect(f.filled).toBe(3);
+    expect(f.avgCost).toBe(100);
+  });
+
+  it('returns null with nothing to buy', () => {
+    expect(fillCost([], 28)).toBeNull();
+  });
+});
+
+describe('planExportRun with live fill', () => {
+  it('caps units at what is listed and ranks by profit per run', () => {
+    const plan = planExportRun({
+      slotCount: 28,
+      candidates: [
+        { name: 'Rare', shopPays: 1_000, tornPrice: 500, maxUnits: 2 },   // 1,000/run
+        { name: 'Deep', shopPays: 300, tornPrice: 200 },                   // 2,800/run
+      ],
+    });
+    expect(plan.name).toBe('Deep');
+    const rare = planExportRun({ slotCount: 28, candidates: [{ name: 'Rare', shopPays: 1_000, tornPrice: 500, maxUnits: 2 }] });
+    expect(rare.units).toBe(2);
+    expect(rare.profitPerRun).toBe(1_000);
   });
 });

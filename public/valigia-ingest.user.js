@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.5
+// @version      0.56.6
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.5';
+  const SCRIPT_VERSION = '0.56.6';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -2477,6 +2477,18 @@
   // and src/market.js. Returns { price, minPrice, floorQty, listingCount }
   // or null on any failure.
   async function fetchLiveItemMarketPrices(itemId) {
+    const norm = await fetchItemMarketListings(itemId);
+    if (!norm || norm.length === 0) return null;
+    const minPrice = norm[0].price;
+    let floor = null;
+    for (const l of norm) { if (l.qty >= 2) { floor = l; break; } }
+    if (!floor) floor = norm[0];
+    return { price: floor.price, minPrice: minPrice, floorQty: floor.qty, listingCount: norm.length };
+  }
+
+  // Raw Item Market ladder for an item: [{ price, qty }] cheapest first,
+  // [] when nothing is listed, null on a failed fetch.
+  async function fetchItemMarketListings(itemId) {
     if (!TORN_API_KEY || TORN_API_KEY.indexOf('PDA-APIKEY') !== -1) return null;
     try {
       const res = await gmRequest({
@@ -2490,7 +2502,7 @@
       try { data = JSON.parse(res.responseText || '{}'); } catch (_) { return null; }
       if (!data || data.error) return null;
       const listings = (data.itemmarket && data.itemmarket.listings) || data.itemmarket;
-      if (!Array.isArray(listings) || listings.length === 0) return null;
+      if (!Array.isArray(listings)) return null;
       const norm = [];
       for (const l of listings) {
         const cost = Number(l.cost != null ? l.cost : l.price);
@@ -2502,13 +2514,8 @@
           norm.push({ price: cost, qty: Number.isFinite(qty) && qty > 0 ? qty : 1 });
         }
       }
-      if (norm.length === 0) return null;
       norm.sort(function (a, b) { return a.price - b.price; });
-      const minPrice = norm[0].price;
-      let floor = null;
-      for (const l of norm) { if (l.qty >= 2) { floor = l; break; } }
-      if (!floor) floor = norm[0];
-      return { price: floor.price, minPrice: minPrice, floorQty: floor.qty, listingCount: norm.length };
+      return norm;
     } catch (e) {
       return null;
     }
@@ -5153,6 +5160,101 @@
     return out;
   }
 
+  // -- Live export check ----------------------------------------------------
+  // exportCandidates() prices the Torn side with the cached floor, which for
+  // armor/weapons is often ONE listing and can be hours old — it sent a
+  // player to Argentina with Liquid Body Armor bought at $5.95M–$6.0M that
+  // sells back for $5.625M. Before an export is shown, fetch the live Item
+  // Market ladder and price the load at the average of the cheapest listings
+  // that cover it (fillCostFor mirrors fillCost in src/calculator.js).
+  // Ladders are cached 10 min; candidates without a fresh ladder are hidden.
+  const EXPORT_LADDER_KEY = 'valigia_export_ladders_v1';
+  const EXPORT_LADDER_TTL_MS = 10 * 60 * 1000;
+  let exportLadders = null; // { [itemId]: { at, listings } }
+
+  function loadExportLadders() {
+    if (exportLadders) return exportLadders;
+    try { exportLadders = JSON.parse(localStorage.getItem(EXPORT_LADDER_KEY) || '{}') || {}; }
+    catch (_) { exportLadders = {}; }
+    return exportLadders;
+  }
+
+  function saveExportLadders() {
+    const now = Date.now();
+    const keep = {};
+    for (const id in exportLadders) {
+      if (now - exportLadders[id].at < EXPORT_LADDER_TTL_MS) keep[id] = exportLadders[id];
+    }
+    exportLadders = keep;
+    try { localStorage.setItem(EXPORT_LADDER_KEY, JSON.stringify(keep)); } catch (_) {}
+  }
+
+  function freshLadder(itemId) {
+    const e = loadExportLadders()[itemId];
+    return e && Date.now() - e.at < EXPORT_LADDER_TTL_MS ? e.listings : null;
+  }
+
+  function fillCostFor(listings, units) {
+    let filled = 0;
+    let total = 0;
+    for (const l of listings) {
+      if (filled >= units) break;
+      const take = Math.min(l.qty, units - filled);
+      filled += take;
+      total += take * l.price;
+    }
+    return filled > 0 ? { filled: filled, avgCost: total / filled } : null;
+  }
+
+  // Split preliminary candidates into live-checked exports (repriced at the
+  // real fill cost, units capped at what's listed, unprofitable dropped) and
+  // ones still awaiting a check.
+  function splitCheckedExports(cands, units) {
+    const checked = [];
+    const pending = [];
+    for (const c of cands) {
+      const ladder = freshLadder(c.itemId);
+      if (!ladder) { pending.push(c); continue; }
+      const fill = fillCostFor(ladder, units);
+      if (!fill) continue;
+      const profitPerItem = c.shopPays - fill.avgCost;
+      if (profitPerItem <= 0) continue;
+      checked.push(Object.assign({}, c, {
+        tornPrice: fill.avgCost,
+        units: fill.filled,
+        profitPerItem: profitPerItem,
+        profitPerRun: profitPerItem * fill.filled,
+      }));
+    }
+    checked.sort(function (a, b) { return b.profitPerRun - a.profitPerRun; });
+    return { checked: checked, pending: pending };
+  }
+
+  // Fetch ladders for up to `limit` pending candidates (5 at a time).
+  async function checkExportLadders(cands, limit) {
+    if (indicatorsHidden) return;
+    const ids = [];
+    const seen = new Set();
+    for (const c of cands) {
+      if (ids.length >= limit) break;
+      if (seen.has(c.itemId) || freshLadder(c.itemId)) continue;
+      seen.add(c.itemId);
+      ids.push(c.itemId);
+    }
+    let next = 0;
+    async function worker() {
+      while (next < ids.length) {
+        const id = ids[next++];
+        const listings = await fetchItemMarketListings(id);
+        // A failed fetch is cached as "nothing listed" so the candidate stays
+        // hidden instead of being refetched on every repaint.
+        loadExportLadders()[id] = { at: Date.now(), listings: listings || [] };
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(5, ids.length) }, worker));
+    saveExportLadders();
+  }
+
   // -- Depletion-slope fitter (slim port of stock-forecast.js) ------------
   // For each (item_id, destination) we want a per-minute steady-state
   // depletion rate so the strip can answer "how much will be left when I
@@ -5983,6 +6085,19 @@
     // hunting through a profit ranking.
     merged.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
 
+    // "Sell here" candidates, live-checked against the Item Market ladder
+    // before anything is shown (see splitCheckedExports).
+    const exportUnits = Math.min(slots, FOREIGN_SELL_CAP_PER_ITEM);
+    const prelim = exportCandidates(merged.map(function (r) {
+      return { item_id: r.item_id, name: r.name, buy_price: r.buy_price, destination: destination };
+    }), sellMap, shopIntel).slice(0, COUNTRY_SELL_MAX_ROWS * 2);
+    if (splitCheckedExports(prelim, exportUnits).pending.length) {
+      loading.textContent = 'Checking live Item Market prices\u2026';
+      await checkExportLadders(prelim, COUNTRY_SELL_MAX_ROWS * 2);
+      if (generation !== countryDetailGeneration) return;
+    }
+    const exports = splitCheckedExports(prelim, exportUnits).checked.slice(0, COUNTRY_SELL_MAX_ROWS);
+
     body.textContent = '';
     if (usingSnapshotFallback) {
       const note = document.createElement('div');
@@ -5993,11 +6108,7 @@
 
     // "Sell here": the best items to buy in Torn and sell to this country's
     // shop on arrival. Only shown when at least one clears Torn's price.
-    const exports = exportCandidates(merged.map(function (r) {
-      return { item_id: r.item_id, name: r.name, buy_price: r.buy_price, destination: destination };
-    }), sellMap, shopIntel).slice(0, COUNTRY_SELL_MAX_ROWS);
     if (exports.length > 0) {
-      const units = Math.min(slots, FOREIGN_SELL_CAP_PER_ITEM);
       const sellHead = document.createElement('div');
       sellHead.className = 'vgl-cd-section';
       sellHead.textContent = 'Sell here \u00B7 buy in Torn, sell to the shop';
@@ -6011,7 +6122,8 @@
         if (e.isBlackMarket) name.title = 'Black Market \u2014 buys back at its full current price';
         const torn = document.createElement('span');
         torn.className = 'vgl-br-dest';
-        torn.textContent = 'Torn ' + formatMoneyCompact(e.tornPrice);
+        torn.textContent = 'Torn avg ' + formatMoneyCompact(e.tornPrice);
+        torn.title = 'Average live Item Market cost of buying ' + e.units;
         const pays = document.createElement('span');
         pays.className = 'vgl-br-price';
         pays.textContent = 'pays ' + formatMoneyCompact(e.shopPays);
@@ -6020,7 +6132,7 @@
         each.textContent = '+' + formatMoneyCompact(e.profitPerItem) + ' ea';
         const total = document.createElement('span');
         total.className = 'vgl-br-refill';
-        total.textContent = '+' + formatMoneyCompact(e.profitPerItem * units) + ' for ' + units;
+        total.textContent = '+' + formatMoneyCompact(e.profitPerRun) + ' for ' + e.units;
         row.appendChild(name);
         row.appendChild(torn);
         row.appendChild(pays);
@@ -6340,7 +6452,7 @@
   // clears the bar — the home screen stays clean rather than showing an
   // empty "no runs" state the player can't act on.
   let bestRunGeneration = 0;
-  async function injectBestRunBar() {
+  async function injectBestRunBar(opts) {
     const myGeneration = ++bestRunGeneration;
     const existing = document.getElementById(BESTRUN_BAR_ID);
     if (existing) existing.remove();
@@ -6427,9 +6539,25 @@
         buy_price: scrape && Number.isFinite(scrape.buy_price) ? scrape.buy_price : y.buy_price,
       };
     });
+    // Only live-checked exports go on the board. Unchecked ones that look
+    // profitable on the cached floor get checked in the background (top 2
+    // per destination, 20 max), then the board redraws once.
+    const exportUnits = Math.min(slots, FOREIGN_SELL_CAP_PER_ITEM);
+    const split = splitCheckedExports(exportCandidates(shopRows, sellMap, shopIntel), exportUnits);
     const bestExport = new Map();
-    for (const e of exportCandidates(shopRows, sellMap, shopIntel)) {
+    for (const e of split.checked) {
       if (!bestExport.has(e.destination)) bestExport.set(e.destination, e);
+    }
+    if (split.pending.length && !(opts && opts.exportsChecked)) {
+      const perDest = new Map();
+      const toCheck = split.pending.filter(function (c) {
+        const n = perDest.get(c.destination) || 0;
+        perDest.set(c.destination, n + 1);
+        return n < 2;
+      });
+      checkExportLadders(toCheck, 20)
+        .then(function () { return injectBestRunBar({ exportsChecked: true }); })
+        .catch(function (e) { log('export check error', e); });
     }
 
     if (runs.length === 0 && bestExport.size === 0) {
@@ -6448,7 +6576,6 @@
     }
     // Fold the outbound sale into each destination's round trip (same
     // flight, so profit/hr just adds), and add export-only destinations.
-    const exportUnits = Math.min(slots, FOREIGN_SELL_CAP_PER_ITEM);
     const combined = [];
     const dests = new Set(Array.from(bestPerDest.keys()).concat(Array.from(bestExport.keys())));
     dests.forEach(function (dest) {
@@ -6456,7 +6583,7 @@
       const exp = bestExport.get(dest) || null;
       const roundTripMins = (FLIGHT_MINS[dest] || 0) * mult * 2;
       if (roundTripMins <= 0) return;
-      const exportProfit = exp ? exp.profitPerItem * exportUnits : 0;
+      const exportProfit = exp ? exp.profitPerRun : 0;
       const profitPerRun = (imp ? imp.profitPerRun : 0) + exportProfit;
       if (profitPerRun <= 0) return;
       const base = imp ? Object.assign({}, imp) : {
@@ -6469,7 +6596,7 @@
       };
       base.importProfitPerRun = imp ? imp.profitPerRun : 0;
       base.exportItem = exp;
-      base.exportUnits = exp ? exportUnits : 0;
+      base.exportUnits = exp ? exp.units : 0;
       base.exportProfitPerRun = exportProfit;
       base.profitPerRun = profitPerRun;
       base.profitPerHour = (profitPerRun / roundTripMins) * 60;

@@ -4,7 +4,7 @@ import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById, getRawItemType, getStoreSellPrice } from './item-resolver.js';
 import { pickSellVenue, getMuseumEntry } from './data/sell-venues.js';
-import { calculateMargins, planDestinationRun, planExportRun, foreignShopPays, canTakeAbroad, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
+import { calculateMargins, planDestinationRun, planExportRun, foreignShopPays, canTakeAbroad, fillCost, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock, getStockHistory } from './stock-forecast.js';
 import { stockSparklineSvg } from './sparkline.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
@@ -76,6 +76,15 @@ let knownItems = [];            // Array of { item_id, item_name, destination, b
 // what each shop currently sells. Fed from abroad_prices (PDA scrapes).
 let blackMarketKeys = new Set();
 let shopCatalogs = new Map();
+// item_id → { listings: [{price, qty}], at } — live Item Market ladders for
+// export candidates. Exports are only shown once their real fill cost is
+// known: the cached floor is often a single listing (and hours old), which
+// recommended Liquid Body Armor to Argentina at a loss.
+const exportListings = new Map();
+const EXPORT_LISTINGS_FRESH_MS = 10 * 60 * 1000;
+// Candidates that looked profitable on the cached floor but still need a
+// live check (item_id → preliminary profit per item). Drained by main.js.
+const pendingExportChecks = new Map();
 
 // False when a recent scrape of this destination shows the shop no longer
 // sells the item (delisted — YATA can lag Torn's listing changes).
@@ -350,6 +359,27 @@ export function getItemIdsForPriceFetch() {
     if (row.item_id) ids.add(row.item_id);
   }
   return [...ids];
+}
+
+/**
+ * Record a live Item Market ladder for an export candidate (null = no
+ * listings / fetch failed — remembered so it isn't re-queued immediately).
+ */
+export function setExportListings(itemId, listings) {
+  exportListings.set(itemId, { listings: Array.isArray(listings) ? listings : [], at: Date.now() });
+  pendingExportChecks.delete(itemId);
+}
+
+/**
+ * Item ids whose export still needs a live price check, most promising
+ * first (by preliminary profit on the cached floor).
+ */
+export function getPendingExportChecks(limit = 20) {
+  buildExportRows(); // refreshes pendingExportChecks for current filters/data
+  return [...pendingExportChecks.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([id]) => id);
 }
 
 /**
@@ -1076,14 +1106,29 @@ function buildExportRows() {
     const category = getItemTypeById(item.item_id, item.item_name);
     if (filterCategory !== 'all' && category !== filterCategory) continue;
 
-    const tornPrice = sellPrices.get(item.item_id);
+    const cachedFloor = sellPrices.get(item.item_id);
     const { price: shopPrice } = getBuyPriceInfo(item);
-    if (!(tornPrice > 0) || !(shopPrice > 0)) continue;
+    if (!(shopPrice > 0)) continue;
     const isBlackMarket = blackMarketKeys.has(`${item.item_id}|${item.destination}`);
     const shopPays = foreignShopPays(shopPrice, isBlackMarket);
+
+    // Only live-checked fill costs count. A candidate that clears on the
+    // cached floor is queued for a check instead of being shown.
+    const live = exportListings.get(item.item_id);
+    if (!live || Date.now() - live.at > EXPORT_LISTINGS_FRESH_MS) {
+      if (cachedFloor > 0 && shopPays > cachedFloor) {
+        pendingExportChecks.set(item.item_id, Math.max(
+          pendingExportChecks.get(item.item_id) || 0, shopPays - cachedFloor));
+      }
+      continue;
+    }
+    const fill = fillCost(live.listings, Math.min(slotCount, 100));
+    if (!fill) continue;
+    const tornPrice = fill.avgCost;
     const profitPerItem = shopPays - tornPrice;
     if (profitPerItem <= 0) continue;
     rows.push({
+      units: fill.filled,
       name: item.item_name,
       itemId: item.item_id,
       destination: item.destination,
@@ -1108,7 +1153,6 @@ function renderExportCard(exportRows) {
     container.innerHTML = '';
     return;
   }
-  const units = Math.min(slotCount, 100);
   const top = exportRows.slice(0, EXPORT_CARD_MAX_ROWS);
   // Preserve the open/closed state across the frequent re-renders.
   const prev = container.querySelector('details');
@@ -1129,15 +1173,15 @@ function renderExportCard(exportRows) {
             </div>
             <div class="export-pays">
               <span>${formatMoney(r.shopPays)}</span>
-              <span class="export-sub">Torn ${formatMoney(r.tornPrice)}</span>
+              <span class="export-sub" title="Average Item Market cost of buying ${r.units}, checked live">Torn avg ${formatMoney(r.tornPrice)}</span>
             </div>
             <div class="export-profit">
               <span>+${formatMoney(r.profitPerItem)}</span>
-              <span class="export-sub">${formatMoney(r.profitPerItem * units)} for ${units}</span>
+              <span class="export-sub">${formatMoney(r.profitPerItem * r.units)} for ${r.units}${r.units < Math.min(slotCount, 100) ? ' (all listed)' : ''}</span>
             </div>
           </div>`).join('')}
       </div>
-      <div class="export-note">A Black Market pays its current price; other shops pay 75%. Weapons and armor: max 100 sales per item per trip. Torn price is the Item Market floor, so a full load may cost slightly more.</div>
+      <div class="export-note">A Black Market pays its current price; other shops pay 75%. Weapons and armor: max 100 sales per item per trip. Torn price is the live average cost of buying a full load on the Item Market, rechecked every 10 minutes.</div>
     </details>
   `;
 }
@@ -1154,7 +1198,7 @@ function bestExportsByDestination(exportRows) {
   const out = new Map();
   for (const [dest, list] of byDest) {
     const plan = planExportRun({
-      candidates: list.map(r => ({ row: r, shopPays: r.shopPays, tornPrice: r.tornPrice })),
+      candidates: list.map(r => ({ row: r, shopPays: r.shopPays, tornPrice: r.tornPrice, maxUnits: r.units })),
       slotCount,
     });
     if (plan) out.set(dest, plan);
