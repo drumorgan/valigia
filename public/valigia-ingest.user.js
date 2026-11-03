@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.6
+// @version      0.56.7
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.6';
+  const SCRIPT_VERSION = '0.56.7';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5976,6 +5976,7 @@
       '#' + BESTRUN_BAR_ID + ' .vgl-br-refill--none { color: #5a6070; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-run { color: #c8cdd8; white-space: nowrap; text-align: right; }',
       '#' + BESTRUN_BAR_ID + ' .vgl-br-hr { color: #e8c84a; font-weight: 700; white-space: nowrap; text-align: right; }',
+      '#' + BESTRUN_BAR_ID + ' .vgl-br-sub { color: #4ae8a0; font-size: 11px; padding: 0 8px 4px 18px; margin-top: -2px; }',
     ].join('\n');
     const style = document.createElement('style');
     style.id = 'valigia-bestrun-styles';
@@ -6437,6 +6438,19 @@
       row.appendChild(run);
       row.appendChild(hr);
       body.appendChild(row);
+
+      // Both sides of the outbound sale, visible (iPad has no hover, so the
+      // tooltip alone hid the numbers): Item Market cost in Torn vs what the
+      // foreign shop pays.
+      if (r.exportItem) {
+        const sub = document.createElement('div');
+        sub.className = 'vgl-br-sub';
+        sub.textContent = '\u21B3 ' + r.exportItem.name + ': Torn avg ' +
+          formatMoneyCompact(r.exportItem.tornPrice) + ' \u2192 ' + r.destination +
+          ' pays ' + formatMoneyCompact(r.exportItem.shopPays) +
+          ' \u00B7 +' + formatMoneyCompact(r.exportProfitPerRun) + ' for ' + r.exportUnits;
+        body.appendChild(sub);
+      }
     }
     bar.appendChild(body);
 
