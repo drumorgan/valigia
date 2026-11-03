@@ -291,8 +291,18 @@ Presents, Suitcases — some ARE shop-stocked (Hawaii sells Small Suitcases),
 so `canTakeAbroad()` (calculator.js; userscript mirror) excludes them by
 name (+ catalog type 'Car'). `foreignShopPays()` /
 `planExportRun()` in calculator.js; the userscript mirrors them
-(`foreignShopPays` / `exportCandidates`) — keep the rate in step. Torn
-cost = `sell_prices.price` (Item Market floor, no buyer fee). Black Market
+(`foreignShopPays` / `exportCandidates`) — keep the rate in step. **Torn
+cost is checked live:** the cached `sell_prices.price` floor is often a
+single listing for armor/weapons and can be hours old (it recommended
+Liquid Body Armor to Argentina: bought at $5.95M–$6.0M, shop pays
+$5.625M). The cached floor only nominates candidates; an export is shown
+only after its live Item Market ladder is fetched and `fillCost()`
+prices the load at the average of the cheapest listings covering it
+(units capped at what's listed). Web: `getPendingExportChecks()` →
+`fetchMarketListings()` (≤20 per load) → `setExportListings()`, 10 min
+freshness. Userscript: `splitCheckedExports()` / `checkExportLadders()`,
+ladders cached 10 min in localStorage; the board redraws once checks land,
+"Before you fly" waits for them. Black Market
 membership comes from `abroad_prices.shop_category` (any age — an item's
 shop never changes); unscraped shelves assume 75%. **Delisted shelves:**
 Phase 3 moved drug listings between countries and YATA / the snapshot

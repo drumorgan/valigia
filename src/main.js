@@ -4,7 +4,7 @@ import { callTornApi } from './torn-api.js';
 import { supabase } from './supabase.js';
 import { tryAutoLogin, renderLoginScreen, logout, getSession } from './auth.js';
 import { fetchAbroadPrices, fetchShopIntel } from './log-sync.js';
-import { fetchAllSellPrices, refreshSellPrices, fetchPointsRate } from './market.js';
+import { fetchAllSellPrices, refreshSellPrices, fetchPointsRate, fetchMarketListings } from './market.js';
 import { resolveItemIds } from './item-resolver.js';
 import { renderScanButton, renderCommunityStats } from './bazaar-ui.js';
 import { prescanBazaarPool } from './bazaar-scanner.js';
@@ -22,7 +22,7 @@ import {
   showToast, renderControls, renderShimmerTable, renderTable,
   setKnownItems, getItemIdsForPriceFetch, onSellPrice, setPlayerTravel,
   setDetectedCapacity, getStaleItemIdsForCategory, getTopTravelCandidateIds,
-  setPointsRate, setShopIntel,
+  setPointsRate, setShopIntel, setExportListings, getPendingExportChecks,
 } from './ui.js';
 import { getTravelCapacity } from './pda-prefs.js';
 
@@ -394,7 +394,7 @@ async function startDashboard(playerId, playerName) {
   // Shop intel from PDA scrapes: Black Market shelves (full-price sell-back,
   // others 75%) and each country's current catalog (drops delisted shelves).
   // Background; until it lands every shelf uses 75% and YATA's listings.
-  fetchShopIntel().then(setShopIntel).catch(() => {});
+  const shopIntelPromise = fetchShopIntel().then(setShopIntel).catch(() => {});
 
   if (!priceResult || priceResult.items.length === 0) {
     showToast('Could not fetch abroad prices from YATA. Try refreshing.', 'warning');
@@ -515,6 +515,12 @@ async function startDashboard(playerId, playerName) {
   // re-renders the table (and the card) as each fresh price lands.
   // Three candidates covers the top pick plus a couple fallbacks in
   // case the winner's fresh price unseats it.
+  // Live-check export candidates before any is shown: buy cost = average
+  // of the cheapest Item Market listings covering a full load (the cached
+  // floor is often one listing). Waits for shop intel so Black Market
+  // pricing decides which candidates are worth a check.
+  shopIntelPromise.then(() => checkExportCandidates(playerId)).catch(() => {});
+
   const topTravelIds = getTopTravelCandidateIds(3);
   if (topTravelIds.length > 0) {
     refreshSellPrices(playerId, topTravelIds, onSellPrice).catch(() => {});
@@ -632,6 +638,25 @@ async function handleCategoryRefresh(category, playerId) {
  * unreachable and we're showing cached prices. The banner is inserted
  * before the table so it scrolls with the content.
  */
+// Fetch live Item Market ladders for the most promising export candidates
+// (capped, 5 at a time) and re-render as each lands. Failures record an
+// empty ladder so the candidate simply stays hidden.
+const EXPORT_CHECK_LIMIT = 20;
+async function checkExportCandidates(playerId) {
+  const ids = getPendingExportChecks(EXPORT_CHECK_LIMIT);
+  let next = 0;
+  async function worker() {
+    while (next < ids.length) {
+      const id = ids[next++];
+      let listings = null;
+      try { listings = await fetchMarketListings(playerId, id); } catch { listings = null; }
+      setExportListings(id, listings);
+      renderTable();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(5, ids.length) }, worker));
+}
+
 function renderYataOfflineBanner(tableContainer, cachedAt) {
   const ageMins = Math.max(1, Math.floor((Date.now() - cachedAt) / 60000));
   const ageLabel = ageMins < 60

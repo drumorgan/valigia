@@ -68,6 +68,28 @@ async function fetchOneSellPrice(playerId, itemId) {
 }
 
 /**
+ * Live Item Market listings for an item as [{ price, qty }] (cheapest
+ * first), for the export fill-cost check. [] when nothing is listed, null
+ * on a failed fetch.
+ */
+export async function fetchMarketListings(playerId, itemId) {
+  const data = await callTornApi({
+    section: 'market',
+    id: itemId,
+    selections: 'itemmarket',
+    player_id: playerId,
+    v2: true,
+  });
+  if (!data || (data.selections && !data.itemmarket)) return null;
+  const listings = data.itemmarket?.listings || data.itemmarket;
+  if (!Array.isArray(listings)) return null;
+  return listings
+    .map(l => ({ price: Number(l.cost ?? l.price), qty: Number(l.amount ?? l.quantity ?? 1) || 1 }))
+    .filter(l => l.price > 0)
+    .sort((a, b) => a.price - b.price);
+}
+
+/**
  * Fetch sell prices — Supabase first, Torn API only for a handful of stale items.
  * Cache fills organically over multiple visits / users.
  *

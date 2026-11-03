@@ -168,12 +168,44 @@ export function foreignShopPays(shopPrice, isBlackMarket) {
 }
 
 /**
+ * Real cost of buying `units` on the Item Market: walk the listings
+ * cheapest-first, summing quantity until the load is covered. The cached
+ * "Torn price" is just the floor (often ONE listing for armor/weapons),
+ * which sent a player to Argentina with Liquid Body Armor that cost
+ * $5.95M–$6.0M to buy but sells back for $5.625M.
+ * @param {Array<{price:number, qty:number}>} listings - any order
+ * @param {number} units - load size wanted
+ * @returns {{filled:number, totalCost:number, avgCost:number, maxPrice:number}|null}
+ *   null when there's nothing to buy
+ */
+export function fillCost(listings, units) {
+  if (!Array.isArray(listings) || !(units > 0)) return null;
+  const sorted = listings
+    .filter(l => l && l.price > 0)
+    .map(l => ({ price: l.price, qty: l.qty > 0 ? l.qty : 1 }))
+    .sort((a, b) => a.price - b.price);
+  let filled = 0;
+  let totalCost = 0;
+  let maxPrice = 0;
+  for (const l of sorted) {
+    if (filled >= units) break;
+    const take = Math.min(l.qty, units - filled);
+    filled += take;
+    totalCost += take * l.price;
+    maxPrice = l.price;
+  }
+  if (filled === 0) return null;
+  return { filled, totalCost, avgCost: totalCost / filled, maxPrice };
+}
+
+/**
  * Best outbound "export" at one destination: buy in Torn (Item Market,
  * no buyer fee), carry out, sell to the foreign shop. Selling never runs
  * out of stock (each sale adds to the shelf) and the per-item cap (100)
- * exceeds max capacity (86), so the best single item fills every slot.
+ * exceeds max capacity (86), so the best single item fills every slot —
+ * unless the Item Market has fewer units listed (`maxUnits`).
  * @param {object} params
- * @param {Array<{shopPays:number, tornPrice:number}>} params.candidates - extra fields pass through
+ * @param {Array<{shopPays:number, tornPrice:number, maxUnits?:number}>} params.candidates - extra fields pass through
  * @param {number} params.slotCount
  * @returns {{units:number, profitPerItem:number, profitPerRun:number, runCost:number}|null}
  *   null when nothing at this destination sells abroad for more than it costs in Torn
@@ -185,16 +217,14 @@ export function planExportRun({ candidates, slotCount }) {
     if (!c || !(c.tornPrice > 0) || !(c.shopPays > 0)) continue;
     const profitPerItem = c.shopPays - c.tornPrice;
     if (profitPerItem <= 0) continue;
-    if (!best || profitPerItem > best.profitPerItem) best = { ...c, profitPerItem };
+    const units = Math.min(slotCount, FOREIGN_SELL_CAP_PER_ITEM,
+      c.maxUnits > 0 ? c.maxUnits : Infinity);
+    const profitPerRun = profitPerItem * units;
+    if (!best || profitPerRun > best.profitPerRun) {
+      best = { ...c, profitPerItem, units, profitPerRun, runCost: c.tornPrice * units };
+    }
   }
-  if (!best) return null;
-  const units = Math.min(slotCount, FOREIGN_SELL_CAP_PER_ITEM);
-  return {
-    ...best,
-    units,
-    profitPerRun: best.profitPerItem * units,
-    runCost: best.tornPrice * units,
-  };
+  return best;
 }
 
 /**
