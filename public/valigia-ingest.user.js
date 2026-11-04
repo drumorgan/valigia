@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.57.3
+// @version      0.57.4
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.57.3';
+  const SCRIPT_VERSION = '0.57.4';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5737,15 +5737,13 @@
         const arrival = document.createElement('span');
         arrival.className = 'vgl-if-arrival';
         if (r.leaveIn != null) {
-          // Shelf is empty and the refill lands after a flight leaving
-          // now would — the advice is to WAIT so arrival coincides with
-          // the restock.
-          arrival.textContent = 'leave in ~' + formatMinsShort(r.leaveIn) +
-            ' \u2192 ' + r.predictedStock.toLocaleString('en-US');
+          // Shelf is empty and refills shortly after this flight lands —
+          // wait abroad that long to buy the refill.
+          arrival.textContent = 'refill ~' + formatMinsShort(r.leaveIn) +
+            ' after landing \u2192 ' + r.predictedStock.toLocaleString('en-US');
           arrival.classList.add('vgl-if-arrival--leavein');
-          arrival.title = 'Empty now; next restock lands after a flight leaving now. ' +
-            'Depart in ~' + formatMinsShort(r.leaveIn) + ' to land right at the refill (~' +
-            r.predictedStock.toLocaleString('en-US') + ' units).';
+          arrival.title = 'Empty now; the next restock lands ~' + formatMinsShort(r.leaveIn) +
+            ' after you arrive (~' + r.predictedStock.toLocaleString('en-US') + ' units).';
         } else if (r.predictedStock != null) {
           if (r.predictedStock <= 0) {
             arrival.textContent = 'may sell out';
@@ -5787,6 +5785,10 @@
   // stacks duplicates. Silent on any data failure — the player still has
   // the cloud image, they just don't get a preview.
   let inFlightGeneration = 0;
+  // An empty shelf that refills within this long after landing is worth
+  // waiting abroad for; anything later is dropped from the in-flight strip.
+  const INFLIGHT_MAX_WAIT_AFTER_LANDING_MINS = 60;
+
   async function injectInFlightStrip(destination, remainingMins) {
     const myGeneration = ++inFlightGeneration;
     const existing = document.getElementById(INFLIGHT_BAR_ID);
@@ -5943,13 +5945,15 @@
         } else if (
           stockNow === 0 && plan &&
           plan.timeToNextMins > remainingMins &&
+          plan.timeToNextMins - remainingMins <= INFLIGHT_MAX_WAIT_AFTER_LANDING_MINS &&
           Number.isFinite(plan.typicalPostQty) && plan.typicalPostQty > 0
         ) {
-          // Branch D — currently empty and the refill lands AFTER this
-          // flight would. These rows used to be dropped ("nothing to
-          // buy"), but the actionable answer is to WAIT: departing in
-          // (timeToNext − flight) minutes lands exactly at the refill.
-          // Keep the row with the post-refill qty and a leave-in flag.
+          // Branch D — currently empty and the refill lands shortly AFTER
+          // this flight does. The player is already in the air, so the
+          // advice is "wait abroad ~X after landing", not "leave in X"
+          // (picker copy that leaked in here). Refills further out than
+          // INFLIGHT_MAX_WAIT_AFTER_LANDING_MINS aren't worth waiting
+          // for and the row is dropped.
           leaveInMins = Math.round(plan.timeToNextMins - remainingMins);
           predicted = Math.round(plan.typicalPostQty);
           postRefill = true;

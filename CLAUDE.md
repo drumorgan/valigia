@@ -556,9 +556,10 @@ On the travel HOME screen (destination picker), two surfaces carry
 **"leave in ~Xm"** departure timing (since 0.53.0): the per-country
 detail bar (tap a country → each out-of-stock item's refill ETA now
 appends `· leave in ~Xm`, or `· leave now` when the refill lands during
-the flight), and the picker strip (empty shelves whose refill lands
-after this flight — previously dropped as "nothing to buy" — now render
-gold `leave in ~Xm → qty` rows). Flight time uses `FLIGHT_MINS ×
+the flight). The IN-FLIGHT "Arriving Soon" strip must never say "leave
+in" (the player is already airborne): an empty shelf that refills within
+`INFLIGHT_MAX_WAIT_AFTER_LANDING_MINS` (60) of landing shows `refill ~Xm
+after landing → qty`; later refills are dropped (0.57.4). Flight time uses `FLIGHT_MINS ×
 getFlightMultiplier()`. The userscript's restock estimators are a
 v3-lite port of forecast-math.js: tick attribution via
 `pre_observed_at` censoring windows, 24 h gap cap + adaptive
