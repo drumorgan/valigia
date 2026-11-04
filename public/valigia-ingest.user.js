@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.57.1
+// @version      0.57.2
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.57.1';
+  const SCRIPT_VERSION = '0.57.2';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -668,6 +668,43 @@
   // Wolverine Plushie "best run"). 100 ids per request, in parallel; a
   // failed batch only loses its own ids.
   const SELL_PRICE_BATCH = 100;
+  // Last sell_prices failure ("HTTP 401 …", "bad JSON …", exception text),
+  // shown on the board's footer — the board kept reporting 0 market prices.
+  let lastSellPriceError = null;
+
+  function noteSellPriceError(msg) {
+    lastSellPriceError = String(msg).replace(/\s+/g, ' ').slice(0, 120);
+  }
+
+  function addSellPriceRows(map, text) {
+    let rows;
+    try { rows = JSON.parse(text || '[]'); }
+    catch (e) { noteSellPriceError('bad JSON "' + String(text).slice(0, 60) + '"'); return; }
+    if (!Array.isArray(rows)) {
+      noteSellPriceError('not a list: ' + String(text).slice(0, 80));
+      return;
+    }
+    for (const r of rows) {
+      const id = Number(r && r.item_id);
+      const price = Number(r && r.price);
+      if (Number.isFinite(id) && Number.isFinite(price) && price > 0) {
+        map.set(id, { price: price, updatedAt: r.updated_at || null });
+      }
+    }
+  }
+
+  async function getSellPricesUrl(url) {
+    return gmRequest({
+      method: 'GET',
+      url: url,
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+        'Accept': 'application/json',
+      },
+    });
+  }
+
   async function fetchSellPrices(itemIds) {
     const map = new Map();
     if (!Array.isArray(itemIds) || itemIds.length === 0) return map;
@@ -681,26 +718,39 @@
         '?select=item_id,price,updated_at' +
         '&item_id=in.(' + batch.join(',') + ')';
       try {
-        const res = await gmRequest({
-          method: 'GET',
-          url: url,
-          headers: {
-            'apikey': SUPABASE_ANON_KEY,
-            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
-            'Accept': 'application/json',
-          },
-        });
-        if (res.status < 200 || res.status >= 300) return;
-        const rows = JSON.parse(res.responseText || '[]');
-        for (const r of rows) {
-          const id = Number(r && r.item_id);
-          const price = Number(r && r.price);
-          if (Number.isFinite(id) && Number.isFinite(price) && price > 0) {
-            map.set(id, { price: price, updatedAt: r.updated_at || null });
-          }
+        const res = await getSellPricesUrl(url);
+        if (res.status < 200 || res.status >= 300) {
+          noteSellPriceError('HTTP ' + res.status + ' ' + String(res.responseText || '').slice(0, 80));
+          return;
         }
-      } catch (e) { /* this batch's ids just stay unpriced */ }
+        addSellPriceRows(map, res.responseText);
+      } catch (e) {
+        noteSellPriceError('request failed: ' + ((e && (e.message || e.error)) || e));
+      }
     }));
+    // Nothing came back for a non-trivial request: try the whole table in
+    // one plain request (no in() list) and keep the ids that were asked for.
+    if (map.size === 0 && ids.length > 0) {
+      const wanted = new Set(ids.map(Number));
+      const all = new Map();
+      for (let offset = 0; offset < 3000; offset += 1000) {
+        try {
+          const res = await getSellPricesUrl(SELL_PRICES_URL +
+            '?select=item_id,price,updated_at&order=item_id&limit=1000&offset=' + offset);
+          if (res.status < 200 || res.status >= 300) {
+            noteSellPriceError('fallback HTTP ' + res.status + ' ' + String(res.responseText || '').slice(0, 80));
+            break;
+          }
+          const before = all.size;
+          addSellPriceRows(all, res.responseText);
+          if (all.size - before < 1000) break;
+        } catch (e) {
+          noteSellPriceError('fallback failed: ' + ((e && (e.message || e.error)) || e));
+          break;
+        }
+      }
+      all.forEach(function (v, id) { if (wanted.has(id)) map.set(id, v); });
+    }
     return map;
   }
 
@@ -6539,7 +6589,8 @@
       foot.style.color = '#5a6070';
       foot.textContent = 'shop rows ' + stats.yataRows + ' \u00B7 market prices ' +
         stats.sellPrices + ' \u00B7 buy runs ' + stats.runs + ' \u00B7 checked exports ' +
-        stats.exportsChecked + ' \u00B7 v' + SCRIPT_VERSION;
+        stats.exportsChecked + ' \u00B7 v' + SCRIPT_VERSION +
+        (stats.sellPrices === 0 && lastSellPriceError ? ' \u00B7 price error: ' + lastSellPriceError : '');
       body.appendChild(foot);
     }
     bar.appendChild(body);
