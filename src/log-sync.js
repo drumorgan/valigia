@@ -301,8 +301,11 @@ export async function fetchAbroadPrices() {
 // A destination's current catalog = items seen within this window of its
 // newest PDA scrape (one scrape stamps every row with the same observed_at),
 // trusted only while that scrape is recent. Mirrors the userscript.
-const SHOP_CATALOG_WINDOW_MS = 6 * 60 * 60 * 1000;
+// 72 h union, not "6 h of the newest scrape": one partial scrape became the
+// whole catalog (Caymans → just Bearer Bond). Tiny catalogs are ignored.
+const SHOP_CATALOG_WINDOW_MS = 72 * 60 * 60 * 1000;
 const SHOP_CATALOG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const SHOP_CATALOG_MIN_ITEMS = 5;
 
 /**
  * Shop intel from first-party PDA scrapes (abroad_prices):
@@ -339,6 +342,9 @@ export async function fetchShopIntel() {
       if (now - top > SHOP_CATALOG_MAX_AGE_MS || top - r.t > SHOP_CATALOG_WINDOW_MS) continue;
       if (!empty.catalogs.has(r.dest)) empty.catalogs.set(r.dest, new Set());
       empty.catalogs.get(r.dest).add(r.itemId);
+    }
+    for (const [dest, set] of empty.catalogs) {
+      if (set.size < SHOP_CATALOG_MIN_ITEMS) empty.catalogs.delete(dest);
     }
     return empty;
   } catch {
