@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.7
+// @version      0.56.8
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.7';
+  const SCRIPT_VERSION = '0.56.8';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4773,11 +4773,16 @@
   // Concurrent callers share one in-flight promise.
   const YATA_CACHE_KEY = 'valigia_yata_rows_v1';
   const YATA_FRESH_MS = 2 * 60 * 1000;
-  const YATA_STALE_OK_MS = 3 * 60 * 60 * 1000;
+  const YATA_STALE_OK_MS = 12 * 60 * 60 * 1000;
   const YATA_FETCH_TIMEOUT_MS = 6000;
   const YATA_DOWN_KEY = 'valigia_yata_down_until_v1';
   const YATA_DOWN_BACKOFF_MS = 5 * 60 * 1000;
-  const YATA_MIRROR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+  // Snapshot age = when YATA last saw the shelf CHANGE, not whether it's
+  // still right — quiet shelves go many hours unchanged. A 6 h cutoff threw
+  // away most of the world overnight and left the board with one weak row.
+  // 72 h still drops shelves delisted by Phase 3 (21/10/26); the scraped
+  // shop catalogs (fetchShopIntel) handle recent delistings.
+  const YATA_MIRROR_MAX_AGE_MS = 72 * 60 * 60 * 1000;
   let yataMemo = null;       // { at, rows }
   let yataInFlight = null;   // Promise<rows>
   let mirrorMemo = null;     // { at, rows } — in-memory only, never "good YATA"
@@ -6379,6 +6384,14 @@
 
     const body = document.createElement('div');
     body.className = 'vgl-br-body';
+    // Say so when shop prices aren't live YATA, so a thin board explains itself.
+    if (!/^yata/.test(lastYataSource)) {
+      const note = document.createElement('div');
+      note.className = 'vgl-br-sub';
+      note.style.color = '#8a8fa0';
+      note.textContent = 'Shop prices: Valigia backup (YATA unreachable)';
+      body.appendChild(note);
+    }
     for (const r of runs) {
       const row = document.createElement('div');
       row.className = 'vgl-br-row';

@@ -21,7 +21,10 @@ import { getItemNameById } from './item-resolver.js';
 
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 const CACHE_KEY = 'valigia_yata_cache_v1';
-const SNAPSHOT_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+// Snapshot age = last observed CHANGE, not staleness: quiet shelves go many
+// hours unchanged, so 6 h dropped most destinations. 72 h still excludes
+// shelves Phase 3 delisted; scraped shop catalogs catch recent delistings.
+const SNAPSHOT_FALLBACK_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 
 // Hard ceiling on the YATA live fetch. Without it, a YATA outage where the
 // host accepts the connection but never responds (a hung socket, not a clean

@@ -311,7 +311,8 @@ no shop there buys). Each destination's current catalog = items seen
 within 6 h of its newest PDA scrape (trusted while that scrape is ≤14
 days old); anything not on it is dropped from exports AND imports
 (`fetchShopIntel()` in log-sync.js / the userscript). The snapshot-mirror
-fallbacks also ignore readings older than 6 h. Surfaces: the web
+fallbacks ignore readings older than 72 h (NOT 6 h — snapshot age is the
+last observed change, and a 6 h cutoff emptied the board overnight). Surfaces: the web
 **Sell Abroad** card + Best Run card's "Outbound" leg (round trip = export
 + import over the same flight; export-only destinations can win), and in
 the PDA picker the Best Run board ("Xanax + sell Flail") and the
