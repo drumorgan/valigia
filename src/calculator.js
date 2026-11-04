@@ -136,6 +136,9 @@ export function planDestinationRun({ candidates, slotCount, flightMins, flightMu
 // step with the userscript.
 export const FOREIGN_SELLBACK_RATE = 0.75;
 export const FOREIGN_SELL_CAP_PER_ITEM = 100;
+// Outbound sales below this profit per run aren't worth the slots or the
+// clutter ("+$2,264 for 28" Knuckle Dusters). Keep in step with the userscript.
+export const MIN_EXPORT_PROFIT_PER_RUN = 50_000;
 
 // Items Torn won't let you take abroad (Traveling 2.0 Phase 3): Cars,
 // Halloween Baskets, Parcels, Presents and Suitcases. Some ARE stocked by

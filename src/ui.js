@@ -4,7 +4,7 @@ import { getFlightMins, getDestinationBadge } from './data/destinations.js';
 import { DESTINATIONS } from './data/destinations.js';
 import { getItemTypeById, getRawItemType, getStoreSellPrice } from './item-resolver.js';
 import { pickSellVenue, getMuseumEntry } from './data/sell-venues.js';
-import { calculateMargins, planDestinationRun, planExportRun, foreignShopPays, canTakeAbroad, fillCost, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
+import { calculateMargins, planDestinationRun, planExportRun, foreignShopPays, canTakeAbroad, fillCost, MIN_EXPORT_PROFIT_PER_RUN, formatFlightTime, formatMoney, formatMarginPctCompact } from './calculator.js';
 import { forecastStock, getStockHistory } from './stock-forecast.js';
 import { stockSparklineSvg } from './sparkline.js';
 import { getSellTimeMins, getLiquidityBadge } from './data/liquidity.js';
@@ -1116,7 +1116,8 @@ function buildExportRows() {
     // cached floor is queued for a check instead of being shown.
     const live = exportListings.get(item.item_id);
     if (!live || Date.now() - live.at > EXPORT_LISTINGS_FRESH_MS) {
-      if (cachedFloor > 0 && shopPays > cachedFloor) {
+      if (cachedFloor > 0 &&
+          (shopPays - cachedFloor) * Math.min(slotCount, 100) >= MIN_EXPORT_PROFIT_PER_RUN) {
         pendingExportChecks.set(item.item_id, Math.max(
           pendingExportChecks.get(item.item_id) || 0, shopPays - cachedFloor));
       }
@@ -1126,7 +1127,7 @@ function buildExportRows() {
     if (!fill) continue;
     const tornPrice = fill.avgCost;
     const profitPerItem = shopPays - tornPrice;
-    if (profitPerItem <= 0) continue;
+    if (profitPerItem <= 0 || profitPerItem * fill.filled < MIN_EXPORT_PROFIT_PER_RUN) continue;
     rows.push({
       units: fill.filled,
       name: item.item_name,
