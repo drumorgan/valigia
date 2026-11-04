@@ -308,8 +308,9 @@ shop never changes); unscraped shelves assume 75%. **Delisted shelves:**
 Phase 3 moved drug listings between countries and YATA / the snapshot
 mirror can keep delisted shelves (a player was sent to Canada with Vicodin
 no shop there buys). Each destination's current catalog = items seen
-within 6 h of its newest PDA scrape (trusted while that scrape is ≤14
-days old); anything not on it is dropped from exports AND imports
+within 72 h of its newest PDA scrape (trusted while that scrape is ≤14
+days old; catalogs under 5 items ignored — a 6 h window let one partial
+scrape shrink Caymans to just Bearer Bond); anything not on it is dropped from exports AND imports
 (`fetchShopIntel()` in log-sync.js / the userscript). The snapshot-mirror
 fallbacks ignore readings older than 72 h (NOT 6 h — snapshot age is the
 last observed change, and a 6 h cutoff emptied the board overnight). Surfaces: the web

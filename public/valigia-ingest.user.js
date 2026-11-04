@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.9
+// @version      0.57.0
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.9';
+  const SCRIPT_VERSION = '0.57.0';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -5105,8 +5105,14 @@
   //              countries and YATA / our mirror can keep delisted shelves —
   //              that sent a player to Canada with Vicodin no shop there
   //              buys. Only trusted when the newest scrape is recent.
-  const SHOP_CATALOG_WINDOW_MS = 6 * 60 * 60 * 1000;
+  // 72 h, not "6 h of the newest scrape": one partial scrape (a single row
+  // parsed) became the whole catalog and hid every other shelf — Caymans
+  // showed only Bearer Bond, Mexico only Card Skimmer. A union over 3 days
+  // can't be shrunk by one bad scrape and still drops Phase 3 delistings
+  // (21/10/26). Catalogs under SHOP_CATALOG_MIN_ITEMS are ignored outright.
+  const SHOP_CATALOG_WINDOW_MS = 72 * 60 * 60 * 1000;
   const SHOP_CATALOG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+  const SHOP_CATALOG_MIN_ITEMS = 5;
   let shopIntelMemo = null;
 
   async function fetchShopIntel() {
@@ -5161,6 +5167,9 @@
       if (!catalogs.has(r[0])) catalogs.set(r[0], new Set());
       catalogs.get(r[0]).add(r[1]);
     }
+    catalogs.forEach(function (set, dest) {
+      if (set.size < SHOP_CATALOG_MIN_ITEMS) catalogs.delete(dest);
+    });
     return { bmKeys: bmKeys, catalogs: catalogs };
   }
 
@@ -6527,8 +6536,11 @@
   let bestRunGeneration = 0;
   async function injectBestRunBar(opts) {
     const myGeneration = ++bestRunGeneration;
+    // The post-export-check redraw keeps the current board until it has a
+    // replacement (the final sweep before insert swaps it); tearing it down
+    // first made the board vanish whenever the redraw bailed early.
     const existing = document.getElementById(BESTRUN_BAR_ID);
-    if (existing) existing.remove();
+    if (existing && !(opts && opts.exportsChecked)) existing.remove();
     if (indicatorsHidden) return;
 
     const [yataRows, scrapeMap, , shopIntel] = await Promise.all([
