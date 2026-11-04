@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.56.8
+// @version      0.56.9
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.56.8';
+  const SCRIPT_VERSION = '0.56.9';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -4774,7 +4774,11 @@
   const YATA_CACHE_KEY = 'valigia_yata_rows_v1';
   const YATA_FRESH_MS = 2 * 60 * 1000;
   const YATA_STALE_OK_MS = 12 * 60 * 60 * 1000;
-  const YATA_FETCH_TIMEOUT_MS = 6000;
+  const YATA_FETCH_TIMEOUT_MS = 10000;
+  // Why the last live YATA fetch failed ("HTTP 403 …", "timeout after 10.0s",
+  // "bad JSON …"), shown on the board's backup note so an iPad screenshot
+  // tells us what PDA is getting back. Persisted so it survives reloads.
+  const YATA_ERROR_KEY = 'valigia_yata_last_error_v1';
   const YATA_DOWN_KEY = 'valigia_yata_down_until_v1';
   const YATA_DOWN_BACKOFF_MS = 5 * 60 * 1000;
   // Snapshot age = when YATA last saw the shelf CHANGE, not whether it's
@@ -4810,15 +4814,52 @@
     catch (_) { return false; }
   }
 
+  function yataSnippet(text) {
+    return String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
+
+  function recordYataError(msg, startedAt) {
+    const entry = {
+      msg: msg + ' (' + ((Date.now() - startedAt) / 1000).toFixed(1) + 's)',
+      at: Date.now(),
+    };
+    try { localStorage.setItem(YATA_ERROR_KEY, JSON.stringify(entry)); } catch (_) {}
+  }
+
+  function lastYataError() {
+    try {
+      const e = JSON.parse(localStorage.getItem(YATA_ERROR_KEY) || 'null');
+      if (!e || !e.msg) return null;
+      return e.msg + ', ' + Math.max(0, Math.round((Date.now() - e.at) / 60000)) + 'm ago';
+    } catch (_) { return null; }
+  }
+
   async function fetchYataLive() {
-    const res = await gmRequest({
-      method: 'GET',
-      url: YATA_EXPORT_URL,
-      headers: { 'Accept': 'application/json' },
-      timeout: YATA_FETCH_TIMEOUT_MS,
-    });
-    if (res.status < 200 || res.status >= 300) throw new Error('YATA HTTP ' + res.status);
-    const data = JSON.parse(res.responseText || '{}');
+    const startedAt = Date.now();
+    let res;
+    try {
+      res = await gmRequest({
+        method: 'GET',
+        url: YATA_EXPORT_URL,
+        headers: { 'Accept': 'application/json' },
+        timeout: YATA_FETCH_TIMEOUT_MS,
+      });
+    } catch (e) {
+      const m = String((e && (e.message || e.error || e.statusText)) || e || 'network error');
+      recordYataError(/timeout/i.test(m) ? 'timeout' : 'network: ' + yataSnippet(m), startedAt);
+      throw e;
+    }
+    const bodyText = typeof res.responseText === 'string' ? res.responseText : JSON.stringify(res.responseText);
+    if (res.status < 200 || res.status >= 300) {
+      recordYataError('HTTP ' + res.status + ' "' + yataSnippet(bodyText) + '"', startedAt);
+      throw new Error('YATA HTTP ' + res.status);
+    }
+    let data;
+    try { data = JSON.parse(bodyText || '{}'); }
+    catch (e) {
+      recordYataError('bad JSON "' + yataSnippet(bodyText) + '"', startedAt);
+      throw e;
+    }
     const countries = data.stocks || data;
     const out = [];
     for (const code of Object.keys(countries)) {
@@ -4836,7 +4877,11 @@
         });
       }
     }
-    if (out.length === 0) throw new Error('YATA empty');
+    if (out.length === 0) {
+      recordYataError('empty export, keys: ' + yataSnippet(Object.keys(data || {}).join(',')), startedAt);
+      throw new Error('YATA empty');
+    }
+    try { localStorage.removeItem(YATA_ERROR_KEY); } catch (_) {}
     return out;
   }
 
@@ -6389,7 +6434,8 @@
       const note = document.createElement('div');
       note.className = 'vgl-br-sub';
       note.style.color = '#8a8fa0';
-      note.textContent = 'Shop prices: Valigia backup (YATA unreachable)';
+      const why = lastYataError();
+      note.textContent = 'Shop prices: Valigia backup \u2014 YATA: ' + (why || 'unreachable');
       body.appendChild(note);
     }
     for (const r of runs) {
