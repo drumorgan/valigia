@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.57.0
+// @version      0.57.1
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.57.0';
+  const SCRIPT_VERSION = '0.57.1';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -662,34 +662,46 @@
   // Single GET against PostgREST with an in.(...) filter pulls every item
   // we see on the shop page in one round trip. sell_prices is anon-readable
   // by design (shared community cache).
+  // Batched: the picker board asks for every item YATA lists (hundreds of
+  // ids), and one giant `in.(…)` URL failed inside PDA — the board then had
+  // no market prices and ranked on city-shop prices alone (a $140/run
+  // Wolverine Plushie "best run"). 100 ids per request, in parallel; a
+  // failed batch only loses its own ids.
+  const SELL_PRICE_BATCH = 100;
   async function fetchSellPrices(itemIds) {
-    if (!Array.isArray(itemIds) || itemIds.length === 0) return new Map();
-    const idList = itemIds.join(',');
-    const url = SELL_PRICES_URL +
-      '?select=item_id,price,updated_at' +
-      '&item_id=in.(' + idList + ')';
-    try {
-      const res = await gmRequest({
-        method: 'GET',
-        url: url,
-        headers: {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
-          'Accept': 'application/json',
-        },
-      });
-      if (res.status < 200 || res.status >= 300) return new Map();
-      const rows = JSON.parse(res.responseText || '[]');
-      const map = new Map();
-      for (const r of rows) {
-        if (r && typeof r.item_id === 'number' && typeof r.price === 'number') {
-          map.set(r.item_id, { price: r.price, updatedAt: r.updated_at || null });
-        }
-      }
-      return map;
-    } catch (e) {
-      return new Map();
+    const map = new Map();
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return map;
+    const ids = itemIds.filter(function (id) { return Number.isFinite(Number(id)); });
+    const batches = [];
+    for (let i = 0; i < ids.length; i += SELL_PRICE_BATCH) {
+      batches.push(ids.slice(i, i + SELL_PRICE_BATCH));
     }
+    await Promise.all(batches.map(async function (batch) {
+      const url = SELL_PRICES_URL +
+        '?select=item_id,price,updated_at' +
+        '&item_id=in.(' + batch.join(',') + ')';
+      try {
+        const res = await gmRequest({
+          method: 'GET',
+          url: url,
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+            'Accept': 'application/json',
+          },
+        });
+        if (res.status < 200 || res.status >= 300) return;
+        const rows = JSON.parse(res.responseText || '[]');
+        for (const r of rows) {
+          const id = Number(r && r.item_id);
+          const price = Number(r && r.price);
+          if (Number.isFinite(id) && Number.isFinite(price) && price > 0) {
+            map.set(id, { price: price, updatedAt: r.updated_at || null });
+          }
+        }
+      } catch (e) { /* this batch's ids just stay unpriced */ }
+    }));
+    return map;
   }
 
   // -- Restock ETA fetch + estimator --------------------------------------
@@ -6402,7 +6414,7 @@
     return r.name + ' + sell ' + r.exportItem.name;
   }
 
-  function buildBestRunBar(runs) {
+  function buildBestRunBar(runs, stats) {
     const bar = document.createElement('div');
     bar.id = BESTRUN_BAR_ID;
     // Collapsed by default — tap the header to expand. Keeps the travel
@@ -6519,6 +6531,16 @@
           ' \u00B7 +' + formatMoneyCompact(r.exportProfitPerRun) + ' for ' + r.exportUnits;
         body.appendChild(sub);
       }
+    }
+    // Data health footer, so a thin board explains itself in a screenshot.
+    if (stats) {
+      const foot = document.createElement('div');
+      foot.className = 'vgl-br-sub';
+      foot.style.color = '#5a6070';
+      foot.textContent = 'shop rows ' + stats.yataRows + ' \u00B7 market prices ' +
+        stats.sellPrices + ' \u00B7 buy runs ' + stats.runs + ' \u00B7 checked exports ' +
+        stats.exportsChecked + ' \u00B7 v' + SCRIPT_VERSION;
+      body.appendChild(foot);
     }
     bar.appendChild(body);
 
@@ -6728,7 +6750,12 @@
 
     if (myGeneration !== bestRunGeneration) return 'superseded';
     injectBestRunStyles();
-    const bar = buildBestRunBar(ranked);
+    const bar = buildBestRunBar(ranked, {
+      yataRows: yataRows.length,
+      sellPrices: sellMap.size,
+      runs: runs.length,
+      exportsChecked: bestExport.size,
+    });
     // Final sweep right before insert: a parallel call could have inserted
     // its own board between our start-of-function removal and now.
     document.querySelectorAll('#' + BESTRUN_BAR_ID).forEach(function (n) { n.remove(); });
