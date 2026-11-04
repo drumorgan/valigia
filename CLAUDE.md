@@ -535,7 +535,12 @@ Shop rows for the picker surfaces come from `fetchYataAll()` (0.56.2),
 layered for speed: a ≤2 min cached YATA payload shared by the board and
 every country tap → live YATA with a 6 s timeout (5 min backoff after a
 failure, recorded in localStorage) → last good YATA payload ≤3 h old →
-our server mirror via the `get_latest_yata_snapshots()` RPC. Concurrent
+our server mirror via the `get_latest_yata_snapshots()` RPC. Live YATA has been
+failing inside PDA (works from the web app and the server cron), so
+`fetchYataLive()` records WHY (HTTP status + body snippet / timeout / bad
+JSON / empty export, with elapsed time) in localStorage and the board's
+"Shop prices: Valigia backup — YATA: …" note shows it (0.56.9) — read it
+off a screenshot before changing transport. Concurrent
 callers share one in-flight request. The home-picker phase poll exits as
 soon as "Select Destination and Traveling Method" is on screen instead of
 waiting out `TRAVEL_PHASE_TIMEOUT_MS`.
