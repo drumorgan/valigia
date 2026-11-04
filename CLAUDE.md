@@ -541,7 +541,13 @@ failing inside PDA (works from the web app and the server cron), so
 `fetchYataLive()` records WHY (HTTP status + body snippet / timeout / bad
 JSON / empty export, with elapsed time) in localStorage and the board's
 "Shop prices: Valigia backup — YATA: …" note shows it (0.56.9) — read it
-off a screenshot before changing transport. Concurrent
+off a screenshot before changing transport. Sell prices in the userscript come from
+`loadSellTable()` (0.57.3): the whole `sell_prices` table in plain paged
+reads, memoised 2 min and shared by board / detail bar / overlay. Per-id
+`in.(…)` reads came back empty inside PDA (board footer showed "market
+prices 0"), so they're only the fallback now. Outbound exports under
+`MIN_EXPORT_PROFIT_PER_RUN` ($50k/run, calculator.js + userscript mirror)
+are hidden everywhere. Concurrent
 callers share one in-flight request. The home-picker phase poll exits as
 soon as "Select Destination and Traveling Method" is on screen instead of
 waiting out `TRAVEL_PHASE_TIMEOUT_MS`.

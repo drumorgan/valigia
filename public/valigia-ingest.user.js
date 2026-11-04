@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.57.2
+// @version      0.57.3
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.57.2';
+  const SCRIPT_VERSION = '0.57.3';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -705,10 +705,55 @@
     });
   }
 
+  // Read the whole sell_prices table in plain paged requests (no in() list),
+  // memoised 2 min and shared by every caller. The per-id in() reads came
+  // back empty inside PDA (board footer: "market prices 0"); the table read
+  // worked, so it's now the primary path and the in() batches the fallback.
+  const SELL_TABLE_TTL_MS = 2 * 60 * 1000;
+  let sellTableMemo = null;     // { at, map }
+  let sellTableInFlight = null; // Promise<Map|null>
+
+  async function loadSellTable() {
+    if (sellTableMemo && Date.now() - sellTableMemo.at < SELL_TABLE_TTL_MS) return sellTableMemo.map;
+    if (sellTableInFlight) return sellTableInFlight;
+    sellTableInFlight = (async function () {
+      const all = new Map();
+      for (let offset = 0; offset < 5000; offset += 1000) {
+        try {
+          const res = await getSellPricesUrl(SELL_PRICES_URL +
+            '?select=item_id,price,updated_at&order=item_id&limit=1000&offset=' + offset);
+          if (res.status < 200 || res.status >= 300) {
+            noteSellPriceError('table HTTP ' + res.status + ' ' + String(res.responseText || '').slice(0, 80));
+            break;
+          }
+          const before = all.size;
+          addSellPriceRows(all, res.responseText);
+          if (all.size - before < 1000) break;
+        } catch (e) {
+          noteSellPriceError('table read failed: ' + ((e && (e.message || e.error)) || e));
+          break;
+        }
+      }
+      if (all.size === 0) return null;
+      sellTableMemo = { at: Date.now(), map: all };
+      return all;
+    })();
+    try { return await sellTableInFlight; } finally { sellTableInFlight = null; }
+  }
+
   async function fetchSellPrices(itemIds) {
     const map = new Map();
     if (!Array.isArray(itemIds) || itemIds.length === 0) return map;
     const ids = itemIds.filter(function (id) { return Number.isFinite(Number(id)); });
+    const table = await loadSellTable();
+    if (table) {
+      for (const id of ids) {
+        const v = table.get(Number(id));
+        if (v) map.set(Number(id), v);
+      }
+      return map;
+    }
+    // Table read failed: fall back to per-id batches.
     const batches = [];
     for (let i = 0; i < ids.length; i += SELL_PRICE_BATCH) {
       batches.push(ids.slice(i, i + SELL_PRICE_BATCH));
@@ -728,31 +773,9 @@
         noteSellPriceError('request failed: ' + ((e && (e.message || e.error)) || e));
       }
     }));
-    // Nothing came back for a non-trivial request: try the whole table in
-    // one plain request (no in() list) and keep the ids that were asked for.
-    if (map.size === 0 && ids.length > 0) {
-      const wanted = new Set(ids.map(Number));
-      const all = new Map();
-      for (let offset = 0; offset < 3000; offset += 1000) {
-        try {
-          const res = await getSellPricesUrl(SELL_PRICES_URL +
-            '?select=item_id,price,updated_at&order=item_id&limit=1000&offset=' + offset);
-          if (res.status < 200 || res.status >= 300) {
-            noteSellPriceError('fallback HTTP ' + res.status + ' ' + String(res.responseText || '').slice(0, 80));
-            break;
-          }
-          const before = all.size;
-          addSellPriceRows(all, res.responseText);
-          if (all.size - before < 1000) break;
-        } catch (e) {
-          noteSellPriceError('fallback failed: ' + ((e && (e.message || e.error)) || e));
-          break;
-        }
-      }
-      all.forEach(function (v, id) { if (wanted.has(id)) map.set(id, v); });
-    }
     return map;
   }
+
 
   // -- Restock ETA fetch + estimator --------------------------------------
   // Slim port of stock-forecast.js's estimateNextRestock for the travel
@@ -5147,6 +5170,8 @@
   // src/calculator.js — keep the rate in step.
   const FOREIGN_SELLBACK_RATE = 0.75;
   const FOREIGN_SELL_CAP_PER_ITEM = 100;
+  // Mirrors MIN_EXPORT_PROFIT_PER_RUN in src/calculator.js.
+  const MIN_EXPORT_PROFIT_PER_RUN = 50000;
   // v2: caches the raw scrape rows (shop + observed_at), not just BM keys.
   const BLACK_MARKET_CACHE_KEY = 'valigia_shop_intel_v2';
   const BLACK_MARKET_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -5335,11 +5360,15 @@
     const pending = [];
     for (const c of cands) {
       const ladder = freshLadder(c.itemId);
-      if (!ladder) { pending.push(c); continue; }
+      if (!ladder) {
+        // Not worth a live check unless the cached floor already clears the bar.
+        if (c.profitPerItem * units >= MIN_EXPORT_PROFIT_PER_RUN) pending.push(c);
+        continue;
+      }
       const fill = fillCostFor(ladder, units);
       if (!fill) continue;
       const profitPerItem = c.shopPays - fill.avgCost;
-      if (profitPerItem <= 0) continue;
+      if (profitPerItem <= 0 || profitPerItem * fill.filled < MIN_EXPORT_PROFIT_PER_RUN) continue;
       checked.push(Object.assign({}, c, {
         tornPrice: fill.avgCost,
         units: fill.filled,
