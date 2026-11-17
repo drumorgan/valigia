@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.57.4
+// @version      0.57.5
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.57.4';
+  const SCRIPT_VERSION = '0.57.5';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -6222,6 +6222,7 @@
       fetchRestockEvents(itemIds, destination),
       fetchSellPrices(itemIds),
       fetchShopIntel(),
+      ensureItemCatalog(), // city-shop prices for bestTornSale
     ]);
     if (generation !== countryDetailGeneration) return;
 
@@ -6236,9 +6237,31 @@
 
     const slots = getSlotCount();
     const nowMs = Date.now();
-    // Alphabetical so a player can scan for one specific item rather than
-    // hunting through a profit ranking.
-    merged.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+    // "Buy here": ranked by profit for a full load, losses hidden (owner
+    // request — the alphabetical list buried the few rows worth flying for).
+    // Profit per item = best way to cash out in Torn (Item Market net of the
+    // 5% fee, or a city shop) minus the shop price; a load is the player's
+    // slots, capped by stock when the shelf is thin (an empty shelf counts a
+    // full load, bought after the refill its row shows). A separate list:
+    // `merged` still feeds the Sell here candidates, where an item that's a
+    // loss to import can be a profitable export.
+    let hiddenBuyRows = 0;
+    const buyRows = [];
+    for (const r of merged) {
+      const sp = sellMap.get(r.item_id);
+      const sale = bestTornSale(sp && Number.isFinite(sp.price) ? sp.price : null, storeSellFor(r.item_id));
+      const cost = Number(r.buy_price);
+      const profitEach = sale && cost > 0 ? sale.net - cost : null;
+      if (profitEach == null || profitEach <= 0) { hiddenBuyRows++; continue; }
+      const stockNum = Number(r.stock);
+      const units = Number.isFinite(stockNum) && stockNum > 0 ? Math.min(slots, stockNum) : slots;
+      buyRows.push(Object.assign({}, r, {
+        profitEach: profitEach,
+        profitLoad: profitEach * units,
+        saleVenue: sale.venue,
+      }));
+    }
+    buyRows.sort(function (a, b) { return b.profitLoad - a.profitLoad; });
 
     // "Sell here" candidates, live-checked against the Item Market ladder
     // before anything is shown (see splitCheckedExports).
@@ -6301,7 +6324,7 @@
       body.appendChild(buyHead);
     }
 
-    for (const r of merged) {
+    for (const r of buyRows) {
       const row = document.createElement('div');
       row.className = 'vgl-br-row';
 
@@ -6331,17 +6354,17 @@
         ? formatMoneyCompact(r.buy_price)
         : '\u2014';
 
+      // Profit per item replaces the sell-rate column (rate moves to the
+      // tooltip) so the row stays narrow on iPad.
       const depl = document.createElement('span');
-      depl.className = 'vgl-br-depl';
+      depl.className = 'vgl-br-refill';
+      depl.textContent = '+' + formatMoneyCompact(r.profitEach) + ' ea';
       const slope = depletionRatePerMin(snapshotsMap.get(r.item_id));
-      if (slope != null && slope < 0) {
-        const rate = -slope;
-        depl.textContent = 'sells ~' + (rate >= 1 ? Math.round(rate) : rate.toFixed(1)) + '/min';
-        depl.title = 'Observed depletion rate';
-      } else {
-        depl.textContent = '\u2014';
-        depl.title = 'No depletion data yet';
-      }
+      const rateText = slope != null && slope < 0
+        ? 'shelf sells ~' + (-slope >= 1 ? Math.round(-slope) : (-slope).toFixed(1)) + '/min'
+        : 'no sell-rate data yet';
+      depl.title = '+' + formatMoneyCompact(r.profitLoad) + ' for a load, selling via ' +
+        (r.saleVenue === 'store' ? 'a city shop' : 'the Item Market') + ' \u00B7 ' + rateText;
 
       // Restock ETA only matters when the shelf is empty/thin \u2014 that's the
       // "when will it be there if it isn't now" answer. Deep shelves show
@@ -6390,6 +6413,13 @@
       row.appendChild(depl);
       row.appendChild(refill);
       body.appendChild(row);
+    }
+    if (hiddenBuyRows > 0) {
+      const note = document.createElement('div');
+      note.className = 'vgl-br-detail-msg';
+      note.textContent = hiddenBuyRows + ' item' + (hiddenBuyRows === 1 ? '' : 's') +
+        ' hidden (loss or no price)';
+      body.appendChild(note);
     }
   }
 

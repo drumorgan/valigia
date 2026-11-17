@@ -317,7 +317,12 @@ last observed change, and a 6 h cutoff emptied the board overnight). Surfaces: t
 **Sell Abroad** card + Best Run card's "Outbound" leg (round trip = export
 + import over the same flight; export-only destinations can win), and in
 the PDA picker the Best Run board ("Xanax + sell Flail") and the
-"Before you fly" bar's **Sell here** section.
+"Before you fly" bar's **Sell here** section. The bar's **Buy here** list (0.57.5) is
+ranked by profit for a full load (`bestTornSale()` net − shop price, ×
+slots capped by stock; empty shelves count a full load after refill),
+shows `+$X ea` instead of the sell rate (rate in the tooltip), and hides
+loss/no-price rows behind a "N items hidden" note. It's a separate list:
+`merged` still feeds Sell here, since an import loss can be an export win.
 
 Bazaar profit/hr uses a nominal 5-minute transaction time, letting
 time-limited bazaar deals correctly dominate multi-hour travel runs
