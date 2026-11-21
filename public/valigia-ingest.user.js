@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valigia
 // @namespace    https://valigia.girovagabondo.com/
-// @version      0.57.5
+// @version      0.57.6
 // @description  Crowd-sourced price intelligence for Torn City, inside Torn PDA. Pushes anonymised observations to a shared pool and surfaces deals across six pages: Travel (home best-run board + margin overlays + YATA destination preview), Item Market (watchlist matches + add/edit/remove, lowest bazaar, TornExchange flash deals), Bazaar (deals below market/points value), Items (best trader buy-offers for your inventory), Museum (artifact prices), Points Market. Companion app: https://valigia.girovagabondo.com
 // @author       drumorgan
 // @match        https://www.torn.com/page.php?sid=travel*
@@ -32,7 +32,7 @@
   // stay short), but kept here so anything needing the version at runtime
   // — future diagnostic panels, log() traces, edge-function telemetry —
   // has a single source to read from. Bump alongside @version.
-  const SCRIPT_VERSION = '0.57.5';
+  const SCRIPT_VERSION = '0.57.6';
 
   const INGEST_URL =
     'https://vtslzplzlxdptpvxtanz.supabase.co/functions/v1/ingest-travel-shop';
@@ -6285,44 +6285,53 @@
     }
 
     // "Sell here": the best items to buy in Torn and sell to this country's
-    // shop on arrival. Only shown when at least one clears Torn's price.
-    if (exports.length > 0) {
-      const sellHead = document.createElement('div');
-      sellHead.className = 'vgl-cd-section';
-      sellHead.textContent = 'Sell here \u00B7 buy in Torn, sell to the shop';
-      body.appendChild(sellHead);
-      for (const e of exports) {
-        const row = document.createElement('div');
-        row.className = 'vgl-br-row vgl-cd-sell-row';
-        const name = document.createElement('span');
-        name.className = 'vgl-br-name';
-        name.textContent = e.name + (e.isBlackMarket ? ' (BM)' : '');
-        if (e.isBlackMarket) name.title = 'Black Market \u2014 buys back at its full current price';
-        const torn = document.createElement('span');
-        torn.className = 'vgl-br-dest';
-        torn.textContent = 'Torn avg ' + formatMoneyCompact(e.tornPrice);
-        torn.title = 'Average live Item Market cost of buying ' + e.units;
-        const pays = document.createElement('span');
-        pays.className = 'vgl-br-price';
-        pays.textContent = 'pays ' + formatMoneyCompact(e.shopPays);
-        const each = document.createElement('span');
-        each.className = 'vgl-br-refill';
-        each.textContent = '+' + formatMoneyCompact(e.profitPerItem) + ' ea';
-        const total = document.createElement('span');
-        total.className = 'vgl-br-refill';
-        total.textContent = '+' + formatMoneyCompact(e.profitPerRun) + ' for ' + e.units;
-        row.appendChild(name);
-        row.appendChild(torn);
-        row.appendChild(pays);
-        row.appendChild(each);
-        row.appendChild(total);
-        body.appendChild(row);
-      }
-      const buyHead = document.createElement('div');
-      buyHead.className = 'vgl-cd-section';
-      buyHead.textContent = 'Buy here';
-      body.appendChild(buyHead);
+    // shop on arrival. The section always renders — when nothing qualifies it
+    // says why, instead of vanishing (which read as a bug).
+    const sellHead = document.createElement('div');
+    sellHead.className = 'vgl-cd-section';
+    sellHead.textContent = 'Sell here \u00B7 buy in Torn, sell to the shop';
+    body.appendChild(sellHead);
+    if (exports.length === 0) {
+      const none = document.createElement('div');
+      none.className = 'vgl-br-detail-msg';
+      none.textContent = prelim.length === 0
+        ? 'Nothing this shop buys back is cheaper in Torn right now.'
+        : prelim.length + ' item' + (prelim.length === 1 ? '' : 's') +
+          ' looked close, but none clear ' + formatMoneyCompact(MIN_EXPORT_PROFIT_PER_RUN) +
+          '/run at live Item Market prices.';
+      body.appendChild(none);
     }
+    for (const e of exports) {
+      const row = document.createElement('div');
+      row.className = 'vgl-br-row vgl-cd-sell-row';
+      const name = document.createElement('span');
+      name.className = 'vgl-br-name';
+      name.textContent = e.name + (e.isBlackMarket ? ' (BM)' : '');
+      if (e.isBlackMarket) name.title = 'Black Market \u2014 buys back at its full current price';
+      const torn = document.createElement('span');
+      torn.className = 'vgl-br-dest';
+      torn.textContent = 'Torn avg ' + formatMoneyCompact(e.tornPrice);
+      torn.title = 'Average live Item Market cost of buying ' + e.units;
+      const pays = document.createElement('span');
+      pays.className = 'vgl-br-price';
+      pays.textContent = 'pays ' + formatMoneyCompact(e.shopPays);
+      const each = document.createElement('span');
+      each.className = 'vgl-br-refill';
+      each.textContent = '+' + formatMoneyCompact(e.profitPerItem) + ' ea';
+      const total = document.createElement('span');
+      total.className = 'vgl-br-refill';
+      total.textContent = '+' + formatMoneyCompact(e.profitPerRun) + ' for ' + e.units;
+      row.appendChild(name);
+      row.appendChild(torn);
+      row.appendChild(pays);
+      row.appendChild(each);
+      row.appendChild(total);
+      body.appendChild(row);
+    }
+    const buyHead = document.createElement('div');
+    buyHead.className = 'vgl-cd-section';
+    buyHead.textContent = 'Buy here';
+    body.appendChild(buyHead);
 
     for (const r of buyRows) {
       const row = document.createElement('div');
