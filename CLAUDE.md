@@ -322,7 +322,11 @@ ranked by profit for a full load (`bestTornSale()` net − shop price, ×
 slots capped by stock; empty shelves count a full load after refill),
 shows `+$X ea` instead of the sell rate (rate in the tooltip), and hides
 loss/no-price rows behind a "N items hidden" note. It's a separate list:
-`merged` still feeds Sell here, since an import loss can be an export win.
+`merged` still feeds Sell here, since an import loss can be an export win. The Sell here
+header always renders (0.57.6); with nothing qualifying it explains why
+("N items looked close, but none clear $50k/run at live Item Market
+prices" or "Nothing this shop buys back is cheaper in Torn") instead of
+the section silently vanishing.
 
 Bazaar profit/hr uses a nominal 5-minute transaction time, letting
 time-limited bazaar deals correctly dominate multi-hour travel runs
